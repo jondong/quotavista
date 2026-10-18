@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
+          # Keep in sync with rust-toolchain.toml; this action does not read it.
+          toolchain: "1.99.1"
           components: rustfmt, clippy
       - uses: actions/setup-node@v4
         with:
@@ -30,9 +32,9 @@ jobs:
       # The desktop crate needs system WebView libraries absent here; it is
       # checked in the macos job below.
       - name: Clippy (workspace crates except desktop)
-        run: cargo clippy --workspace --exclude quotavista-desktop --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --exclude quotavista-desktop --all-targets -- -D warnings
       - name: Rust tests (workspace crates except desktop)
-        run: cargo test --workspace --exclude quotavista-desktop
+        run: cargo test --locked --workspace --exclude quotavista-desktop
       - name: Frontend install (lockfile)
         run: npm ci
         working-directory: apps/desktop
@@ -52,6 +54,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
+          # Keep in sync with rust-toolchain.toml; this action does not read it.
+          toolchain: "1.99.1"
           components: rustfmt, clippy
       - uses: actions/setup-node@v4
         with:
@@ -64,7 +68,7 @@ jobs:
       - name: Full workspace checks
         run: |
           cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace
       - name: Desktop debug build (unsigned, no bundling)
-        run: cargo build -p quotavista-desktop
+        run: cargo build --locked -p quotavista-desktop
