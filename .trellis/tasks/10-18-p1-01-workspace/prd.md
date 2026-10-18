@@ -22,7 +22,7 @@ Acceptance mapping: A11, A12, A24. These are prototype contributions, not closur
 
 - [x] A fresh checkout can reproduce frontend and Rust dependency installation using the committed lockfiles and documented toolchain.
 - [x] The desktop opens a minimal window on the available macOS host without a QuotaVista cloud account or provider credential.
-- [ ] Core does not import Tauri, SQLx, native credential stores, or concrete providers. CI runs the documented checks without credentials.
+- [x] Core does not import Tauri, SQLx, native credential stores, or concrete providers. CI runs the documented checks without credentials.
 - [x] Document the linked SQLite version and current upstream WAL-fix requirement when adding SQLx; do not claim a successful Linux native run from CI.
 
 ## Out of scope
