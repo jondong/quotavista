@@ -42,7 +42,7 @@ The table records the initial plan, not live task status. Use `task.py list` and
 4. P1-09, P1-10, and P1-11 integrate the screens and desktop behavior after IPC and the bilingual shell.
 5. P1-12 reviews integrated behavior and measures local query performance. P1-13 validates the actual target desktops and assesses Phase 1 exit.
 
-These are dependency lanes, not an instruction to dispatch parallel agents. The default is one owner working inline on one child task at a time.
+These are dependency lanes. Tasks in different lanes may run in parallel once their prerequisites are complete. Each child task gets its own Orca-managed worktree and a dedicated pi agent, which owns that one task and works inline; the coordinator selects the provider and model per task and integrates results into `main` after review.
 
 ## Phase boundaries
 

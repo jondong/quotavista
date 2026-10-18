@@ -79,7 +79,7 @@ Each child currently has implementation and review JSONL manifests with real sou
 
 ## Codex integration
 
-`codex.dispatch_mode: inline` selects single-owner execution without automatic agent dispatch. No global Codex settings were changed during setup. Tasks and scripts work through explicit reads/commands even when hooks are inactive.
+Development follows a multi-agent model: a coordinator uses Orca to give each child task its own git worktree and a dedicated pi agent, chooses the provider and model per task, and may run independent tasks in parallel once their dependencies are complete. `codex.dispatch_mode: inline` keeps each worker executing its own task inline rather than spawning nested Trellis sub-agents. No global Codex settings were changed during setup. Tasks and scripts work through explicit reads/commands even when hooks are inactive.
 
 The generated hook integration is optional. The initializer reports that compatible Codex clients require user-level hooks enablement and may require a one-time `/hooks` approval. Installing the files does not prove hook execution in the current host. Follow the installed `.codex/config.toml` comments and current official client documentation if enabling hooks; this is not required to start task work manually.
 

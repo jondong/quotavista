@@ -157,7 +157,8 @@ channel:
 # prompt_injection:
 #   skip_keyword: "no-trellis"   # "" disables the escape hatch entirely
 
-# QuotaVista uses one owner per task; no automatic agent dispatch.
+# QuotaVista runs one Orca worktree and pi agent per task; workers execute inline
+# and do not spawn nested sub-agents.
 codex:
   dispatch_mode: inline
 
