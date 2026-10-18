@@ -1,0 +1,4 @@
+# Pinned Rust toolchain for reproducible builds. See CONTRIBUTING.md.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

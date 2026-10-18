@@ -1,6 +1,6 @@
 # Boundaries and contracts
 
-The planned layout and command table are defined in [Architecture](../../../docs/architecture.md#modules-and-dependencies). They are design constraints; no source directories exist yet.
+The layout and command table are defined in [Architecture](../../../docs/architecture.md#modules-and-dependencies). Since P1-01 the workspace directories below exist as scaffold crates; their internals grow with later tasks.
 
 - `crates/core` owns domain rules and application ports. It must not depend on Tauri, provider implementations, SQLx, or native credential stores.
 - `crates/providers` implements provider ports without UI or database writes. Phase 1 uses synthetic adapters only.

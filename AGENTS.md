@@ -10,7 +10,7 @@ Keep this convention when adding or updating documentation. Conversations with u
 
 Read README.md, docs/requirements.md, docs/architecture.md, and docs/development-plan.md before implementation work.
 
-The project currently contains design documents and an MIT License, not a runnable application. Do not describe planned capabilities as implemented.
+The project contains design documents, an MIT License, and a minimal P1-01 scaffold (Cargo workspace plus a synthetic-data-only Tauri window). Do not describe planned capabilities as implemented.
 
 Token-availability research is deferred to provider integration. Keep real credentials and identifying account data out of the repository.
 

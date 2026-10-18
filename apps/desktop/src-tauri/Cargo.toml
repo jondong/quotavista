@@ -1,0 +1,21 @@
+[package]
+name = "quotavista-desktop"
+description = "Tauri 2 desktop composition root for the QuotaVista prototype"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[lib]
+name = "quotavista_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+quotavista-core = { path = "../../../crates/core" }
+quotavista-infrastructure = { path = "../../../crates/infrastructure" }
+quotavista-providers = { path = "../../../crates/providers" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }

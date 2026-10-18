@@ -4,7 +4,7 @@ Date: 2026-10-18
 
 Baselines: Requirements 0.9 and Architecture 0.4
 
-This mapping connects required outcomes to planned components and evidence. Every implementation status is Pending because the repository has no runnable application. A document review is not a substitute for the evidence listed here.
+This mapping connects required outcomes to planned components and evidence. Every implementation status is Pending; the P1-01 scaffold (Cargo workspace, minimal synthetic-data desktop window, reproducible checks) is a prototype contribution toward A11/A12/A24, not closure of any criterion. A document review is not a substitute for the evidence listed here.
 
 Phases refer to the [development plan](development-plan.md). Requirements and design review findings are recorded in the [requirements review](reviews/requirements-review.md) and [architecture review](reviews/architecture-review.md).
 

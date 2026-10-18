@@ -16,7 +16,7 @@ Providers expose different metrics and levels of detail. Token availability, his
 
 ## Project status
 
-QuotaVista has reviewed requirements and architecture and a Trellis-managed Phase 1 prototype backlog. Application implementation has not started; there is no runnable application yet.
+QuotaVista has reviewed requirements and architecture and a Trellis-managed Phase 1 prototype backlog. A minimal desktop scaffold exists under `apps/desktop/` and `crates/`: it opens a local window showing clearly labeled synthetic data, with reproducible Rust and frontend checks. Provider integration, persistence, and complete screens are not implemented.
 
 The proposed stack is Tauri 2, React, TypeScript, Rust, and SQLite. Platform compatibility and provider capabilities will be validated during prototyping and integration.
 

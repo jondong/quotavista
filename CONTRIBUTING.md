@@ -1,8 +1,47 @@
 # Contributing to QuotaVista
 
-QuotaVista has reviewed requirements and architecture and a Trellis-managed prototype backlog. There is no runnable application or supported application build procedure yet.
+QuotaVista has reviewed requirements and architecture and a Trellis-managed prototype backlog. A minimal Tauri 2 scaffold with synthetic-only data now exists under `apps/desktop/` and `crates/`; complete screens, provider integrations, persistence, and native integrations are not implemented yet.
 
 Read [task management](docs/task-management.md) and the [Phase 1 plan](docs/phase-one-plan.md) before implementation. Initialize your local Trellis identity, select an existing task, verify its prerequisites, and follow its acceptance criteria.
+
+## Development setup
+
+The prototype is a Cargo workspace plus a Vite/React desktop frontend. All development data is synthetic; no provider credential or QuotaVista account is needed.
+
+### Toolchain (pinned)
+
+- Rust `1.99.1` via [rust-toolchain.toml](rust-toolchain.toml) (rustup installs it automatically, including `rustfmt` and `clippy`).
+- Node.js `24` via [.nvmrc](.nvmrc) and npm `>=10` (enforced by `apps/desktop/package.json` `engines`). Trellis tooling was set up with npm 11.19.1.
+- Native prerequisites follow the [official Tauri 2 guide](https://v2.tauri.app/start/prerequisites/):
+  - macOS: Xcode Command Line Tools (`xcode-select --install`).
+  - Ubuntu/Debian: `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`.
+
+### Install from lockfiles
+
+```sh
+cd apps/desktop && npm ci        # frontend, from package-lock.json
+cargo fetch                      # Rust, from the committed Cargo.lock
+```
+
+### Checks and builds
+
+```sh
+./scripts/check-core-boundaries.sh                        # core dependency direction
+cargo fmt --all -- --check                                # formatting
+cargo clippy --workspace --all-targets -- -D warnings     # lints
+cargo test --workspace                                    # Rust tests
+cd apps/desktop
+npm run lint                                              # ESLint
+npm run typecheck                                         # strict TypeScript
+npm run build                                             # production frontend build
+npm run tauri dev                                         # launch the prototype window (synthetic data)
+```
+
+CI (`.github/workflows/ci.yml`) runs these checks without credentials. A green CI build is not evidence of a native Linux run; platform behavior needs separate validation evidence.
+
+### SQLite note for later tasks
+
+SQLx is not a dependency yet (it arrives with task P1-03). When adding it, pin a SQLite release whose changelog includes the current upstream WAL fixes, record the exact linked version here, and verify the version actually linked at runtime during setup.
 
 ## Documentation language
 

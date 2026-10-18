@@ -12,3 +12,12 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
+
+# Build outputs
+/target/
+node_modules/
+dist/
+*.tsbuildinfo
+
+# pi session state
+.pi/

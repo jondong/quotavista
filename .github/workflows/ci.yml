@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: never
+
+# Compilation and checks on CI are not evidence of a native Linux or macOS
+# run; platform behavior is validated separately (see docs/traceability.md).
+jobs:
+  workspace-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Core dependency boundary
+        run: ./scripts/check-core-boundaries.sh
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+      # The desktop crate needs system WebView libraries absent here; it is
+      # checked in the macos job below.
+      - name: Clippy (workspace crates except desktop)
+        run: cargo clippy --workspace --exclude quotavista-desktop --all-targets -- -D warnings
+      - name: Rust tests (workspace crates except desktop)
+        run: cargo test --workspace --exclude quotavista-desktop
+      - name: Frontend install (lockfile)
+        run: npm ci
+        working-directory: apps/desktop
+      - name: Frontend lint
+        run: npm run lint
+        working-directory: apps/desktop
+      - name: Frontend type-check
+        run: npm run typecheck
+        working-directory: apps/desktop
+      - name: Frontend production build
+        run: npm run build
+        working-directory: apps/desktop
+
+  macos-desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Frontend install (lockfile)
+        run: npm ci
+        working-directory: apps/desktop
+      - name: Full workspace checks
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+      - name: Desktop debug build (unsigned, no bundling)
+        run: cargo build -p quotavista-desktop

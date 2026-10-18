@@ -1,6 +1,6 @@
 # Backend guidelines
 
-Status: Design constraints for the first prototype, not implemented conventions. There is no Rust application yet. Requirements 0.9 and Architecture 0.4 are authoritative; add actual source examples when implementation exists.
+Status: Design constraints for the first prototype. A Cargo workspace now exists: `crates/core` (dependency-free domain crate, boundary enforced by `scripts/check-core-boundaries.sh`), `crates/providers` (synthetic adapters only), `crates/infrastructure` (scaffold), and `apps/desktop/src-tauri` (composition root). Requirements 0.9 and Architecture 0.4 remain authoritative; extend these examples as implementation lands.
 
 - [Boundaries and contracts](directory-structure.md)
 - [Persistence and recovery](database-guidelines.md)

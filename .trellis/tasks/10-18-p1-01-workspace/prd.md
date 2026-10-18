@@ -20,10 +20,10 @@ Acceptance mapping: A11, A12, A24. These are prototype contributions, not closur
 
 ## Acceptance criteria
 
-- [ ] A fresh checkout can reproduce frontend and Rust dependency installation using the committed lockfiles and documented toolchain.
-- [ ] The desktop opens a minimal window on the available macOS host without a QuotaVista cloud account or provider credential.
+- [x] A fresh checkout can reproduce frontend and Rust dependency installation using the committed lockfiles and documented toolchain.
+- [x] The desktop opens a minimal window on the available macOS host without a QuotaVista cloud account or provider credential.
 - [ ] Core does not import Tauri, SQLx, native credential stores, or concrete providers. CI runs the documented checks without credentials.
-- [ ] Document the linked SQLite version and current upstream WAL-fix requirement when adding SQLx; do not claim a successful Linux native run from CI.
+- [x] Document the linked SQLite version and current upstream WAL-fix requirement when adding SQLx; do not claim a successful Linux native run from CI.
 
 ## Out of scope
 
@@ -31,4 +31,4 @@ No complete screens, provider integration, signing, installers, auto-updates, or
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Implemented: workspace scaffold, synthetic-data-only window, pinned toolchains and lockfiles, boundary and CI checks are in place. Validation evidence: `npm ci` clean install and production build pass; `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` pass; `scripts/check-core-boundaries.sh` confirms quotavista-core has no dependencies; `npm run tauri dev` opened the minimal window on macOS without credentials. The CI-workflow criterion is ticked once the pull request run passes without credentials.

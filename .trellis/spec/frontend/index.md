@@ -1,6 +1,6 @@
 # Frontend guidelines
 
-Status: Design constraints for the first prototype. There is no React application yet; source examples and exact scripts must be added after scaffolding.
+Status: Design constraints for the first prototype. A minimal React frontend now exists in `apps/desktop/src` with `npm run lint`, `npm run typecheck`, and `npm run build` scripts (see CONTRIBUTING.md); bilingual catalogs arrive with task P1-08.
 
 - [Structure and IPC](directory-structure.md)
 - [Components and accessibility](component-guidelines.md)
