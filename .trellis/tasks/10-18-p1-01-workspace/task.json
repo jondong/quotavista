@@ -1,0 +1,34 @@
+{
+  "id": "p1-01-workspace",
+  "name": "p1-01-workspace",
+  "title": "P1-01: Scaffold the desktop workspace and reproducible checks",
+  "description": "Establish a minimal reproducible Tauri 2 desktop application and isolated Rust modules.",
+  "status": "planning",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-18-phase-one-prototype",
+  "relatedFiles": [],
+  "notes": "Dependency metadata is advisory; verify predecessor completion before task.py start. Planned, not implemented.",
+  "meta": {
+    "phase": 1,
+    "plan_id": "P1-01",
+    "depends_on": [],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

@@ -16,7 +16,7 @@ Providers expose different metrics and levels of detail. Token availability, his
 
 ## Project status
 
-QuotaVista is in the architecture design phase. There is no runnable application yet.
+QuotaVista has reviewed requirements and architecture and a Trellis-managed Phase 1 prototype backlog. Application implementation has not started; there is no runnable application yet.
 
 The proposed stack is Tauri 2, React, TypeScript, Rust, and SQLite. Platform compatibility and provider capabilities will be validated during prototyping and integration.
 
@@ -25,6 +25,8 @@ The confirmed Linux target is Ubuntu 26.04 with GNOME on x86_64.
 - [Requirements](docs/requirements.md)
 - [Architecture](docs/architecture.md)
 - [Development plan](docs/development-plan.md)
+- [Phase 1 prototype tasks](docs/phase-one-plan.md)
+- [Task management with Trellis](docs/task-management.md)
 - [Requirements review](docs/reviews/requirements-review.md)
 - [Architecture review](docs/reviews/architecture-review.md)
 - [Acceptance traceability](docs/traceability.md)
@@ -37,6 +39,6 @@ Never include API keys, session tokens, cookies, or logs containing credentials 
 
 ## License
 
-QuotaVista is licensed under the [MIT License](LICENSE).
+QuotaVista is licensed under the [MIT License](LICENSE). Installed development tooling retains its own [upstream notices](.trellis/NOTICE.md).
 
 QuotaVista is an independent project and is not affiliated with the model service providers it supports.

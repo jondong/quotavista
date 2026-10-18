@@ -1,0 +1,36 @@
+{
+  "id": "p1-04-recovery-fences",
+  "name": "p1-04-recovery-fences",
+  "title": "P1-04: Establish lifecycle journals and stale-result fences",
+  "description": "Establish crash-safe operation boundaries before native secrets and collection jobs can mutate state.",
+  "status": "planning",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-18-phase-one-prototype",
+  "relatedFiles": [],
+  "notes": "Dependency metadata is advisory; verify predecessor completion before task.py start. Planned, not implemented.",
+  "meta": {
+    "phase": 1,
+    "plan_id": "P1-04",
+    "depends_on": [
+      "10-18-p1-03-sqlite"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

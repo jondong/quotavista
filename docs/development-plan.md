@@ -18,6 +18,8 @@ The user confirmed both English and Simplified Chinese UI in P0. G03's product d
 
 Validate that the proposed stack runs in target environments and establish replaceable provider and persistence boundaries.
 
+The [Phase 1 task plan](phase-one-plan.md) breaks this work into a Trellis milestone and 13 dependency-aware child tasks. See [task management](task-management.md) for contributor setup and lifecycle commands. All implementation tasks are initially in planning; no application capability is claimed by this setup.
+
 - Initialize Tauri 2, React, TypeScript, Vite, and the Rust workspace; pin dependencies.
 - Establish overview, statistics, connections, settings, and display contracts using clearly labeled simulated data.
 - Bundle en and zh-CN catalogs, implement system-based first selection and persistent explicit choice, and keep locale independent of time zone and currency.

@@ -1,0 +1,36 @@
+{
+  "id": "p1-02-contracts",
+  "name": "p1-02-contracts",
+  "title": "P1-02: Define domain primitives and checked IPC contracts",
+  "description": "Make accounting, time, lifecycle, and transport semantics explicit before connecting UI and storage.",
+  "status": "planning",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-18-phase-one-prototype",
+  "relatedFiles": [],
+  "notes": "Dependency metadata is advisory; verify predecessor completion before task.py start. Planned, not implemented.",
+  "meta": {
+    "phase": 1,
+    "plan_id": "P1-02",
+    "depends_on": [
+      "10-18-p1-01-workspace"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

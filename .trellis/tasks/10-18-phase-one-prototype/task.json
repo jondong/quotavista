@@ -1,0 +1,47 @@
+{
+  "id": "phase-one-prototype",
+  "name": "phase-one-prototype",
+  "title": "Phase 1: Desktop and local core prototype",
+  "description": "Deliver and validate a bilingual local desktop prototype using synthetic providers.",
+  "status": "planning",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-18-p1-01-workspace",
+    "10-18-p1-02-contracts",
+    "10-18-p1-03-sqlite",
+    "10-18-p1-04-recovery-fences",
+    "10-18-p1-05-secret-stores",
+    "10-18-p1-06-simulation",
+    "10-18-p1-07-ipc",
+    "10-18-p1-08-bilingual-shell",
+    "10-18-p1-09-overview-statistics",
+    "10-18-p1-10-connections-settings",
+    "10-18-p1-11-desktop-lifecycle",
+    "10-18-p1-12-integration-validation",
+    "10-18-p1-13-native-validation"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "phase": 1,
+    "kind": "milestone",
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

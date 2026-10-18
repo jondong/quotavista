@@ -1,0 +1,36 @@
+{
+  "id": "p1-13-native-validation",
+  "name": "p1-13-native-validation",
+  "title": "P1-13: Validate native macOS and Ubuntu prototype behavior",
+  "description": "Decide whether the chosen stack is viable on the actual target desktops.",
+  "status": "planning",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-18-phase-one-prototype",
+  "relatedFiles": [],
+  "notes": "Dependency metadata is advisory; verify predecessor completion before task.py start. Planned, not implemented.",
+  "meta": {
+    "phase": 1,
+    "plan_id": "P1-13",
+    "depends_on": [
+      "10-18-p1-12-integration-validation"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

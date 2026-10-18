@@ -1,0 +1,34 @@
+# P1-11: Implement desktop lifecycle and native integration fallbacks
+
+## Goal
+
+Keep the prototype reachable and predictable with or without tray and notification services.
+
+## Baseline and prerequisites
+
+[Requirements 0.9](../../../docs/requirements.md), [Architecture 0.4](../../../docs/architecture.md), [development plan](../../../docs/development-plan.md), and [traceability](../../../docs/traceability.md).
+
+Dependencies: [P1-07](../10-18-p1-07-ipc/prd.md), [P1-08](../10-18-p1-08-bilingual-shell/prd.md)
+
+Acceptance mapping: A07, A11, A21, A25. These are prototype contributions, not closure of full-release acceptance.
+
+## Scope and deliverables
+
+- Implement macOS menu-bar/Linux tray entry points where available, an explicit Quit action, single-instance behavior, and main-window reopen.
+- Add platform notification capability detection and an explicitly triggered localized synthetic notification; preserve an in-app explanation when unavailable.
+- Integrate close/quit/wake behavior with job cancellation, committed persistence, refresh-Off semantics, and secret-store recovery ordering.
+
+## Acceptance criteria
+
+- [ ] Without a usable tray, closing the main window exits; there is no inaccessible orphan collector. All essential flows remain reachable from the main window.
+- [ ] With a usable tray, users can reopen and explicitly quit. Quit cancels work and commits or rolls back active writes.
+- [ ] Synthetic notification uses the active locale and no identifying account details; unavailable delivery retains an in-app status. It does not establish real alert behavior.
+- [ ] Wake merges permitted refresh work; refresh-Off never initiates an implicit query. Record differences between available native targets.
+
+## Out of scope
+
+No background service, complete threshold/expiration alert engine, installer signing, or GNOME compatibility claim without a native run.
+
+## Planning status
+
+Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.

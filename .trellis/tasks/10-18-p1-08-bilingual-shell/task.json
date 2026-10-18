@@ -1,0 +1,36 @@
+{
+  "id": "p1-08-bilingual-shell",
+  "name": "p1-08-bilingual-shell",
+  "title": "P1-08: Build the bilingual desktop navigation and display foundations",
+  "description": "Provide a usable English and Simplified Chinese application shell for all prototype screens.",
+  "status": "planning",
+  "dev_type": "frontend",
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-18-phase-one-prototype",
+  "relatedFiles": [],
+  "notes": "Dependency metadata is advisory; verify predecessor completion before task.py start. Planned, not implemented.",
+  "meta": {
+    "phase": 1,
+    "plan_id": "P1-08",
+    "depends_on": [
+      "10-18-p1-02-contracts"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

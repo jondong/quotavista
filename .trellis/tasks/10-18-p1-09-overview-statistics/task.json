@@ -1,0 +1,37 @@
+{
+  "id": "p1-09-overview-statistics",
+  "name": "p1-09-overview-statistics",
+  "title": "P1-09: Implement simulated overview and period statistics views",
+  "description": "Let users inspect clearly simulated remaining resources and period consumption with honest units and coverage.",
+  "status": "planning",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-18",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-18-phase-one-prototype",
+  "relatedFiles": [],
+  "notes": "Dependency metadata is advisory; verify predecessor completion before task.py start. Planned, not implemented.",
+  "meta": {
+    "phase": 1,
+    "plan_id": "P1-09",
+    "depends_on": [
+      "10-18-p1-07-ipc",
+      "10-18-p1-08-bilingual-shell"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}
