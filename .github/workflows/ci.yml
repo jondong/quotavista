@@ -27,6 +27,8 @@ jobs:
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Core dependency boundary
         run: ./scripts/check-core-boundaries.sh
+      - name: Boundary gate regression checks
+        run: ./scripts/test-check-core-boundaries.sh
       - name: Rust formatting
         run: cargo fmt --all -- --check
       # The desktop crate needs system WebView libraries absent here; it is

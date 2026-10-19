@@ -11,30 +11,34 @@ The prototype is a Cargo workspace plus a Vite/React desktop frontend. All devel
 ### Toolchain (pinned)
 
 - Rust `1.99.1` via [rust-toolchain.toml](rust-toolchain.toml) (rustup installs it automatically, including `rustfmt` and `clippy`).
-- Node.js `24` via [.nvmrc](.nvmrc) and npm `>=10` (enforced by `apps/desktop/package.json` `engines`). Trellis tooling was set up with npm 11.19.1.
+- Node.js `24` via [.nvmrc](.nvmrc) with an engines floor of `>=22.12.0` (the lowest release compatible with Vite 7, so every advertised Node works) and npm `>=11`, selected as `npm@11.19.1` in `apps/desktop/package.json` `packageManager`. `apps/desktop/.npmrc` sets `engine-strict=true`, so npm errors on incompatible Node/npm instead of warning.
 - Native prerequisites follow the [official Tauri 2 guide](https://v2.tauri.app/start/prerequisites/):
   - macOS: Xcode Command Line Tools (`xcode-select --install`).
   - Ubuntu/Debian: `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`.
 
 ### Install from lockfiles
 
+Run everything from the repository root:
+
 ```sh
-cd apps/desktop && npm ci        # frontend, from package-lock.json
-cargo fetch                      # Rust, from the committed Cargo.lock
+(cd apps/desktop && npm ci)             # frontend, from package-lock.json
+cargo fetch                             # Rust, from the committed Cargo.lock
 ```
 
 ### Checks and builds
 
+Run everything from the repository root:
+
 ```sh
-./scripts/check-core-boundaries.sh                        # core dependency direction
-cargo fmt --all -- --check                                # formatting
-cargo clippy --workspace --all-targets -- -D warnings     # lints
-cargo test --workspace                                    # Rust tests
-cd apps/desktop
-npm run lint                                              # ESLint
-npm run typecheck                                         # strict TypeScript
-npm run build                                             # production frontend build
-npm run tauri dev                                         # launch the prototype window (synthetic data)
+./scripts/check-core-boundaries.sh                           # core dependency direction
+./scripts/test-check-core-boundaries.sh                      # boundary gate regression checks
+cargo fmt --all -- --check                                   # formatting
+cargo clippy --locked --workspace --all-targets -- -D warnings  # lints
+cargo test --locked --workspace                              # Rust tests
+(cd apps/desktop && npm run lint)                            # ESLint
+(cd apps/desktop && npm run typecheck)                       # strict TypeScript
+(cd apps/desktop && npm run build)                           # production frontend build
+(cd apps/desktop && npm run tauri dev)                       # launch the prototype window (synthetic data)
 ```
 
 CI (`.github/workflows/ci.yml`) runs these checks without credentials. A green CI build is not evidence of a native Linux run; platform behavior needs separate validation evidence.
