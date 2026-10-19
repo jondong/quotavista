@@ -1,0 +1,10 @@
+[package]
+name = "quotavista-providers"
+description = "Provider adapters for QuotaVista. Phase 1 contains synthetic adapters only."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+quotavista-core = { path = "../core" }

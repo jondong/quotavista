@@ -1,0 +1,11 @@
+[package]
+name = "quotavista-core"
+description = "QuotaVista domain rules and application ports. No Tauri, SQLx, native credential stores, or provider implementations."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+# Intentionally empty. The core crate must stay dependency-free in Phase 1;
+# scripts/check-core-boundaries.sh fails the build if this changes.

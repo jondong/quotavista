@@ -1,8 +1,57 @@
 # Contributing to QuotaVista
 
-QuotaVista has reviewed requirements and architecture and a Trellis-managed prototype backlog. There is no runnable application or supported application build procedure yet.
+QuotaVista has reviewed requirements and architecture and a Trellis-managed prototype backlog. A minimal Tauri 2 scaffold with synthetic-only data now exists under `apps/desktop/` and `crates/`; complete screens, provider integrations, persistence, and native integrations are not implemented yet.
 
 Read [task management](docs/task-management.md) and the [Phase 1 plan](docs/phase-one-plan.md) before implementation. Initialize your local Trellis identity, select an existing task, verify its prerequisites, and follow its acceptance criteria.
+
+## Development setup
+
+The prototype is a Cargo workspace plus a Vite/React desktop frontend. All development data is synthetic; no provider credential or QuotaVista account is needed.
+
+### Toolchain (pinned)
+
+- Rust `1.99.1` via [rust-toolchain.toml](rust-toolchain.toml) (rustup installs it automatically, including `rustfmt` and `clippy`).
+- Node.js `24` via [.nvmrc](.nvmrc) with an engines floor of `>=22.12.0` (the lowest release compatible with Vite 7, so every advertised Node works) and npm `>=11`, selected as `npm@11.19.1` in `apps/desktop/package.json` `packageManager`. `apps/desktop/.npmrc` sets `engine-strict=true`, so npm errors on incompatible Node/npm instead of warning.
+- Native prerequisites follow the [official Tauri 2 guide](https://v2.tauri.app/start/prerequisites/):
+  - macOS: Xcode Command Line Tools (`xcode-select --install`).
+  - Ubuntu/Debian: `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev`.
+
+### Install from lockfiles
+
+Provision the pinned npm once (and whenever `packageManager` changes); plain npm does not select its own version from `packageManager`:
+
+```sh
+npm install -g "npm@$(node -p "require('./apps/desktop/package.json').packageManager.split('@')[1]")"
+```
+
+Run everything from the repository root:
+
+```sh
+(cd apps/desktop && npm ci)             # frontend, from package-lock.json
+cargo fetch                             # Rust, from the committed Cargo.lock
+```
+
+### Checks and builds
+
+Run everything from the repository root:
+
+```sh
+./scripts/check-core-boundaries.sh                           # core dependency direction
+./scripts/test-check-core-boundaries.sh                      # boundary gate regression checks
+cargo fmt --all -- --check                                   # formatting
+cargo clippy --locked --workspace --all-targets -- -D warnings  # lints
+cargo test --locked --workspace                              # Rust tests
+(cd apps/desktop && npm run lint)                            # ESLint
+(cd apps/desktop && npm run typecheck)                       # strict TypeScript
+(cd apps/desktop && npm run build)                           # production frontend build
+(cd apps/desktop && npm run tauri dev)                       # launch the prototype window (synthetic data)
+```
+
+CI (`.github/workflows/ci.yml`) runs these checks without credentials. A green CI build is not evidence of a native Linux run; platform behavior needs separate validation evidence.
+
+### SQLite note for later tasks
+
+SQLx is not a dependency yet (it arrives with task P1-03). When adding it, pin a SQLite release whose changelog includes the current upstream WAL fixes, record the exact linked version here, and verify the version actually linked at runtime during setup.
 
 ## Documentation language
 

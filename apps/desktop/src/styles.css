@@ -1,0 +1,27 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+
+.container {
+  margin: 0 auto;
+  max-width: 40rem;
+  padding: 2rem;
+}
+
+.synthetic-banner {
+  border: 1px solid #b45309;
+  border-radius: 0.5rem;
+  color: #b45309;
+  font-weight: 600;
+  padding: 0.75rem 1rem;
+}
+
+dt {
+  font-weight: 600;
+  margin-top: 0.75rem;
+}
+
+dd {
+  margin: 0;
+}

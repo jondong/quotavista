@@ -1,0 +1,10 @@
+[package]
+name = "quotavista-infrastructure"
+description = "Storage, secret, and network boundaries for QuotaVista. Phase 1 scaffold only."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+quotavista-core = { path = "../core" }
