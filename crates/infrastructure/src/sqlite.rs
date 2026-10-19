@@ -1,0 +1,645 @@
+//! Explicit-path SQLite adapter. The desktop composition root does not open it yet.
+use chrono::{DateTime, SecondsFormat, Utc};
+use quotavista_core::{
+    calendar::Interval,
+    domain::{Lifecycle, Provenance, Value},
+    number::{Money, TokenTotal},
+    storage::*,
+};
+use sqlx::{
+    migrate::Migrator,
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
+    },
+    Row, Sqlite, SqliteConnection, SqlitePool, Transaction,
+};
+use std::{path::Path, time::Duration};
+
+pub const SQLITE_VERSION: &str = "3.51.3";
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+pub const READ_CONNECTIONS: u32 = 3;
+pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+#[derive(Clone)]
+pub struct SqliteRepository {
+    writer: SqlitePool,
+    readers: SqlitePool,
+}
+
+fn db_error(error: sqlx::Error) -> StorageError {
+    if error.as_database_error().is_some_and(|e| {
+        e.is_unique_violation() || e.is_foreign_key_violation() || e.is_check_violation()
+    }) {
+        StorageError::Conflict
+    } else {
+        StorageError::Unavailable
+    }
+}
+
+fn timestamp(at: DateTime<Utc>) -> Result<String, StorageError> {
+    // A fixed-width UTC representation makes indexed interval comparisons exact.
+    if !(0..=9999).contains(&chrono::Datelike::year(&at)) {
+        return Err(StorageError::Validation);
+    }
+    Ok(at.to_rfc3339_opts(SecondsFormat::Nanos, true))
+}
+fn time(row: &SqliteRow, column: &str) -> Result<DateTime<Utc>, StorageError> {
+    text(row, column)?
+        .parse()
+        .map_err(|_| StorageError::Unavailable)
+}
+fn text<'a>(row: &'a SqliteRow, column: &str) -> Result<&'a str, StorageError> {
+    row.try_get(column).map_err(db_error)
+}
+fn nonempty(value: &str) -> Result<(), StorageError> {
+    if value.is_empty() || value.len() > 4096 {
+        Err(StorageError::Validation)
+    } else {
+        Ok(())
+    }
+}
+fn lifecycle(value: Lifecycle) -> &'static str {
+    match value {
+        Lifecycle::PendingSetup => "pending_setup",
+        Lifecycle::Active => "active",
+        Lifecycle::Disabled => "disabled",
+        Lifecycle::NeedsCredentials => "needs_credentials",
+        Lifecycle::DeletionPending => "deletion_pending",
+    }
+}
+fn decode_lifecycle(value: &str) -> Result<Lifecycle, StorageError> {
+    match value {
+        "pending_setup" => Ok(Lifecycle::PendingSetup),
+        "active" => Ok(Lifecycle::Active),
+        "disabled" => Ok(Lifecycle::Disabled),
+        "needs_credentials" => Ok(Lifecycle::NeedsCredentials),
+        "deletion_pending" => Ok(Lifecycle::DeletionPending),
+        _ => Err(StorageError::Unavailable),
+    }
+}
+fn provenance(value: &str) -> Result<Provenance, StorageError> {
+    match value {
+        "synthetic" => Ok(Provenance::Synthetic),
+        "official_event" => Ok(Provenance::OfficialEvent),
+        "official_bucket" => Ok(Provenance::OfficialBucket),
+        "validated_derivation" => Ok(Provenance::ValidatedDerivation),
+        "observation" => Ok(Provenance::Observation),
+        _ => Err(StorageError::Unavailable),
+    }
+}
+fn encode_value(value: &Value) -> Result<(&'static str, String, String), StorageError> {
+    Ok(match value {
+        Value::Tokens(n) => ("tokens", n.0.to_string(), String::new()),
+        Value::Money(m) => ("money", m.amount.to_string(), m.currency.to_string()),
+        Value::Ratio(n) => ("ratio", n.to_string(), String::new()),
+        Value::PercentagePoints(n) => ("percentage_points", n.to_string(), String::new()),
+        Value::Native { amount, unit } => {
+            nonempty(unit)?;
+            ("native", amount.to_string(), unit.clone())
+        }
+    })
+}
+fn decode_value(row: &SqliteRow) -> Result<Value, StorageError> {
+    let amount = text(row, "amount")?;
+    let detail = text(row, "unit_detail")?;
+    let value = match text(row, "value_kind")? {
+        "tokens" if detail.is_empty() => Value::Tokens(TokenTotal(
+            amount.parse().map_err(|_| StorageError::Unavailable)?,
+        )),
+        "money" => Value::Money(Money {
+            amount: amount.parse().map_err(|_| StorageError::Unavailable)?,
+            currency: detail.parse().map_err(|_| StorageError::Unavailable)?,
+        }),
+        "ratio" if detail.is_empty() => {
+            Value::Ratio(amount.parse().map_err(|_| StorageError::Unavailable)?)
+        }
+        "percentage_points" if detail.is_empty() => {
+            Value::PercentagePoints(amount.parse().map_err(|_| StorageError::Unavailable)?)
+        }
+        "native" if !detail.is_empty() => Value::Native {
+            amount: amount.parse().map_err(|_| StorageError::Unavailable)?,
+            unit: detail.into(),
+        },
+        _ => return Err(StorageError::Unavailable),
+    };
+    if encode_value(&value)?.1 != amount {
+        return Err(StorageError::Unavailable);
+    }
+    Ok(value)
+}
+
+impl SqliteRepository {
+    /// Caller supplies a local path and single-instance/recovery coordination.
+    /// Tests pass only paths owned by tempfile::TempDir, never an application directory.
+    pub async fn open(path: &Path) -> Result<Self, StorageError> {
+        Self::open_with_migrator(path, &MIGRATOR).await
+    }
+
+    async fn open_with_migrator(path: &Path, migrations: &Migrator) -> Result<Self, StorageError> {
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .busy_timeout(BUSY_TIMEOUT)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Full)
+            .pragma("wal_autocheckpoint", "1000");
+        let writer = SqlitePoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(BUSY_TIMEOUT)
+            .connect_with(options.clone())
+            .await
+            .map_err(db_error)?;
+        let setup = async {
+            let version: String = sqlx::query_scalar("SELECT sqlite_version()")
+                .fetch_one(&writer).await.map_err(db_error)?;
+            if version != SQLITE_VERSION { return Err(StorageError::IncompatibleVersion); }
+            // There is no released predecessor schema. Refuse populated upgrades until
+            // the maintenance/consistent-backup coordinator is installed (not a file copy).
+            let tables: i64 = sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> '_sqlx_migrations'")
+                .fetch_one(&writer).await.map_err(db_error)?;
+            if tables > 0 {
+                let latest: i64 = sqlx::query_scalar("SELECT coalesce(max(version), 0) FROM _sqlx_migrations WHERE success=1")
+                    .fetch_one(&writer).await.map_err(|_| StorageError::Migration)?;
+                if migrations.iter().any(|m| m.version > latest) { return Err(StorageError::Migration); }
+            }
+            migrations.run(&writer).await.map_err(|_| StorageError::Migration)
+        }.await;
+        if let Err(error) = setup {
+            writer.close().await;
+            return Err(error);
+        }
+        let readers = match SqlitePoolOptions::new()
+            .max_connections(READ_CONNECTIONS)
+            .acquire_timeout(BUSY_TIMEOUT)
+            .connect_with(options.create_if_missing(false).read_only(true))
+            .await
+        {
+            Ok(pool) => pool,
+            Err(error) => {
+                writer.close().await;
+                return Err(db_error(error));
+            }
+        };
+        Ok(Self { writer, readers })
+    }
+
+    pub async fn close(&self) {
+        self.readers.close().await;
+        self.writer.close().await;
+    }
+
+    async fn write(&self) -> Result<Transaction<'_, Sqlite>, StorageError> {
+        self.writer
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(db_error)
+    }
+}
+
+async fn guard(
+    conn: &mut SqliteConnection,
+    context: &WriteContext,
+    scope: Option<&str>,
+) -> Result<(), StorageError> {
+    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connections c WHERE c.id=? AND c.generation=? AND c.lifecycle='active' AND (? IS NULL OR EXISTS(SELECT 1 FROM provider_scopes s WHERE s.id=? AND s.connection_id=c.id)) AND NOT EXISTS(SELECT 1 FROM lifecycle_operations o WHERE o.connection_id=c.id AND o.state <> 'complete'))")
+        .bind(&context.connection_id).bind(context.generation).bind(scope).bind(scope)
+        .fetch_one(conn).await.map_err(db_error)?;
+    if valid {
+        Ok(())
+    } else {
+        Err(StorageError::Conflict)
+    }
+}
+async fn revision(conn: &mut SqliteConnection) -> Result<i64, StorageError> {
+    sqlx::query_scalar(
+        "UPDATE store_state SET data_revision=data_revision+1 WHERE id=1 RETURNING data_revision",
+    )
+    .fetch_one(conn)
+    .await
+    .map_err(db_error)
+}
+async fn partition_id(
+    conn: &mut SqliteConnection,
+    p: &Partition,
+) -> Result<Option<i64>, StorageError> {
+    sqlx::query_scalar("SELECT id FROM partitions WHERE scope_id=? AND product_key=? AND dataset=? AND metric=? AND start_at=? AND end_at=? AND grain=? AND dimensions=? AND authority=?")
+        .bind(&p.scope_id).bind(&p.product_key).bind(&p.dataset).bind(&p.metric)
+        .bind(timestamp(p.interval.start)?).bind(timestamp(p.interval.end)?)
+        .bind(&p.grain).bind(&p.dimensions).bind(p.authority.as_str())
+        .fetch_optional(conn).await.map_err(db_error)
+}
+async fn run(
+    conn: &mut SqliteConnection,
+    context: &WriteContext,
+    id: &str,
+) -> Result<SqliteRow, StorageError> {
+    let row = sqlx::query("SELECT r.*, p.scope_id,p.product_key,p.dataset,p.metric,p.start_at,p.end_at,p.grain,p.dimensions,p.authority FROM sync_runs r JOIN partitions p ON p.id=r.partition_id WHERE r.id=? AND r.generation=?")
+        .bind(id).bind(context.generation).fetch_optional(&mut *conn).await.map_err(db_error)?.ok_or(StorageError::Conflict)?;
+    guard(conn, context, Some(text(&row, "scope_id")?)).await?;
+    Ok(row)
+}
+fn fact(row: SqliteRow) -> Result<Fact, StorageError> {
+    let value = decode_value(&row)?;
+    if matches!(value, Value::Tokens(TokenTotal(n)) if n > u64::MAX.into()) {
+        return Err(StorageError::Unavailable);
+    }
+    Ok(Fact {
+        identity: match text(&row, "kind")? {
+            "event" => FactIdentity::Event(text(&row, "event_id")?.into()),
+            "bucket" => FactIdentity::Bucket,
+            _ => return Err(StorageError::Unavailable),
+        },
+        interval: Interval::new(time(&row, "start_at")?, time(&row, "end_at")?)
+            .map_err(|_| StorageError::Unavailable)?,
+        value,
+        source_revision: text(&row, "source_revision")?.into(),
+    })
+}
+
+impl Repository for SqliteRepository {
+    async fn settings(&self) -> Result<Settings, StorageError> {
+        let row = sqlx::query("SELECT * FROM settings WHERE id=1")
+            .fetch_one(&self.readers)
+            .await
+            .map_err(db_error)?;
+        Ok(Settings {
+            revision: row.try_get("revision").map_err(db_error)?,
+            locale: text(&row, "locale")?.into(),
+            reporting_zone: text(&row, "reporting_zone")?
+                .parse()
+                .map_err(|_| StorageError::Unavailable)?,
+            currency: text(&row, "currency")?
+                .parse()
+                .map_err(|_| StorageError::Unavailable)?,
+            refresh_minutes: row
+                .try_get::<Option<i64>, _>("refresh_minutes")
+                .map_err(db_error)?
+                .map(|n| u8::try_from(n).map_err(|_| StorageError::Unavailable))
+                .transpose()?,
+        })
+    }
+    async fn save_settings(&self, settings: &Settings) -> Result<Settings, StorageError> {
+        if !matches!(settings.locale.as_str(), "en" | "zh-CN")
+            || !matches!(settings.refresh_minutes, None | Some(1 | 5 | 15))
+        {
+            return Err(StorageError::Validation);
+        }
+        let mut tx = self.write().await?;
+        let next: Option<i64> = sqlx::query_scalar("UPDATE settings SET revision=revision+1,locale=?,reporting_zone=?,currency=?,refresh_minutes=? WHERE id=1 AND revision=? RETURNING revision")
+            .bind(&settings.locale).bind(settings.reporting_zone.name()).bind(settings.currency.to_string()).bind(settings.refresh_minutes.map(i64::from)).bind(settings.revision)
+            .fetch_optional(&mut *tx).await.map_err(db_error)?;
+        let next = next.ok_or(StorageError::Conflict)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(Settings {
+            revision: next,
+            ..settings.clone()
+        })
+    }
+    async fn create_connection(&self, c: &Connection, s: &Scope) -> Result<(), StorageError> {
+        for key in [&c.id, &c.provider, &s.id, &s.key, &s.kind] {
+            nonempty(key)?;
+        }
+        if c.generation < 0
+            || s.connection_id != c.id
+            || c.alias.trim() != c.alias
+            || c.alias.chars().count() > 80
+            || c.alias.chars().any(char::is_control)
+            || c.alias.is_empty()
+        {
+            return Err(StorageError::Validation);
+        }
+        let mut tx = self.write().await?;
+        sqlx::query(
+            "INSERT INTO connections(id,provider,alias,generation,lifecycle) VALUES(?,?,?,?,?)",
+        )
+        .bind(&c.id)
+        .bind(&c.provider)
+        .bind(&c.alias)
+        .bind(c.generation)
+        .bind(lifecycle(c.lifecycle))
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        sqlx::query(
+            "INSERT INTO provider_scopes(id,connection_id,scope_key,scope_type) VALUES(?,?,?,?)",
+        )
+        .bind(&s.id)
+        .bind(&s.connection_id)
+        .bind(&s.key)
+        .bind(&s.kind)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)
+    }
+    async fn connection(&self, id: &str) -> Result<Option<Connection>, StorageError> {
+        sqlx::query("SELECT * FROM connections WHERE id=?")
+            .bind(id)
+            .fetch_optional(&self.readers)
+            .await
+            .map_err(db_error)?
+            .map(|r| {
+                Ok(Connection {
+                    id: text(&r, "id")?.into(),
+                    provider: text(&r, "provider")?.into(),
+                    alias: text(&r, "alias")?.into(),
+                    generation: r.try_get("generation").map_err(db_error)?,
+                    lifecycle: decode_lifecycle(text(&r, "lifecycle")?)?,
+                })
+            })
+            .transpose()
+    }
+    async fn set_lifecycle(
+        &self,
+        context: &WriteContext,
+        state: Lifecycle,
+    ) -> Result<i64, StorageError> {
+        let mut tx = self.write().await?;
+        let next: Option<i64> = sqlx::query_scalar("UPDATE connections SET lifecycle=?,generation=generation+1 WHERE id=? AND generation=? RETURNING generation")
+            .bind(lifecycle(state)).bind(&context.connection_id).bind(context.generation)
+            .fetch_optional(&mut *tx).await.map_err(db_error)?;
+        let next = next.ok_or(StorageError::Conflict)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(next)
+    }
+    async fn save_snapshot(
+        &self,
+        context: &WriteContext,
+        snapshot: &Snapshot,
+        succeeded_at: DateTime<Utc>,
+    ) -> Result<i64, StorageError> {
+        nonempty(&snapshot.metric)?;
+        if snapshot.product_id.as_deref() == Some("") {
+            return Err(StorageError::Validation);
+        }
+        let (kind, amount, detail) = encode_value(&snapshot.value)?;
+        let mut tx = self.write().await?;
+        guard(&mut tx, context, Some(&snapshot.scope_id)).await?;
+        let next = revision(&mut tx).await?;
+        sqlx::query("INSERT INTO snapshots(scope_id,product_key,product_id,metric,value_kind,amount,unit_detail,provenance,observed_at,source_as_of,successful_sync_at,data_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope_id,product_key,metric) DO UPDATE SET value_kind=excluded.value_kind,amount=excluded.amount,unit_detail=excluded.unit_detail,provenance=excluded.provenance,observed_at=excluded.observed_at,source_as_of=excluded.source_as_of,successful_sync_at=excluded.successful_sync_at,data_revision=excluded.data_revision")
+            .bind(&snapshot.scope_id).bind(snapshot.product_id.as_deref().unwrap_or("")).bind(&snapshot.product_id).bind(&snapshot.metric)
+            .bind(kind).bind(amount).bind(detail).bind(snapshot.provenance.as_str()).bind(timestamp(snapshot.observed_at)?)
+            .bind(snapshot.source_as_of.map(timestamp).transpose()?).bind(timestamp(succeeded_at)?).bind(next)
+            .execute(&mut *tx).await.map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(next)
+    }
+    async fn snapshot(
+        &self,
+        scope_id: &str,
+        product_id: Option<&str>,
+        metric: &str,
+    ) -> Result<Option<CurrentValue>, StorageError> {
+        sqlx::query("SELECT * FROM snapshots WHERE scope_id=? AND product_key=? AND metric=?")
+            .bind(scope_id)
+            .bind(product_id.unwrap_or(""))
+            .bind(metric)
+            .fetch_optional(&self.readers)
+            .await
+            .map_err(db_error)?
+            .map(|r| {
+                Ok(CurrentValue {
+                    snapshot: Snapshot {
+                        scope_id: scope_id.into(),
+                        product_id: r.try_get("product_id").map_err(db_error)?,
+                        metric: metric.into(),
+                        value: decode_value(&r)?,
+                        provenance: provenance(text(&r, "provenance")?)?,
+                        observed_at: time(&r, "observed_at")?,
+                        source_as_of: r
+                            .try_get::<Option<String>, _>("source_as_of")
+                            .map_err(db_error)?
+                            .map(|s| s.parse().map_err(|_| StorageError::Unavailable))
+                            .transpose()?,
+                    },
+                    successful_sync_at: time(&r, "successful_sync_at")?,
+                    data_revision: r.try_get("data_revision").map_err(db_error)?,
+                })
+            })
+            .transpose()
+    }
+    async fn begin_candidate(
+        &self,
+        context: &WriteContext,
+        run_id: &str,
+        p: &Partition,
+    ) -> Result<(), StorageError> {
+        for key in [run_id, &p.scope_id, &p.dataset, &p.metric, &p.grain] {
+            nonempty(key)?;
+        }
+        if !matches!(
+            p.authority,
+            Provenance::Synthetic | Provenance::OfficialEvent | Provenance::OfficialBucket
+        ) || p.interval.start >= p.interval.end
+        {
+            return Err(StorageError::Validation);
+        }
+        let mut tx = self.write().await?;
+        guard(&mut tx, context, Some(&p.scope_id)).await?;
+        if !p.product_key.is_empty() {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM products WHERE id=? AND scope_id=?)",
+            )
+            .bind(&p.product_key)
+            .bind(&p.scope_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?;
+            if !exists {
+                return Err(StorageError::Conflict);
+            }
+        }
+        sqlx::query("INSERT INTO partitions(scope_id,product_key,dataset,metric,start_at,end_at,grain,dimensions,authority) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING")
+            .bind(&p.scope_id).bind(&p.product_key).bind(&p.dataset).bind(&p.metric).bind(timestamp(p.interval.start)?).bind(timestamp(p.interval.end)?).bind(&p.grain).bind(&p.dimensions).bind(p.authority.as_str())
+            .execute(&mut *tx).await.map_err(db_error)?;
+        let id = partition_id(&mut tx, p)
+            .await?
+            .ok_or(StorageError::Unavailable)?;
+        sqlx::query("INSERT INTO sync_runs(id,partition_id,generation,base_revision,state) VALUES(?,?,?,coalesce((SELECT data_revision FROM published_partitions WHERE partition_id=?),0),'incomplete')")
+            .bind(run_id).bind(id).bind(context.generation).bind(id).execute(&mut *tx).await.map_err(db_error)?;
+        tx.commit().await.map_err(db_error)
+    }
+    async fn stage_page(
+        &self,
+        context: &WriteContext,
+        run_id: &str,
+        previous_cursor: Option<&str>,
+        next_cursor: &str,
+        facts: &[Fact],
+    ) -> Result<(), StorageError> {
+        nonempty(next_cursor)?;
+        if previous_cursor == Some(next_cursor) || facts.len() > 1000 {
+            return Err(StorageError::Validation);
+        }
+        let mut tx = self.write().await?;
+        let r = run(&mut tx, context, run_id).await?;
+        if text(&r, "state")? != "incomplete"
+            || r.try_get::<Option<&str>, _>("cursor").map_err(db_error)? != previous_cursor
+        {
+            return Err(StorageError::Conflict);
+        }
+        let start = time(&r, "start_at")?;
+        let end = time(&r, "end_at")?;
+        for f in facts {
+            if f.interval.start < start
+                || f.interval.end > end
+                || f.interval.start >= f.interval.end
+                || matches!(f.value, Value::Tokens(TokenTotal(n)) if n > u64::MAX.into())
+            {
+                return Err(StorageError::Validation);
+            }
+            let (kind, event_id, key_start, key_end) = match &f.identity {
+                FactIdentity::Event(id) => {
+                    nonempty(id)?;
+                    if text(&r, "authority")? == "official_bucket" {
+                        return Err(StorageError::Validation);
+                    }
+                    ("event", id.as_str(), String::new(), String::new())
+                }
+                FactIdentity::Bucket => {
+                    if text(&r, "authority")? == "official_event" {
+                        return Err(StorageError::Validation);
+                    }
+                    (
+                        "bucket",
+                        "",
+                        timestamp(f.interval.start)?,
+                        timestamp(f.interval.end)?,
+                    )
+                }
+            };
+            let (value_kind, amount, detail) = encode_value(&f.value)?;
+            sqlx::query("INSERT INTO staged_facts(run_id,kind,event_id,key_start,key_end,start_at,end_at,value_kind,amount,unit_detail,source_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,kind,event_id,key_start,key_end) DO UPDATE SET start_at=excluded.start_at,end_at=excluded.end_at,value_kind=excluded.value_kind,amount=excluded.amount,unit_detail=excluded.unit_detail,source_revision=excluded.source_revision")
+                .bind(run_id).bind(kind).bind(event_id).bind(key_start).bind(key_end).bind(timestamp(f.interval.start)?).bind(timestamp(f.interval.end)?)
+                .bind(value_kind).bind(amount).bind(detail).bind(&f.source_revision).execute(&mut *tx).await.map_err(db_error)?;
+        }
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM staged_facts WHERE run_id=?")
+            .bind(run_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        if count > 100_000 {
+            return Err(StorageError::Validation);
+        }
+        sqlx::query("UPDATE sync_runs SET cursor=? WHERE id=?")
+            .bind(next_cursor)
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)
+    }
+    async fn candidate_cursor(&self, run_id: &str) -> Result<Option<String>, StorageError> {
+        sqlx::query_scalar("SELECT cursor FROM sync_runs WHERE id=?")
+            .bind(run_id)
+            .fetch_optional(&self.readers)
+            .await
+            .map_err(db_error)?
+            .ok_or(StorageError::Conflict)
+    }
+    async fn complete_candidate(
+        &self,
+        context: &WriteContext,
+        run_id: &str,
+        expected_cursor: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.write().await?;
+        let r = run(&mut tx, context, run_id).await?;
+        if text(&r, "state")? != "incomplete"
+            || r.try_get::<Option<&str>, _>("cursor").map_err(db_error)? != expected_cursor
+        {
+            return Err(StorageError::Conflict);
+        }
+        sqlx::query("UPDATE sync_runs SET state='complete' WHERE id=?")
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)
+    }
+    async fn publish(
+        &self,
+        context: &WriteContext,
+        run_id: &str,
+        succeeded_at: DateTime<Utc>,
+        watermark: &str,
+    ) -> Result<i64, StorageError> {
+        let mut tx = self.write().await?;
+        let r = run(&mut tx, context, run_id).await?;
+        let id: i64 = r.try_get("partition_id").map_err(db_error)?;
+        if text(&r, "state")? == "published" {
+            return r.try_get("published_revision").map_err(db_error);
+        }
+        if text(&r, "state")? != "complete" {
+            return Err(StorageError::Conflict);
+        }
+        let current: i64 = sqlx::query_scalar("SELECT coalesce((SELECT data_revision FROM published_partitions WHERE partition_id=?),0)").bind(id).fetch_one(&mut *tx).await.map_err(db_error)?;
+        if current != r.try_get::<i64, _>("base_revision").map_err(db_error)? {
+            return Err(StorageError::Conflict);
+        }
+        // Never add overlapping event/bucket authorities (including different grains).
+        let overlap: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM published_partitions pp JOIN partitions p ON p.id=pp.partition_id WHERE p.id<>? AND p.scope_id=? AND p.product_key=? AND p.dataset=? AND p.metric=? AND p.dimensions=? AND p.start_at<? AND p.end_at>?)")
+            .bind(id).bind(text(&r, "scope_id")?).bind(text(&r, "product_key")?).bind(text(&r, "dataset")?).bind(text(&r, "metric")?).bind(text(&r, "dimensions")?).bind(text(&r, "end_at")?).bind(text(&r, "start_at")?)
+            .fetch_one(&mut *tx).await.map_err(db_error)?;
+        if overlap {
+            return Err(StorageError::Conflict);
+        }
+        sqlx::query("DELETE FROM usage_facts WHERE partition_id=?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        // A cross-partition event correction hits event_identity and rolls back, never duplicates.
+        sqlx::query("INSERT INTO usage_facts SELECT ?,?,?,?,kind,event_id,key_start,key_end,start_at,end_at,value_kind,amount,unit_detail,source_revision FROM staged_facts WHERE run_id=?")
+            .bind(id).bind(text(&r, "scope_id")?).bind(text(&r, "dataset")?).bind(text(&r, "metric")?).bind(run_id).execute(&mut *tx).await.map_err(db_error)?;
+        let next = revision(&mut tx).await?;
+        sqlx::query("INSERT INTO published_partitions VALUES(?,?,?,?,?) ON CONFLICT(partition_id) DO UPDATE SET run_id=excluded.run_id,data_revision=excluded.data_revision,successful_sync_at=excluded.successful_sync_at,watermark=excluded.watermark")
+            .bind(id).bind(run_id).bind(next).bind(timestamp(succeeded_at)?).bind(watermark).execute(&mut *tx).await.map_err(db_error)?;
+        sqlx::query("INSERT INTO coverage_intervals VALUES(?,'UTC','complete',NULL,?) ON CONFLICT(partition_id) DO UPDATE SET status='complete',reason=NULL,data_revision=excluded.data_revision")
+            .bind(id).bind(next).execute(&mut *tx).await.map_err(db_error)?;
+        sqlx::query("INSERT INTO sync_checkpoints VALUES(?,?,?,?) ON CONFLICT(partition_id) DO UPDATE SET run_id=excluded.run_id,watermark=excluded.watermark,data_revision=excluded.data_revision")
+            .bind(id).bind(run_id).bind(watermark).bind(next).execute(&mut *tx).await.map_err(db_error)?;
+        sqlx::query("UPDATE sync_runs SET state='published',published_revision=? WHERE id=?")
+            .bind(next)
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        sqlx::query("DELETE FROM staged_facts WHERE run_id=?")
+            .bind(run_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(next)
+    }
+    async fn published(
+        &self,
+        partition: &Partition,
+    ) -> Result<Option<PublishedPartition>, StorageError> {
+        // Header and facts must be from the same read snapshot during replacement.
+        let mut tx = self.readers.begin().await.map_err(db_error)?;
+        let Some(id) = partition_id(&mut tx, partition).await? else {
+            return Ok(None);
+        };
+        let Some(row) = sqlx::query("SELECT * FROM published_partitions WHERE partition_id=?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_error)?
+        else {
+            return Ok(None);
+        };
+        let facts = sqlx::query("SELECT * FROM usage_facts WHERE partition_id=? ORDER BY kind,event_id,key_start,key_end").bind(id).fetch_all(&mut *tx).await.map_err(db_error)?.into_iter().map(fact).collect::<Result<_, _>>()?;
+        Ok(Some(PublishedPartition {
+            facts,
+            data_revision: row.try_get("data_revision").map_err(db_error)?,
+            successful_sync_at: time(&row, "successful_sync_at")?,
+            watermark: text(&row, "watermark")?.into(),
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests;

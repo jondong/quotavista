@@ -8,7 +8,7 @@ Persist synthetic monitoring state safely across restarts without confusing cand
 
 [Requirements 0.9](../../../docs/requirements.md), [Architecture 0.4](../../../docs/architecture.md), [development plan](../../../docs/development-plan.md), and [traceability](../../../docs/traceability.md).
 
-Dependencies: [P1-02](../10-18-p1-02-contracts/prd.md)
+Dependencies: [P1-02](../archive/2026-10/10-18-p1-02-contracts/prd.md)
 
 Acceptance mapping: A09, A16, A19, A22, A23. These are prototype contributions, not closure of full-release acceptance.
 
@@ -20,10 +20,10 @@ Acceptance mapping: A09, A16, A19, A22, A23. These are prototype contributions, 
 
 ## Acceptance criteria
 
-- [ ] Fresh migration, reopen, and forced transaction failure preserve committed values and exact numeric strings; failed writes do not advance successful sync time.
-- [ ] A candidate page and its cursor commit together. An interrupted candidate does not overwrite or add to its previous published partition.
-- [ ] A complete authoritative replacement removes facts absent from the replacement; repeated publication is idempotent. Event identity remains stable when a timestamp is corrected.
-- [ ] Tests confirm settings for every pooled connection, bounded busy errors, migration failure behavior, and the selected linked SQLite version.
+- [x] Fresh migration, reopen, and forced transaction failure preserve committed values and exact numeric strings; failed writes do not advance successful sync time.
+- [x] A candidate page and its cursor commit together. An interrupted candidate does not overwrite or add to its previous published partition.
+- [x] A complete authoritative replacement removes facts absent from the replacement; repeated publication is idempotent. Event identity remains stable when a timestamp is corrected.
+- [x] Tests confirm settings for every pooled connection, bounded busy errors, migration failure behavior, and the selected linked SQLite version.
 
 ## Out of scope
 
@@ -31,4 +31,4 @@ No provider pagination/backfill, full 90-day retention, managed backup/restore i
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Implemented and synthetic-tested against the reviewed baseline. The evidence for all four task criteria is recorded in [validation.md](validation.md); full release criteria remain Pending. Final branch validation, PR review, and green PR CI are required before handoff. The task remains active and must not be archived by this worker.

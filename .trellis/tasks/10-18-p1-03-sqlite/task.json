@@ -3,7 +3,7 @@
   "name": "p1-03-sqlite",
   "title": "P1-03: Implement SQLite persistence and candidate publication",
   "description": "Persist synthetic monitoring state safely across restarts without confusing candidates with verified history.",
-  "status": "planning",
+  "status": "review",
   "dev_type": "backend",
   "scope": null,
   "package": null,
@@ -12,7 +12,7 @@
   "assignee": "jondong",
   "createdAt": "2026-10-18",
   "completedAt": null,
-  "branch": null,
+  "branch": "jondong/p1-03-sqlite",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,
@@ -20,8 +20,13 @@
   "subtasks": [],
   "children": [],
   "parent": "10-18-phase-one-prototype",
-  "relatedFiles": [],
-  "notes": "Dependency metadata is advisory; verify predecessor completion before task.py start. Planned, not implemented.",
+  "relatedFiles": [
+    "crates/core/src/storage.rs",
+    "crates/infrastructure/migrations/0001_persistence.sql",
+    "crates/infrastructure/src/sqlite.rs",
+    "crates/infrastructure/src/sqlite/tests.rs"
+  ],
+  "notes": "P1-02 merged and archived dependency verified. Backend SQLite adapter and synthetic TempDir fault fixtures implemented; all four task acceptance criteria and all local CI commands pass. Release/native/provider/recovery gaps remain explicit in validation.md. Pending branch PR and green CI; do not merge or archive in this worker.",
   "meta": {
     "phase": 1,
     "plan_id": "P1-03",

@@ -2,5 +2,6 @@
 pub mod calendar;
 pub mod domain;
 pub mod number;
+pub mod storage;
 
 pub use domain::Provenance;

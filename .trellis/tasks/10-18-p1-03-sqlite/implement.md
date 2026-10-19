@@ -2,21 +2,21 @@
 
 ## Entry checks
 
-- [ ] Read the PRD, design, relevant specs, and reviewed baseline.
-- [ ] Confirm predecessor tasks are completed, including archived records: [P1-02](../10-18-p1-02-contracts/prd.md)
-- [ ] Review the plan against any newer decisions and existing user authorization before activation.
+- [x] Read the PRD, design, relevant specs, and reviewed baseline.
+- [x] Confirm predecessor tasks are completed, including archived records: [P1-02](../archive/2026-10/10-18-p1-02-contracts/prd.md)
+- [x] Review the plan against any newer decisions and existing user authorization before activation.
 
 ## Work sequence
 
-- [ ] Create migrations and repository ports/adapters with exact numeric encodings.
-- [ ] Implement settings/current-state persistence and candidate/publication operations.
-- [ ] Fault-test rollback, reopen, duplicate/corrected records, and partial replacement; integrate checks.
+- [x] Create migrations and repository ports/adapters with exact numeric encodings.
+- [x] Implement settings/current-state persistence and candidate/publication operations.
+- [x] Fault-test rollback, reopen, duplicate/corrected records, and partial replacement; integrate checks.
 
 ## Validation and review
 
-- [ ] Temporary-database integration tests for rollback, restart, publication, removed facts, and pool settings.
-- [ ] Workspace tests and SQLx migration validation using the reproducible setup.
-- [ ] Record evidence for each PRD criterion, review the complete diff, and update only affected specs/traceability.
+- [x] Temporary-database integration tests for rollback, restart, publication, removed facts, and pool settings.
+- [x] Workspace tests and SQLx migration validation using the reproducible setup.
+- [x] Record evidence for each PRD criterion, review the complete diff, and update only affected specs/traceability.
 - [ ] Run `git diff --check`; commit with an English message before archiving.
 
 ## Recovery and completion
