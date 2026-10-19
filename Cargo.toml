@@ -1,12 +1,13 @@
 # Cargo workspace for the QuotaVista prototype.
 # Dependency direction: desktop composes providers and infrastructure; both
-# depend on core; core depends on nothing. scripts/check-core-boundaries.sh
+# depend on core; core uses only calendar libraries. scripts/check-core-boundaries.sh
 # enforces the core boundary in CI.
 [workspace]
 resolver = "2"
 members = [
     "apps/desktop/src-tauri",
     "crates/core",
+    "crates/contracts",
     "crates/infrastructure",
     "crates/providers",
 ]

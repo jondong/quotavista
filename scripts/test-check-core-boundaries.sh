@@ -33,7 +33,7 @@ run_case() {
     echo "ok   $name"
 }
 
-# Case 1: the current tree has a dependency-free core.
+# Case 1: the current tree has a calendar-only core.
 run_case "clean core passes" 0 "$root"
 
 # Case 2: a core with a forbidden workspace dependency must fail.
@@ -63,6 +63,26 @@ quotavista-providers = { path = "../providers" }
 EOF
 : > "$ws/crates/core/src/lib.rs"
 run_case "forbidden dependency fails" 1 "$ws"
+
+# Disabled optional and inactive-target dependencies must not bypass the gate.
+cat > "$ws/crates/core/Cargo.toml" <<'EOF'
+[package]
+name = "quotavista-core"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+quotavista-providers = { path = "../providers", optional = true }
+EOF
+run_case "optional forbidden dependency fails" 1 "$ws"
+cat > "$ws/crates/core/Cargo.toml" <<'EOF'
+[package]
+name = "quotavista-core"
+version = "0.0.0"
+edition = "2021"
+[target.'cfg(target_os = "none")'.dependencies]
+quotavista-providers = { path = "../providers" }
+EOF
+run_case "inactive target forbidden dependency fails" 1 "$ws"
 
 # Case 3: a workspace Cargo cannot parse must fail, preserving Cargo's error.
 ws="$tmp/broken"

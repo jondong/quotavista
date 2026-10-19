@@ -8,7 +8,7 @@ Make accounting, time, lifecycle, and transport semantics explicit before connec
 
 [Requirements 0.9](../../../docs/requirements.md), [Architecture 0.4](../../../docs/architecture.md), [development plan](../../../docs/development-plan.md), and [traceability](../../../docs/traceability.md).
 
-Dependencies: [P1-01](../10-18-p1-01-workspace/prd.md)
+Dependencies: [P1-01](../archive/2026-10/10-18-p1-01-workspace/prd.md)
 
 Acceptance mapping: A05, A13, A14, A17, A18, A22, A25. These are prototype contributions, not closure of full-release acceptance.
 
@@ -20,10 +20,10 @@ Acceptance mapping: A05, A13, A14, A17, A18, A22, A25. These are prototype contr
 
 ## Acceptance criteria
 
-- [ ] Token facts support u64 and checked u128 totals; DTO round trips preserve counts above JavaScript safe integers. Decimal precision limits reject excess precision without rounding.
-- [ ] Tests distinguish zero, null, unsupported, partial coverage, stale values, and dataset failure. Cached/reasoning subcounts are not implicitly added twice.
-- [ ] DST transitions, Monday boundaries, reversed/future/oversized ranges, unknown zones, and current-day clipping have meaningful tests.
-- [ ] A mechanically checked Rust/TypeScript contract includes all command names, locale preference, and safe typed errors without serializing domain types directly.
+- [x] Token facts support u64 and checked u128 totals; DTO round trips preserve counts above JavaScript safe integers. Decimal precision limits reject excess precision without rounding.
+- [x] Tests distinguish zero, null, unsupported, partial coverage, stale values, and dataset failure. Cached/reasoning subcounts are not implicitly added twice.
+- [x] DST transitions, Monday boundaries, reversed/future/oversized ranges, unknown zones, and current-day clipping have meaningful tests.
+- [x] A mechanically checked Rust/TypeScript contract includes all command names, locale preference, and safe typed errors without serializing domain types directly.
 
 ## Out of scope
 
@@ -31,4 +31,4 @@ No live endpoint schema, universal token availability assumption, complete stati
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Implemented and validated with synthetic-only fixtures; criterion-level evidence and commands are recorded in [validation.md](validation.md). Awaiting maintainer PR review. This task is not archived, and its prototype evidence does not close full-release acceptance.

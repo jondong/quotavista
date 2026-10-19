@@ -7,5 +7,5 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
-# Intentionally empty. The core crate must stay dependency-free in Phase 1;
-# scripts/check-core-boundaries.sh fails the build if this changes.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
