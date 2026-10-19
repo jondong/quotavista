@@ -1,0 +1,15 @@
+[package]
+name = "quotavista-contracts"
+description = "Versioned transport definitions, explicit domain mappings, and TypeScript generation"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+quotavista-core = { path = "../core" }
+serde = { version = "1", features = ["derive"] }
+ts-rs = "12"
+
+[dev-dependencies]
+serde_json = "1"

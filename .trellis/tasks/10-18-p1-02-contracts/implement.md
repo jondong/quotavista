@@ -2,22 +2,22 @@
 
 ## Entry checks
 
-- [ ] Read the PRD, design, relevant specs, and reviewed baseline.
-- [ ] Confirm predecessor tasks are completed, including archived records: [P1-01](../10-18-p1-01-workspace/prd.md)
-- [ ] Review the plan against any newer decisions and existing user authorization before activation.
+- [x] Read the PRD, design, relevant specs, and reviewed baseline.
+- [x] Confirm predecessor tasks are completed, including archived records: [P1-01](../archive/2026-10/10-18-p1-01-workspace/prd.md)
+- [x] Review the plan against any newer decisions and existing user authorization before activation.
 
 ## Work sequence
 
-- [ ] Define domain primitives and validation rules from architecture sections on data semantics.
-- [ ] Implement range helpers and representative numeric/time tests.
-- [ ] Define transport mappings and generate/check TypeScript; add a drift check to the P1-01 workflow.
+- [x] Define domain primitives and validation rules from architecture sections on data semantics.
+- [x] Implement range helpers and representative numeric/time tests.
+- [x] Define transport mappings and generate/check TypeScript; add a drift check to the P1-01 workflow.
 
 ## Validation and review
 
-- [ ] Rust unit tests for extreme values, invalid decimals, time boundaries, and unavailable states.
-- [ ] Contract generation/check leaves a clean diff; frontend type check passes.
-- [ ] Record evidence for each PRD criterion, review the complete diff, and update only affected specs/traceability.
-- [ ] Run `git diff --check`; commit with an English message before archiving.
+- [x] Rust unit tests for extreme values, invalid decimals, time boundaries, and unavailable states.
+- [x] Contract generation/check leaves a clean diff; frontend type check passes.
+- [x] Record evidence for each PRD criterion, review the complete diff, and update only affected specs/traceability.
+- [x] Run `git diff --check`; commit with an English message before archiving.
 
 ## Recovery and completion
 

@@ -4,7 +4,7 @@ Date: 2026-10-18
 
 Baselines: Requirements 0.9 and Architecture 0.4
 
-This mapping connects required outcomes to planned components and evidence. Every implementation status is Pending; the P1-01 scaffold (Cargo workspace, minimal synthetic-data desktop window, reproducible checks) is a prototype contribution toward A11/A12/A24, not closure of any criterion. A document review is not a substitute for the evidence listed here.
+This mapping connects required outcomes to planned components and evidence. All release acceptance statuses remain Pending. P1-02 adds synthetic-tested numeric/calendar primitives and generated transport contracts (see the prototype evidence below); these do not close any full-release criterion. The P1-01 scaffold (Cargo workspace, minimal synthetic-data desktop window, reproducible checks) is a prototype contribution toward A11/A12/A24, not closure of any criterion. A document review is not a substitute for the evidence listed here.
 
 Phases refer to the [development plan](development-plan.md). Requirements and design review findings are recorded in the [requirements review](reviews/requirements-review.md) and [architecture review](reviews/architecture-review.md).
 
@@ -35,6 +35,15 @@ Phases refer to the [development plan](development-plan.md). Requirements and de
 | A23 | Async workers, writer queue, and benchmarks | UI navigation during slow work; 100,000-fact local query benchmark; disk-full and migration interruption | 1, 3, 5 | Pending |
 | A24 | Repository documentation policy | English documentation and diagram labels, valid links, consistent version references, and patch-format checks | Documentation and 5 | Pending release audit |
 | A25 | Bundled locale catalogs and UI settings | en/zh-CN key parity, initial selection, immediate switch, persisted preference, fallback, accessible labels, formatted dates/numbers, notification templates | 1, 4, 5 | Pending runtime evidence |
+
+## P1-02 prototype evidence
+
+Scope: the P1-02 task branch on macOS arm64, Rust 1.99.1, using only synthetic in-memory values and throwaway generator/boundary fixtures. No production, business, or personal database was opened. Reproducible commands and criterion-level evidence are recorded in [the task validation record](../.trellis/tasks/10-18-p1-02-contracts/validation.md).
+
+- A05/A17: core and contract tests preserve zero versus null, unsupported versus missing, partial coverage, stale measurements, query failure, and original source timestamps independently. No UI or persistence behavior is claimed.
+- A13: fake-clock tests cover 23/25-hour DST days, Monday anchors, inclusive dates, half-open bounds, current-day clipping including empty effective time at midnight, 366-day limits, invalid/unknown/future/reversed ranges, and whole-source-bucket compatibility. Full statistics aggregation remains deferred.
+- A14: `u64` token facts, checked `u128` totals, non-double-counted detail subcounts, exact decimal precision and same-currency arithmetic are tested; serde strings preserve values above JavaScript's safe integer range through `u128::MAX`.
+- A18/A22/A25: eleven typed command request/result contracts, revision strings, operation states, safe errors, bounded input validation, and `en`/`zh-CN` preference are generated into TypeScript and checked for drift. Runtime lifecycle recovery, authorization, I/O bounds, and bilingual UI remain pending in their own tasks.
 
 ## Release evidence rules
 

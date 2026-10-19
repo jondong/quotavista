@@ -2,7 +2,7 @@
 
 Use [acceptance traceability](../../../docs/traceability.md) and the task's own observable criteria. A passing document check or fixture test does not establish a provider integration or native OS behavior.
 
-Once the workspace exists, task P1-01 must establish reproducible formatting, Clippy, test, build, and contract-check commands. Until then, do not report those commands as passing.
+P1-01 established workspace checks; P1-02 adds the generated-contract gate. Run `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace`, `./scripts/check-core-boundaries.sh`, and `./scripts/test-check-core-boundaries.sh`. On hosts without desktop system libraries, CI excludes `quotavista-desktop` from Linux Clippy/tests and checks the full workspace on macOS. Run `cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check` without regenerating first when verifying committed contract freshness; the check must fail for missing or modified output. Regeneration is a separate intentional step.
 
 Prioritize meaningful tests for overflow, decimal precision, DST boundaries, missing versus zero, transaction rollback, candidate publication, stale generations, crash recovery, and session-only restart. Use injected clocks, synthetic provider identities, temporary application directories, and failure-capable fake stores. Never read a contributor's real credentials in tests.
 

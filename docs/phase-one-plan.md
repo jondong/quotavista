@@ -18,8 +18,8 @@ The [parent milestone](../.trellis/tasks/10-18-phase-one-prototype/prd.md) owns 
 
 | Task | Deliverable | Prerequisites | Initial state |
 | --- | --- | --- | --- |
-| [P1-01](../.trellis/tasks/10-18-p1-01-workspace/prd.md) | Scaffold the desktop workspace and reproducible checks | None | Planning |
-| [P1-02](../.trellis/tasks/10-18-p1-02-contracts/prd.md) | Define domain primitives and checked IPC contracts | P1-01 | Planning |
+| [P1-01](../.trellis/tasks/archive/2026-10/10-18-p1-01-workspace/prd.md) | Scaffold the desktop workspace and reproducible checks | None | Completed and archived; PR #1 merged |
+| [P1-02](../.trellis/tasks/10-18-p1-02-contracts/prd.md) | Define domain primitives and checked IPC contracts | P1-01 | Implemented with synthetic fixtures; awaiting PR review |
 | [P1-03](../.trellis/tasks/10-18-p1-03-sqlite/prd.md) | Implement SQLite persistence and candidate publication | P1-02 | Planning |
 | [P1-04](../.trellis/tasks/10-18-p1-04-recovery-fences/prd.md) | Establish lifecycle journals and stale-result fences | P1-03 | Planning |
 | [P1-05](../.trellis/tasks/10-18-p1-05-secret-stores/prd.md) | Implement native and session-only secret storage | P1-04 | Planning |

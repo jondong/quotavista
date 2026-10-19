@@ -44,6 +44,8 @@ jobs:
         run: cargo clippy --locked --workspace --exclude quotavista-desktop --all-targets -- -D warnings
       - name: Rust tests (workspace crates except desktop)
         run: cargo test --locked --workspace --exclude quotavista-desktop
+      - name: Generated IPC contract drift
+        run: cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check
       - name: Frontend install (lockfile)
         run: npm ci
         working-directory: apps/desktop
