@@ -33,10 +33,7 @@ export default function ConnectionsScreen() {
       <h2 id="connections-heading">{t("connections.heading")}</h2>
 
       <h3>{t("connections.list.heading")}</h3>
-      {connections.length === 0 ? (
-        <p className="empty">{t("connections.empty")}</p>
-      ) : (
-        <table>
+      <table>
           <thead>
             <tr>
               <th scope="col">{t("connections.alias.label")}</th>
@@ -58,7 +55,6 @@ export default function ConnectionsScreen() {
             ))}
           </tbody>
         </table>
-      )}
 
       <div>
         <label htmlFor="connection-alias">{t("connections.alias.label")}</label>

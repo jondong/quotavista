@@ -31,6 +31,20 @@ body {
   top: 0.5rem;
 }
 
+/* Off-screen but still announced by assistive technology. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 .app-header {
   border-bottom: 1px solid #8888;
   padding: 1rem 2rem 0;
@@ -122,7 +136,7 @@ dd {
 }
 
 .note {
-  color: #888;
+  color: #595959;
   font-size: 0.9rem;
 }
 
@@ -141,7 +155,7 @@ dd {
 }
 
 .chart figcaption {
-  color: #888;
+  color: #595959;
   font-size: 0.9rem;
   margin-top: 0.5rem;
 }

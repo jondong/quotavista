@@ -86,8 +86,16 @@ export function formatDateTime(instant: Date, locale: Locale, zone: string): str
 // versioned ui_locale setting with the shared optimistic revision check.
 const STORAGE_KEY = "quotavista.ui_locale";
 
-function initialLocale(): Locale {
-  const stored = window.localStorage.getItem(STORAGE_KEY);
+// Reads are failure-isolated: a broken storage engine falls back to system
+// detection instead of taking down the shell. Exported for the pre-paint
+// document language sync in main.tsx.
+export function initialLocale(): Locale {
+  let stored: string | null = null;
+  try {
+    stored = window.localStorage.getItem(STORAGE_KEY);
+  } catch {
+    stored = null;
+  }
   if (stored === "en" || stored === "zh-CN") return stored;
   return detectLocale(window.navigator.languages ?? [window.navigator.language]);
 }
@@ -107,7 +115,12 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(initialLocale);
   const setLocale = useCallback((next: Locale) => {
     setLocaleState(next);
-    window.localStorage.setItem(STORAGE_KEY, next);
+    // The in-memory switch always applies; a failed write must not block it.
+    try {
+      window.localStorage.setItem(STORAGE_KEY, next);
+    } catch {
+      // shortcut: silent until P1-10 persists via the versioned setting
+    }
   }, []);
   useEffect(() => {
     document.documentElement.lang = locale;

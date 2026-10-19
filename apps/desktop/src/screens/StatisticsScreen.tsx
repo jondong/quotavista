@@ -37,8 +37,13 @@ export default function StatisticsScreen() {
 
       <h3>{t("statistics.series.heading")}</h3>
       {hasData ? (
-        <figure className="chart" role="img" aria-label={t("statistics.chart.label")}>
-          <svg viewBox="0 0 700 200" aria-hidden="true">
+        <figure className="chart">
+          <svg
+            viewBox="0 0 700 200"
+            role="img"
+            aria-label={t("statistics.chart.label")}
+            aria-describedby="statistics-chart-description"
+          >
             {DEMO_SERIES.map((value, index) => {
               const height = (value / MAX_VALUE) * 180;
               return (
@@ -53,7 +58,7 @@ export default function StatisticsScreen() {
               );
             })}
           </svg>
-          <figcaption>
+          <figcaption id="statistics-chart-description">
             {t("statistics.chart.description")} ({t("statistics.legend.tokens")}:{" "}
             {DEMO_SERIES.map((value) => formatTokens(String(value))).join(", ")})
           </figcaption>

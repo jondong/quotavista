@@ -42,8 +42,7 @@ describe("bilingual shell", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Overview" })).not.toBeNull();
     // The synthetic-data banner marks all demo content as non-real.
-    const banner = screen.getByRole("status");
-    expect(banner.textContent).toContain("Prototype demo");
+    expect(screen.getByText(/Prototype demo/i).textContent).toContain("synthetic data only");
     await waitFor(() => {
       expect(screen.getByText("Development scaffold running without provider credentials.")).not
         .toBeNull();
@@ -55,6 +54,11 @@ describe("bilingual shell", () => {
     render(<App />);
     expect((await screen.findByRole("heading", { name: "概览" })).textContent).toContain("概览");
     expect(document.documentElement.lang).toBe("zh-CN");
+    // Backend status prose maps to a catalog key: the known scaffold sentence
+    // renders in Simplified Chinese, not the English source string.
+    expect(
+      await screen.findByText("开发脚手架正在运行，未配置任何服务商凭据。"),
+    ).not.toBeNull();
   });
 
   it("keeps English for a Traditional Chinese system locale", async () => {
@@ -87,8 +91,18 @@ describe("bilingual shell", () => {
     const zhRange = screen.getByLabelText("日期范围") as HTMLSelectElement;
     expect(zhRange.value).toBe("last30");
     expect(screen.getByRole("img", { name: "合成每日 token 消耗柱状图" })).not.toBeNull();
+    // The chart description is wired into the accessibility tree via
+    // aria-describedby, not just visually rendered.
+    const chart = screen.getByRole("img", { name: "合成每日 token 消耗柱状图" });
+    const describedBy = chart.getAttribute("aria-describedby");
+    expect(describedBy).toBe("statistics-chart-description");
+    expect(document.getElementById("statistics-chart-description")!.textContent).toContain(
+      "七个合成日合计",
+    );
     expect(document.documentElement.lang).toBe("zh-CN");
     expect(window.localStorage.getItem("quotavista.ui_locale")).toBe("zh-CN");
+    // The shell-level live region announces the header switch.
+    expect(screen.getByText("界面语言已切换为 简体中文")).not.toBeNull();
 
     // Connections: draft alias survives a language switch.
     fireEvent.click(screen.getByRole("button", { name: "连接" }));
@@ -98,6 +112,7 @@ describe("bilingual shell", () => {
     expect((screen.getByLabelText("Connection alias") as HTMLInputElement).value).toBe(
       "Work account",
     );
+    expect(screen.getByText("Interface language changed to English")).not.toBeNull();
   });
 
   it("renders unknown values as unknown, never as zero", async () => {
@@ -127,5 +142,40 @@ describe("bilingual shell", () => {
       target: { value: "none" },
     });
     expect(screen.getByText(/No consumption recorded for this range/i)).not.toBeNull();
+  });
+
+  it("re-translates the backend status message after a language switch", async () => {
+    setNavigatorLanguages(["en-US"]);
+    render(<App />);
+    expect(
+      await screen.findByText("Development scaffold running without provider credentials."),
+    ).not.toBeNull();
+    fireEvent.change(headerLanguageSelect(), { target: { value: "zh-CN" } });
+    expect(screen.getByText("开发脚手架正在运行，未配置任何服务商凭据。")).not.toBeNull();
+    expect(
+      screen.queryByText("Development scaffold running without provider credentials."),
+    ).toBeNull();
+  });
+
+  it("falls back to system detection when the locale store read fails", async () => {
+    const getItem = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => { throw new Error("storage blocked"); });
+    setNavigatorLanguages(["zh-CN"]);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "概览" })).not.toBeNull();
+    getItem.mockRestore();
+  });
+
+  it("still switches language in memory when the locale store write fails", async () => {
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => { throw new Error("quota exceeded"); });
+    setNavigatorLanguages(["en-US"]);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Overview" })).not.toBeNull();
+    fireEvent.change(headerLanguageSelect(), { target: { value: "zh-CN" } });
+    expect(screen.getByRole("heading", { name: "概览" })).not.toBeNull();
+    setItem.mockRestore();
   });
 });

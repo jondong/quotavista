@@ -1,5 +1,5 @@
-import { useState } from "react";
-import LanguageSelect from "./components/LanguageSelect";
+import { useEffect, useRef, useState } from "react";
+import LanguageSelect, { LOCALE_LABEL_KEYS } from "./components/LanguageSelect";
 import { I18nProvider, useI18n, type MessageKey } from "./i18n";
 import OverviewScreen from "./screens/OverviewScreen";
 import StatisticsScreen from "./screens/StatisticsScreen";
@@ -19,7 +19,15 @@ const SCREENS = [
 type ScreenId = (typeof SCREENS)[number]["id"];
 
 function Shell() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  // Announce every real language change, including back to the initial one.
+  const previousLocaleRef = useRef(locale);
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => {
+    if (previousLocaleRef.current === locale) return;
+    previousLocaleRef.current = locale;
+    setAnnouncement(t("a11y.langSelected", { language: t(LOCALE_LABEL_KEYS[locale]) }));
+  }, [locale, t]);
   // Screen selection is frontend-owned display state; language switching
   // re-renders in place and never resets it.
   const [screen, setScreen] = useState<ScreenId>("overview");
@@ -40,6 +48,10 @@ function Shell() {
           {t("app.syntheticBanner")}
         </p>
       </header>
+      {/* Shell-level live region: header switches announce everywhere, not just on Settings. */}
+      <p role="status" aria-live="polite" className="visually-hidden">
+        {announcement}
+      </p>
       <nav aria-label={t("nav.region")}>
         <ul className="nav-list">
           {SCREENS.map((entry) => (
@@ -56,7 +68,7 @@ function Shell() {
           ))}
         </ul>
       </nav>
-      <main id="main-content" className="container">
+      <main id="main-content" className="container" tabIndex={-1}>
         {screen === "overview" && <OverviewScreen />}
         {screen === "statistics" && <StatisticsScreen />}
         {screen === "connections" && <ConnectionsScreen />}

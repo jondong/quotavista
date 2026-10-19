@@ -18,6 +18,7 @@ describe("first-launch locale detection", () => {
     expect(isExplicitSimplifiedChinese("zh")).toBe(false);
     expect(isExplicitSimplifiedChinese("zh-TW")).toBe(false);
     expect(isExplicitSimplifiedChinese("zh-HK")).toBe(false);
+    expect(isExplicitSimplifiedChinese("zh-MO")).toBe(false);
     expect(isExplicitSimplifiedChinese("zh-Hant")).toBe(false);
     expect(isExplicitSimplifiedChinese("zh-Hant-CN")).toBe(false);
     expect(isExplicitSimplifiedChinese("en-CN")).toBe(false);

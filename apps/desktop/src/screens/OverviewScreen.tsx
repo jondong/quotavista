@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useI18n } from "../i18n";
+import { useI18n, type MessageKey } from "../i18n";
 
 interface SyntheticStatus {
   provenance: string;
@@ -11,6 +11,12 @@ interface SyntheticStatus {
 
 // Synthetic demo snapshot. Unknown stays unknown (never rendered as zero);
 // exact strings and the independent reporting zone flow through formatters.
+// Application-owned prose from the backend maps to catalog keys so both
+// locales read naturally; identifiers (provenance, store) stay untranslated.
+const STATUS_MESSAGES: Record<string, MessageKey> = {
+  "Development scaffold running without provider credentials.":
+    "overview.status.scaffoldMessage",
+};
 const DEMO_REPORTING_ZONE = "UTC";
 const DEMO_SNAPSHOT = {
   quotaRemaining: null,
@@ -49,7 +55,11 @@ export default function OverviewScreen() {
         <dt>{t("overview.status.store")}</dt>
         <dd>{status.store}</dd>
         <dt>{t("overview.status.message")}</dt>
-        <dd>{status.message}</dd>
+        <dd>
+          {STATUS_MESSAGES[status.message]
+            ? t(STATUS_MESSAGES[status.message])
+            : status.message}
+        </dd>
       </dl>
 
       <h3>{t("overview.metrics.heading")}</h3>
