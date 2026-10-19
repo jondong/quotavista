@@ -587,8 +587,9 @@ async fn pooled_settings_linked_version_and_bounded_busy_error() {
         .await;
     let elapsed = started.elapsed();
     assert_eq!(result, Err(StorageError::Unavailable));
+    // SQLite budgets requested sleeps, not wall time; loaded runners need scheduling slack.
     assert!(
-        elapsed >= Duration::from_secs(4) && elapsed < Duration::from_secs(9),
+        elapsed >= Duration::from_secs(4) && elapsed < Duration::from_secs(20),
         "{elapsed:?}"
     );
     lock.rollback().await.unwrap();
