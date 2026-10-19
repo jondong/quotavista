@@ -25,6 +25,13 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
+      - name: Provision and assert pinned npm
+        run: |
+          PIN=$(node -p "require('./apps/desktop/package.json').packageManager.split('@')[1]")
+          npm install -g "npm@$PIN" --no-fund --no-audit
+          ACTIVE=$(npm --version)
+          echo "pinned npm: $PIN; active npm: $ACTIVE"
+          test "$ACTIVE" = "$PIN"
       - name: Core dependency boundary
         run: ./scripts/check-core-boundaries.sh
       - name: Boundary gate regression checks
@@ -64,6 +71,13 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
+      - name: Provision and assert pinned npm
+        run: |
+          PIN=$(node -p "require('./apps/desktop/package.json').packageManager.split('@')[1]")
+          npm install -g "npm@$PIN" --no-fund --no-audit
+          ACTIVE=$(npm --version)
+          echo "pinned npm: $PIN; active npm: $ACTIVE"
+          test "$ACTIVE" = "$PIN"
       - name: Frontend install (lockfile)
         run: npm ci
         working-directory: apps/desktop

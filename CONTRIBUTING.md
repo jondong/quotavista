@@ -18,6 +18,12 @@ The prototype is a Cargo workspace plus a Vite/React desktop frontend. All devel
 
 ### Install from lockfiles
 
+Provision the pinned npm once (and whenever `packageManager` changes); plain npm does not select its own version from `packageManager`:
+
+```sh
+npm install -g "npm@$(node -p "require('./apps/desktop/package.json').packageManager.split('@')[1]")"
+```
+
 Run everything from the repository root:
 
 ```sh
