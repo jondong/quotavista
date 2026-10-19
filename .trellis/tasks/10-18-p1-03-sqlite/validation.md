@@ -33,7 +33,7 @@ Final validation commands and results:
 - Passed: `cargo clippy --locked --workspace --exclude quotavista-desktop --all-targets -- -D warnings` and `cargo test --locked --workspace --exclude quotavista-desktop`: the explicit Linux CI variant, run locally on macOS; 39 unit/integration tests plus 13 compile-fail doctests, zero failures. This is not native Linux runtime evidence.
 - Passed: `cargo test --locked -p quotavista-infrastructure`: all 12 tests (11 SQLite fixtures and the existing scaffold test), zero failures. This includes SQLx migration creation/reopen/checksum/fault validation; no external SQLite CLI or live database is used.
 - Passed: both full-workspace Clippy/tests and dedicated infrastructure tests were rerun after the alias guard/assertions. The full workspace still has 40 unit/integration tests plus 13 compile-fail doctests.
-- Pending: PR CI on the final pushed commit.
+- PR CI: [PR #4](https://github.com/jondong/quotavista/pull/4) targets `main` from this task branch. Implementation commit: `d9534aa`. The latest-commit check results and worker handoff are recorded on the PR after verification; a passing local run is not a substitute. This task remains in review and is not archived.
 
 The existing `ts-rs` macro emits warnings about unsupported serde attributes; the generated contract drift check and compile-fail contract tests pass. `npm ci` reports the existing ESLint deprecation and unapproved dependency install-script warnings; audit reports zero vulnerabilities and the frontend build passes. No unrelated dependency or frontend changes were made.
 

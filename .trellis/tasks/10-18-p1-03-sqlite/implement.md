@@ -17,7 +17,7 @@
 - [x] Temporary-database integration tests for rollback, restart, publication, removed facts, and pool settings.
 - [x] Workspace tests and SQLx migration validation using the reproducible setup.
 - [x] Record evidence for each PRD criterion, review the complete diff, and update only affected specs/traceability.
-- [ ] Run `git diff --check`; commit with an English message before archiving.
+- [x] Run `git diff --check`; commit with an English message before archiving.
 
 ## Recovery and completion
 
