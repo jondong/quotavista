@@ -80,7 +80,7 @@ fn exact_json_round_trips_do_not_pass_through_js_numbers() {
 #[test]
 fn mapping_preserves_null_zero_units_time_and_independent_failure() {
     let mut domain = metric();
-    let mapped = MetricDto::from_domain(domain.clone(), true).unwrap();
+    let mapped = MetricDto::from_domain(domain.clone(), d::QueryKind::ValidatedCurrent).unwrap();
     let value = serde_json::to_value(&mapped).unwrap();
     assert_eq!(value["value"], json!(u128::MAX.to_string()));
     assert_eq!(value["provenance"], "synthetic");
@@ -89,22 +89,28 @@ fn mapping_preserves_null_zero_units_time_and_independent_failure() {
     assert!(!mapped.alert_eligible);
     domain.value = Some(d::Value::Tokens(n::TokenTotal(0)));
     assert_eq!(
-        MetricDto::from_domain(domain.clone(), false).unwrap().value,
-        Some("0".into())
+        MetricDto::from_domain(domain.clone(), d::QueryKind::Unvalidated)
+            .unwrap()
+            .value(),
+        Some("0")
     );
     domain.value = None;
     domain.freshness = d::Freshness::NoValue;
     domain.availability = d::Availability::Unsupported;
     domain.reason = Some(d::Reason::Unsupported);
-    let unavailable =
-        serde_json::to_value(MetricDto::from_domain(domain.clone(), false).unwrap()).unwrap();
+    let unavailable = serde_json::to_value(
+        MetricDto::from_domain(domain.clone(), d::QueryKind::Unvalidated).unwrap(),
+    )
+    .unwrap();
     assert_eq!(unavailable["value"], Value::Null);
     assert_eq!(unavailable["availability"], "unsupported");
     assert_eq!(unavailable["reason"], "unsupported");
     domain.availability = d::Availability::Missing;
     domain.reason = Some(d::Reason::SyncPending);
     assert_eq!(
-        MetricDto::from_domain(domain, false).unwrap().availability,
+        MetricDto::from_domain(domain, d::QueryKind::Unvalidated)
+            .unwrap()
+            .availability,
         AvailabilityDto::Missing
     );
     let connection = ConnectionDto {
@@ -151,15 +157,270 @@ fn mapping_preserves_null_zero_units_time_and_independent_failure() {
         let mut m = metric();
         m.unit = unit;
         m.value = Some(amount);
-        let dto = MetricDto::from_domain(m, false).unwrap();
+        let dto = MetricDto::from_domain(m, d::QueryKind::Unvalidated).unwrap();
         assert!(serde_json::from_value::<MetricDto>(serde_json::to_value(dto).unwrap()).is_ok());
     }
     let mut invalid = metric();
     invalid.unit = d::Unit::Ratio;
-    assert!(MetricDto::from_domain(invalid, false).is_err());
+    assert!(MetricDto::from_domain(invalid, d::QueryKind::Unvalidated).is_err());
+}
+
+#[test]
+fn safe_errors_reject_taxonomy_tampering() {
+    for code in [
+        ErrorCode::Validation,
+        ErrorCode::Conflict,
+        ErrorCode::NeedsCredentials,
+        ErrorCode::AuthenticationRequired,
+        ErrorCode::PermissionRequired,
+        ErrorCode::SecretStoreLocked,
+        ErrorCode::SecretStoreUnavailable,
+        ErrorCode::RateLimited,
+        ErrorCode::Offline,
+        ErrorCode::Timeout,
+        ErrorCode::InvalidResponse,
+        ErrorCode::ResourceLimit,
+        ErrorCode::StorageError,
+        ErrorCode::InternalError,
+        ErrorCode::Cancelled,
+    ] {
+        let expected = SafeError::new(code, None);
+        let wire = serde_json::to_value(&expected).unwrap();
+        assert_eq!(
+            serde_json::from_value::<SafeError>(wire.clone()).unwrap(),
+            expected
+        );
+        assert_eq!(expected.code(), code);
+        assert_eq!(wire["message"], expected.message());
+        let mut bad = wire.clone();
+        bad["retryable"] = json!(!expected.retryable());
+        assert!(serde_json::from_value::<SafeError>(bad).is_err());
+        let mut bad = wire.clone();
+        bad["message"] = json!("untrusted diagnostic");
+        let error = serde_json::from_value::<SafeError>(bad)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("inconsistent safe error taxonomy"));
+        assert!(!error.contains("untrusted diagnostic"));
+        let mut bad = wire.clone();
+        bad["unknown"] = json!(true);
+        assert!(serde_json::from_value::<SafeError>(bad).is_err());
+        let mut bad = wire;
+        bad.as_object_mut().unwrap().remove("retryable");
+        assert!(serde_json::from_value::<SafeError>(bad).is_err());
+    }
+    let wire = serde_json::to_string(&SafeError::new(ErrorCode::Offline, None)).unwrap();
+    let duplicate = wire.replacen('{', "{\"retryable\":true,", 1);
+    assert!(serde_json::from_str::<SafeError>(&duplicate).is_err());
+}
+
+#[test]
+fn metric_values_are_checked_by_unit_at_the_boundary() {
+    let base =
+        serde_json::to_value(MetricDto::from_domain(metric(), d::QueryKind::Unvalidated).unwrap())
+            .unwrap();
+    for (unit, valid, invalid) in [
+        (
+            json!({"kind":"tokens"}),
+            u128::MAX.to_string(),
+            vec!["1.5", "01", "-1", "340282366920938463463374607431768211456"],
+        ),
+        (
+            json!({"kind":"money","currency":"USD"}),
+            "9999999999.123456789012345678".into(),
+            vec![
+                "NaN",
+                "1e2",
+                "1.00",
+                "12345678901234567890123456789",
+                "0.1234567890123456789",
+            ],
+        ),
+        (
+            json!({"kind":"ratio"}),
+            "0.123456789012345678".into(),
+            vec!["1.01", "-0.1", "00.1", "0.50", "0.1234567890123456789"],
+        ),
+        (
+            json!({"kind":"percentage_points"}),
+            "12.5".into(),
+            vec!["1.00", "NaN", "0.1234567890123456789"],
+        ),
+        (
+            json!({"kind":"native","name":"requests"}),
+            "12.5".into(),
+            vec!["1e1", "-1", "1.00"],
+        ),
+    ] {
+        let mut wire = base.clone();
+        wire["unit"] = unit;
+        for value in [valid.as_str(), "0"] {
+            wire["value"] = json!(value);
+            let dto: MetricDto = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(dto.value(), Some(value));
+            assert_eq!(serde_json::to_value(dto.unit()).unwrap(), wire["unit"]);
+            assert_eq!(serde_json::to_value(dto).unwrap(), wire);
+        }
+        for value in invalid {
+            wire["value"] = json!(value);
+            assert!(
+                serde_json::from_value::<MetricDto>(wire.clone()).is_err(),
+                "{wire}"
+            );
+        }
+        wire["value"] = json!(42);
+        assert!(serde_json::from_value::<MetricDto>(wire.clone()).is_err());
+        wire["value"] = Value::Null;
+        assert!(
+            serde_json::from_value::<MetricDto>(wire.clone()).is_err(),
+            "Available cannot have no value"
+        );
+        wire["availability"] = json!("missing");
+        wire["freshness"] = json!("no_value");
+        assert!(serde_json::from_value::<MetricDto>(wire.clone())
+            .unwrap()
+            .value()
+            .is_none());
+    }
+    let mut wire = base.clone();
+    wire["unknown"] = json!(true);
+    assert!(serde_json::from_value::<MetricDto>(wire).is_err());
+    let duplicate = serde_json::to_string(&base)
+        .unwrap()
+        .replacen('{', "{\"value\":\"0\",", 1);
+    assert!(serde_json::from_str::<MetricDto>(&duplicate).is_err());
+    for unit in [
+        d::Unit::Ratio,
+        d::Unit::Money("USD".parse().unwrap()),
+        d::Unit::PercentagePoints,
+        d::Unit::Native("requests".into()),
+    ] {
+        let mut invalid = metric();
+        invalid.unit = unit;
+        assert_eq!(
+            MetricDto::from_domain(invalid, d::QueryKind::Unvalidated)
+                .unwrap_err()
+                .code(),
+            ErrorCode::InternalError
+        );
+    }
+}
+
+#[test]
+fn local_mapping_failures_use_internal_error_not_provider_error() {
+    let mut invalid_id = metric();
+    invalid_id.scope_id = "../invalid".into();
+    let mut invalid_zone = metric();
+    invalid_zone.period.as_mut().unwrap().source_zone = "No/SuchZone".into();
+    let mut invalid_interval = metric();
+    let interval = &mut invalid_interval.period.as_mut().unwrap().interval;
+    interval.end = interval.start;
+    let mut unavailable = metric();
+    unavailable.value = None;
+    unavailable.freshness = d::Freshness::NoValue;
+    for invalid in [invalid_id, invalid_zone, invalid_interval, unavailable] {
+        let error = MetricDto::from_domain(invalid, d::QueryKind::Unvalidated).unwrap_err();
+        assert_eq!(error.code(), ErrorCode::InternalError);
+        assert_eq!(error.message(), "An internal error occurred.");
+        assert!(!error.retryable());
+    }
+    assert_eq!(
+        SafeError::new(ErrorCode::InvalidResponse, None).message(),
+        "The provider response is invalid."
+    );
+}
+
+#[test]
+fn delayed_and_historical_queries_never_map_to_alert_candidates() {
+    let mut current = metric();
+    current.provenance = d::Provenance::OfficialBucket;
+    current.freshness = d::Freshness::Current;
+    assert!(
+        MetricDto::from_domain(current.clone(), d::QueryKind::ValidatedCurrent)
+            .unwrap()
+            .alert_eligible
+    );
+    for query in [
+        d::QueryKind::Unvalidated,
+        d::QueryKind::Historical,
+        d::QueryKind::DelayedHistorical,
+        d::QueryKind::StaleUpstreamCache,
+    ] {
+        assert!(
+            !MetricDto::from_domain(current.clone(), query)
+                .unwrap()
+                .alert_eligible
+        );
+    }
+    current.reason = Some(d::Reason::NotYetSettled);
+    assert!(
+        !MetricDto::from_domain(current.clone(), d::QueryKind::ValidatedCurrent)
+            .unwrap()
+            .alert_eligible
+    );
+    current.reason = Some(d::Reason::SyncPending);
+    assert!(
+        MetricDto::from_domain(current, d::QueryKind::ValidatedCurrent)
+            .unwrap()
+            .alert_eligible
+    );
+}
+
+#[test]
+fn source_metadata_is_bounded_without_truncating_identity() {
+    let label = "界".repeat(128);
+    assert_eq!(
+        SourceLabel::try_from(label.clone()).unwrap().as_str(),
+        label
+    );
+    for invalid in ["".into(), "x".repeat(129), "bad\nlabel".into()] {
+        assert!(SourceLabel::try_from(invalid.clone()).is_err());
+        assert!(
+            serde_json::from_value::<UnitDto>(json!({"kind":"native","name":invalid})).is_err()
+        );
+        let mut domain = metric();
+        domain.period.as_mut().unwrap().key = Some(invalid.clone());
+        assert_eq!(
+            MetricDto::from_domain(domain, d::QueryKind::Unvalidated)
+                .unwrap_err()
+                .code(),
+            ErrorCode::InternalError
+        );
+        let capability = json!({"metric_id":"tokens","availability":"available","authorization_category":invalid,"source_grain":null,"historical_interval":null,"reporting_zone":null});
+        assert!(serde_json::from_value::<CapabilityDto>(capability).is_err());
+    }
+    let mut domain = metric();
+    domain.unit = d::Unit::Native("x".repeat(129));
+    domain.value = Some(d::Value::Native {
+        amount: "1".parse().unwrap(),
+        unit: "x".repeat(129),
+    });
+    assert_eq!(
+        MetricDto::from_domain(domain, d::QueryKind::Unvalidated)
+            .unwrap_err()
+            .code(),
+        ErrorCode::InternalError
+    );
+}
+
+#[test]
+fn overview_has_no_grain_while_statistics_requires_it() {
+    let overview = json!({"start_date":"2024-06-01","end_date":"2024-06-03","reporting_zone":"UTC","scope_ids":null});
+    let clock = FakeClock(calendar::parse_instant("2024-06-03T12:00:00Z").unwrap());
+    let command = |name, range| request(name, Some(json!({"range":range})));
+    let input: Request = serde_json::from_value(command("get_overview", overview.clone())).unwrap();
+    assert!(input.validate(&clock).is_ok());
+    assert!(
+        serde_json::from_value::<Request>(command("query_statistics", overview.clone())).is_err()
+    );
+    let mut stats = overview;
+    stats["grain"] = json!("week");
+    assert!(serde_json::from_value::<Request>(command("query_statistics", stats.clone())).is_ok());
+    assert!(serde_json::from_value::<Request>(command("get_overview", stats)).is_err());
 }
 
 fn args() -> Vec<(&'static str, Option<Value>)> {
+    let overview = json!({"start_date":"2024-06-01","end_date":"2024-06-03","reporting_zone":"America/New_York","scope_ids":null});
     let range = json!({"start_date":"2024-06-01","end_date":"2024-06-03","reporting_zone":"America/New_York","grain":"week","scope_ids":null});
     vec![
         ("list_connections", None),
@@ -193,7 +454,7 @@ fn args() -> Vec<(&'static str, Option<Value>)> {
             "refresh_connections",
             Some(json!({"target":{"kind":"all"}})),
         ),
-        ("get_overview", Some(json!({"range":range.clone()}))),
+        ("get_overview", Some(json!({"range":overview}))),
         ("query_statistics", Some(json!({"range":range}))),
         (
             "update_settings",
@@ -276,7 +537,7 @@ fn request_validation_rejects_unknowns_and_bad_bounds_without_secret_echo() {
             .unwrap()
             .validate(&clock)
             .unwrap_err()
-            .code,
+            .code(),
         ErrorCode::Validation
     );
     for (name, args) in args().into_iter().filter(|(_, args)| args.is_some()) {
@@ -318,7 +579,7 @@ fn request_validation_rejects_unknowns_and_bad_bounds_without_secret_echo() {
             serde_json::from_value(request("query_statistics", Some(json!({"range":range}))))
                 .unwrap();
         assert_eq!(
-            bad.validate(&clock).unwrap_err().code,
+            bad.validate(&clock).unwrap_err().code(),
             ErrorCode::Validation
         );
     }

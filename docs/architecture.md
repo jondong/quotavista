@@ -127,11 +127,15 @@ These contracts specify the intended Rust and TypeScript boundary; they are not 
 
 The IPC envelope contains contract_version, request_id, and either data or a stable error with code, retryable, retry_at, and a safe message. Secrets are accepted only by the two credential commands and never returned. Unknown providers, fields, IDs, revisions, dates, and enum values fail validation before any network or storage side effect. Use optimistic config revisions to reject stale UI mutations rather than overwriting a newer choice.
 
+`SafeError` seals code, message, and retryability behind its constructor; deserialization rejects inconsistent taxonomy fields. Local invariant or domain-to-wire mapping failures use `internal_error` ("An internal error occurred."), not `validation` or the provider-specific `invalid_response`. `get_overview` takes calendar dates, zone, and optional scopes without a grain; only `query_statistics` requires a day/week grain.
+
 Change events contain only a monotonically increasing data_revision and affected local IDs. They are hints, not an event-sourced database. Subscribers load a consistent current view after an event; reconnecting or detecting a skipped revision triggers a full read. No secret is included in events, telemetry, or request identifiers.
 
 ### Metric and statistics transport
 
 Every metric result includes metric_id, scope_id, product_id when applicable, unit, nullable value, availability, provenance, observed_at, nullable source_as_of, freshness, alert_eligible, and reason. A statistics result additionally includes requested_interval, effective_intervals, reporting_zone, grain, provisional, coverage, and excluded_scopes. Domain rules set alert_eligible only for a validated current-value query that is not explicitly an expired period, delayed history, or stale upstream response; collection time alone is insufficient proof.
+
+The prototype represents query classification explicitly as `QueryKind` (`ValidatedCurrent`, `Unvalidated`, `Historical`, `DelayedHistorical`, or `StaleUpstreamCache`). Only `ValidatedCurrent` can be eligible; `not_yet_settled` also disqualifies a fact, whereas `sync_pending` does not by itself invalidate a previously verified current fact. An available value cannot be null or have `no_value` freshness. `MetricDto` protects unit/value fields and checks token values as canonical u128 integers, ratios in [0,1], and other amounts as canonical decimals (28 significant digits, 18 fractional digits) at mapping and deserialization. Source period keys, native-unit names, and authorization categories use nonempty, control-free `SourceLabel` strings bounded to 128 Unicode code points; reject overlong identities rather than truncating them.
 
 Coverage distinguishes complete, partial, missing, and unsupported. Reasons include permission_required, not_yet_settled, outside_lookback, truncated, bucket_boundary_mismatch, collection_gap, and sync_pending. Query health is a separate field, so a failed refresh can coexist with a previously verified partition.
 
@@ -314,7 +318,7 @@ Validate aliases as at most 80 Unicode code points after trimming surrounding wh
 
 Source cooldowns, candidate cursors, and lifecycle journals survive restart. Secrets in session-only memory do not. Timers use a monotonic clock while running; persisted instants remain UTC and clock anomalies must not produce negative ages or unbounded catch-up loops.
 
-Use a typed error taxonomy shared with transport: validation, conflict, needs_credentials, authentication_required, permission_required, secret_store_locked, secret_store_unavailable, rate_limited, offline, timeout, invalid_response, resource_limit, storage_error, and cancelled. Keep capability-unavailable results separate from these errors. Network failures do not erase credentials or scope history. Long local aggregations check a cancellation token between bounded batches; dropping an async handle is not treated as cancellation of a blocking database or CPU operation.
+Use a typed error taxonomy shared with transport: validation, conflict, needs_credentials, authentication_required, permission_required, secret_store_locked, secret_store_unavailable, rate_limited, offline, timeout, invalid_response, resource_limit, storage_error, internal_error, and cancelled. Keep capability-unavailable results separate from these errors. Network failures do not erase credentials or scope history. Long local aggregations check a cancellation token between bounded batches; dropping an async handle is not treated as cancellation of a blocking database or CPU operation.
 
 Validate OS proxy discovery on both target systems. The HTTP client is created behind a factory so proxy changes can rebuild it while cancelling old-generation requests; TLS verification stays enabled. Never expose a generic frontend proxy command or include proxy authentication values in logs.
 

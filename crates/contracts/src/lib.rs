@@ -70,6 +70,10 @@ scalar!(
     |s: &str| !s.is_empty() && s.chars().count() <= 80 && !s.chars().any(char::is_control),
     |s: String| s.trim().to_owned()
 );
+// Reject, never truncate, source metadata so keys and units keep exact identity.
+scalar!(SourceLabel, |s: &str| !s.is_empty()
+    && s.chars().count() <= 128
+    && !s.chars().any(char::is_control));
 
 macro_rules! wire_enum {
     ($name:ident { $($variant:ident),+ $(,)? }) => {
@@ -196,6 +200,7 @@ wire_enum!(ErrorCode {
     InvalidResponse,
     ResourceLimit,
     StorageError,
+    InternalError,
     Cancelled
 });
 wire_enum!(OperationState {
@@ -244,7 +249,7 @@ dto!(IntervalDto {
     start: Instant,
     end: Instant
 });
-dto!(PeriodDto { key: Option<String>, interval: IntervalDto, source_zone: Zone, expired: bool });
+dto!(PeriodDto { key: Option<SourceLabel>, interval: IntervalDto, source_zone: Zone, expired: bool });
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UnitDto {
@@ -252,16 +257,87 @@ pub enum UnitDto {
     Money { currency: CurrencyDto },
     Ratio,
     PercentagePoints,
-    Native { name: String },
+    Native { name: SourceLabel },
 }
 dto!(TokenFactDto { input: Option<TokenCountDto>, output: Option<TokenCountDto>, cached: Option<TokenCountDto>, reasoning: Option<TokenCountDto>, cached_relation: SubcountRelationDto, reasoning_relation: SubcountRelationDto });
 dto!(CoverageDto { interval: IntervalDto, status: CoverageStatusDto, reason: Option<ReasonDto> });
-dto!(MetricDto {
-    metric_id: LocalId, scope_id: LocalId, product_id: Option<LocalId>, unit: UnitDto,
-    value: Option<String>, availability: AvailabilityDto, provenance: ProvenanceDto,
-    observed_at: Instant, source_as_of: Option<Instant>, freshness: FreshnessDto,
-    alert_eligible: bool, period: Option<PeriodDto>, reason: Option<ReasonDto>
-});
+/// Unit and value are sealed together; construct via `from_domain` or checked JSON.
+/// ```compile_fail
+/// use quotavista_contracts::MetricDto;
+/// fn corrupt(metric: &mut MetricDto) { metric.value = Some("NaN".into()); }
+/// ```
+/// ```compile_fail
+/// use quotavista_contracts::{MetricDto, UnitDto};
+/// fn corrupt(metric: &mut MetricDto) { metric.unit = UnitDto::Ratio; }
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+pub struct MetricDto {
+    pub metric_id: LocalId,
+    pub scope_id: LocalId,
+    pub product_id: Option<LocalId>,
+    unit: UnitDto,
+    value: Option<String>,
+    pub availability: AvailabilityDto,
+    pub provenance: ProvenanceDto,
+    pub observed_at: Instant,
+    pub source_as_of: Option<Instant>,
+    pub freshness: FreshnessDto,
+    pub alert_eligible: bool,
+    pub period: Option<PeriodDto>,
+    pub reason: Option<ReasonDto>,
+}
+#[derive(Deserialize)]
+#[serde(remote = "MetricDto", deny_unknown_fields)]
+struct MetricDtoWire {
+    metric_id: LocalId,
+    scope_id: LocalId,
+    product_id: Option<LocalId>,
+    unit: UnitDto,
+    value: Option<String>,
+    availability: AvailabilityDto,
+    provenance: ProvenanceDto,
+    observed_at: Instant,
+    source_as_of: Option<Instant>,
+    freshness: FreshnessDto,
+    alert_eligible: bool,
+    period: Option<PeriodDto>,
+    reason: Option<ReasonDto>,
+}
+impl MetricDto {
+    pub fn unit(&self) -> &UnitDto {
+        &self.unit
+    }
+    pub fn value(&self) -> Option<&str> {
+        self.value.as_deref()
+    }
+    fn validate_value(&self) -> Result<(), &'static str> {
+        if let Some(value) = &self.value {
+            let valid = match &self.unit {
+                UnitDto::Tokens => TokenTotalDto::try_from(value.clone()).is_ok(),
+                UnitDto::Ratio => RatioDto::try_from(value.clone()).is_ok(),
+                UnitDto::Money { .. } | UnitDto::PercentagePoints | UnitDto::Native { .. } => {
+                    DecimalDto::try_from(value.clone()).is_ok()
+                }
+            };
+            if !valid {
+                return Err("invalid metric value for unit");
+            }
+        }
+        if self.value.is_some() != (self.availability == AvailabilityDto::Available)
+            || self.value.is_some() != (self.freshness != FreshnessDto::NoValue)
+        {
+            return Err("inconsistent metric value state");
+        }
+        Ok(())
+    }
+}
+impl<'de> Deserialize<'de> for MetricDto {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let metric = MetricDtoWire::deserialize(deserializer)?;
+        metric.validate_value().map_err(serde::de::Error::custom)?;
+        Ok(metric)
+    }
+}
 dto!(ExcludedScope {
     scope_id: LocalId,
     metric_id: LocalId,
@@ -275,7 +351,7 @@ dto!(StatisticsDto {
     totals: Vec<MetricDto>, series: Vec<StatisticsPoint>, plans: Vec<PlanRow>, data_revision: Revision
 });
 dto!(OverviewDto { metrics: Vec<MetricDto>, summary: StatisticsDto });
-dto!(CapabilityDto { metric_id: LocalId, availability: AvailabilityDto, authorization_category: String, source_grain: Option<Grain>, historical_interval: Option<IntervalDto>, reporting_zone: Option<Zone> });
+dto!(CapabilityDto { metric_id: LocalId, availability: AvailabilityDto, authorization_category: SourceLabel, source_grain: Option<Grain>, historical_interval: Option<IntervalDto>, reporting_zone: Option<Zone> });
 dto!(DatasetDto { dataset_id: LocalId, health: QueryHealthDto, last_success_at: Option<Instant>, error: Option<SafeError>, coverage: Vec<CoverageDto> });
 dto!(ConnectionDto { connection_id: LocalId, provider: Provider, alias: Alias, lifecycle: LifecycleDto, config_revision: Revision, generation: Revision, datasets: Vec<DatasetDto>, capabilities: Vec<CapabilityDto> });
 dto!(ConnectionList { connections: Vec<ConnectionDto>, data_revision: Revision });
@@ -292,15 +368,32 @@ dto!(OperationList { operations: Vec<OperationDto> });
 dto!(ChangeEvent { data_revision: Revision, affected_connection_ids: Vec<LocalId>, affected_scope_ids: Vec<LocalId> });
 
 // No caller-supplied prose: message is selected only from a closed taxonomy.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+/// ```compile_fail
+/// use quotavista_contracts::SafeError;
+/// fn corrupt(error: &mut SafeError) { error.retryable = true; }
+/// ```
+/// ```compile_fail
+/// use quotavista_contracts::{ErrorCode, SafeError};
+/// fn corrupt(error: &mut SafeError) { error.code = ErrorCode::Validation; }
+/// ```
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SafeError {
-    pub code: ErrorCode,
-    pub retryable: bool,
+    code: ErrorCode,
+    retryable: bool,
     pub retry_at: Option<Instant>,
     message: String,
 }
 impl SafeError {
+    pub fn code(&self) -> ErrorCode {
+        self.code
+    }
+    pub fn retryable(&self) -> bool {
+        self.retryable
+    }
+    pub fn message(&self) -> &str {
+        &self.message
+    }
     pub fn new(code: ErrorCode, retry_at: Option<Instant>) -> Self {
         let retryable = matches!(
             code,
@@ -329,10 +422,30 @@ impl SafeError {
                 ErrorCode::InvalidResponse => "The provider response is invalid.",
                 ErrorCode::ResourceLimit => "The request exceeds a resource limit.",
                 ErrorCode::StorageError => "Local storage failed.",
+                ErrorCode::InternalError => "An internal error occurred.",
                 ErrorCode::Cancelled => "The operation was cancelled.",
             })
             .to_owned(),
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(remote = "SafeError", deny_unknown_fields)]
+struct SafeErrorWire {
+    code: ErrorCode,
+    retryable: bool,
+    retry_at: Option<Instant>,
+    message: String,
+}
+impl<'de> Deserialize<'de> for SafeError {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = SafeErrorWire::deserialize(deserializer)?;
+        let expected = Self::new(wire.code, wire.retry_at);
+        if wire.message != expected.message || wire.retryable != expected.retryable {
+            return Err(serde::de::Error::custom("inconsistent safe error taxonomy"));
+        }
+        Ok(expected)
     }
 }
 
@@ -366,6 +479,7 @@ pub enum RefreshTarget {
     All,
     Selected(Vec<LocalId>),
 }
+dto!(OverviewRangeInput { start_date: Date, end_date: Date, reporting_zone: Zone, scope_ids: Option<Vec<LocalId>> });
 dto!(RangeInput { start_date: Date, end_date: Date, reporting_zone: Zone, grain: Grain, scope_ids: Option<Vec<LocalId>> });
 #[derive(Deserialize, TS)]
 #[serde(
@@ -409,7 +523,7 @@ pub enum Command {
         target: RefreshTarget,
     },
     GetOverview {
-        range: RangeInput,
+        range: OverviewRangeInput,
     },
     QueryStatistics {
         range: RangeInput,
@@ -472,15 +586,33 @@ impl Request {
             return Err(invalid());
         }
         match &self.command {
-            Command::GetOverview { range } | Command::QueryStatistics { range } => {
+            Command::GetOverview {
+                range:
+                    OverviewRangeInput {
+                        start_date,
+                        end_date,
+                        reporting_zone,
+                        scope_ids,
+                    },
+            }
+            | Command::QueryStatistics {
+                range:
+                    RangeInput {
+                        start_date,
+                        end_date,
+                        reporting_zone,
+                        scope_ids,
+                        ..
+                    },
+            } => {
                 calendar::calendar_range(
-                    range.start_date.as_str(),
-                    range.end_date.as_str(),
-                    range.reporting_zone.as_str(),
+                    start_date.as_str(),
+                    end_date.as_str(),
+                    reporting_zone.as_str(),
                     clock,
                 )
                 .map_err(|_| invalid())?;
-                if range.scope_ids.as_ref().is_some_and(|ids| ids.len() > 100) {
+                if scope_ids.as_ref().is_some_and(|ids| ids.len() > 100) {
                     return Err(invalid());
                 }
             }
@@ -510,6 +642,7 @@ pub fn typescript() -> String {
         Instant,
         Zone,
         Alias,
+        SourceLabel,
         ProvenanceDto,
         LifecycleDto,
         QueryHealthDto,
@@ -552,6 +685,7 @@ pub fn typescript() -> String {
         SafeError,
         SecretInput,
         RefreshTarget,
+        OverviewRangeInput,
         RangeInput,
         Command,
         CommandResult,

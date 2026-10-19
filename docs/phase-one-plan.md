@@ -14,7 +14,7 @@ This is a foundation for the first release. It does not establish working Kimi o
 
 ## Task inventory
 
-The [parent milestone](../.trellis/tasks/10-18-phase-one-prototype/prd.md) owns cross-task acceptance. Each child has a PRD with observable acceptance, a technical design, an ordered execution plan, and implementation/review context manifests. All checkboxes are pending.
+The [parent milestone](../.trellis/tasks/10-18-phase-one-prototype/prd.md) owns cross-task acceptance. Each child has a PRD with observable acceptance, a technical design, an ordered execution plan, and implementation/review context manifests. Checkboxes track evidence in each task's PRD; they do not imply full-release acceptance.
 
 | Task | Deliverable | Prerequisites | Initial state |
 | --- | --- | --- | --- |

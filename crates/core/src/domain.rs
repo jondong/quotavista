@@ -51,6 +51,15 @@ pub enum Freshness {
     Current,
     Stale,
 }
+/// Only provider capability validation may classify a query as validated current.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryKind {
+    ValidatedCurrent,
+    Unvalidated,
+    Historical,
+    DelayedHistorical,
+    StaleUpstreamCache,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoverageStatus {
     Complete,
@@ -139,10 +148,10 @@ impl Metric {
     pub fn validate(&self) -> bool {
         self.value.as_ref().is_none_or(|v| v.unit() == self.unit)
             && (self.value.is_some() == (self.freshness != Freshness::NoValue))
-            && (self.value.is_none() || self.availability == Availability::Available)
+            && (self.value.is_some() == (self.availability == Availability::Available))
     }
-    pub fn alert_eligible(&self, validated_current_query: bool) -> bool {
-        validated_current_query
+    pub fn alert_eligible(&self, query: QueryKind) -> bool {
+        query == QueryKind::ValidatedCurrent
             && self.validate()
             && self.value.is_some()
             && self.freshness == Freshness::Current
@@ -152,6 +161,7 @@ impl Metric {
             )
             && self.source_as_of.is_some()
             && !self.period.as_ref().is_some_and(|p| p.expired)
+            && self.reason != Some(Reason::NotYetSettled)
     }
 }
 
@@ -182,14 +192,14 @@ mod tests {
         );
         assert_eq!(states.0, Lifecycle::Active);
         assert!(metric.validate());
-        assert!(!metric.alert_eligible(true));
+        assert!(!metric.alert_eligible(QueryKind::ValidatedCurrent));
         metric.value = None;
         metric.freshness = Freshness::NoValue;
         metric.availability = Availability::Unsupported;
         metric.reason = Some(Reason::Unsupported);
         assert!(metric.validate());
         assert_ne!(CoverageStatus::Unsupported, CoverageStatus::Missing);
-        assert!(!metric.alert_eligible(true));
+        assert!(!metric.alert_eligible(QueryKind::ValidatedCurrent));
         metric.value = Some(Value::Tokens(TokenTotal(0)));
         assert!(!metric.validate());
     }
@@ -210,10 +220,25 @@ mod tests {
             period: None,
             reason: None,
         };
-        assert!(metric.alert_eligible(true));
-        assert!(!metric.alert_eligible(false));
+        assert!(metric.alert_eligible(QueryKind::ValidatedCurrent));
+        for query in [
+            QueryKind::Unvalidated,
+            QueryKind::Historical,
+            QueryKind::DelayedHistorical,
+            QueryKind::StaleUpstreamCache,
+        ] {
+            assert!(!metric.alert_eligible(query));
+        }
+        metric.reason = Some(Reason::NotYetSettled);
+        assert!(!metric.alert_eligible(QueryKind::ValidatedCurrent));
+        metric.reason = Some(Reason::SyncPending);
+        assert!(metric.alert_eligible(QueryKind::ValidatedCurrent));
+        metric.reason = None;
+        metric.freshness = Freshness::Stale;
+        assert!(!metric.alert_eligible(QueryKind::ValidatedCurrent));
+        metric.freshness = Freshness::Current;
         metric.source_as_of = None;
-        assert!(!metric.alert_eligible(true));
+        assert!(!metric.alert_eligible(QueryKind::ValidatedCurrent));
         metric.source_as_of = Some(at);
         metric.period = Some(Period {
             key: None,
@@ -221,6 +246,10 @@ mod tests {
             source_zone: "UTC".into(),
             expired: true,
         });
-        assert!(!metric.alert_eligible(true));
+        assert!(!metric.alert_eligible(QueryKind::ValidatedCurrent));
+        metric.value = None;
+        metric.freshness = Freshness::NoValue;
+        assert!(!metric.validate());
+        assert!(!metric.alert_eligible(QueryKind::ValidatedCurrent));
     }
 }

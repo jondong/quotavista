@@ -5,6 +5,9 @@ const range = {
   start_date: "2024-06-01", end_date: "2024-06-03", reporting_zone: "UTC",
   grain: "week", scope_ids: null,
 } as const;
+const overviewRange = {
+  start_date: "2024-06-01", end_date: "2024-06-03", reporting_zone: "UTC", scope_ids: null,
+} as const;
 export const commands = [
   { command: "list_connections" },
   { command: "connect_provider", args: { provider: "kimi", alias: "Demo", credential_kind: "session_token", secret: "synthetic-fixture-only", storage_mode: "session_only" } },
@@ -13,7 +16,7 @@ export const commands = [
   { command: "set_connection_enabled", args: { connection_id: "demo", expected_config_revision: "1", enabled: false } },
   { command: "remove_connection", args: { connection_id: "demo", expected_config_revision: "1", deletion_intent: "credentials_history_and_managed_backups" } },
   { command: "refresh_connections", args: { target: { kind: "all" } } },
-  { command: "get_overview", args: { range } },
+  { command: "get_overview", args: { range: overviewRange } },
   { command: "query_statistics", args: { range } },
   { command: "update_settings", args: { expected_settings_revision: "1", changes: { ui_locale: "zh-CN", reporting_zone: "UTC", display_currency: "USD", polling: "disabled" } } },
   { command: "get_operation", args: { operation_id: "demo-job" } },
