@@ -86,7 +86,7 @@ fn mapping_preserves_null_zero_units_time_and_independent_failure() {
     assert_eq!(value["provenance"], "synthetic");
     assert_eq!(value["period"]["interval"]["start"], "2024-06-03T12:00:00Z");
     assert_eq!(value["period"]["source_zone"], "UTC");
-    assert!(!mapped.alert_eligible);
+    assert!(!mapped.alert_eligible());
     domain.value = Some(d::Value::Tokens(n::TokenTotal(0)));
     assert_eq!(
         MetricDto::from_domain(domain.clone(), d::QueryKind::Unvalidated)
@@ -110,7 +110,7 @@ fn mapping_preserves_null_zero_units_time_and_independent_failure() {
     assert_eq!(
         MetricDto::from_domain(domain, d::QueryKind::Unvalidated)
             .unwrap()
-            .availability,
+            .availability(),
         AvailabilityDto::Missing
     );
     let connection = ConnectionDto {
@@ -127,7 +127,7 @@ fn mapping_preserves_null_zero_units_time_and_independent_failure() {
             last_success_at: Some(mapped.observed_at.clone()),
             error: Some(SafeError::new(ErrorCode::StorageError, None)),
             coverage: vec![CoverageDto {
-                interval: mapped.period.clone().unwrap().interval,
+                interval: mapped.period().cloned().unwrap().interval,
                 status: CoverageStatusDto::Partial,
                 reason: Some(ReasonDto::Truncated),
             }],
@@ -136,7 +136,7 @@ fn mapping_preserves_null_zero_units_time_and_independent_failure() {
     let restored: ConnectionDto =
         serde_json::from_value(serde_json::to_value(&connection).unwrap()).unwrap();
     assert_eq!(restored, connection);
-    assert_eq!(mapped.freshness, FreshnessDto::Stale);
+    assert_eq!(mapped.freshness(), FreshnessDto::Stale);
     for (unit, amount) in [
         (
             d::Unit::Money("USD".parse().unwrap()),
@@ -338,7 +338,7 @@ fn delayed_and_historical_queries_never_map_to_alert_candidates() {
     assert!(
         MetricDto::from_domain(current.clone(), d::QueryKind::ValidatedCurrent)
             .unwrap()
-            .alert_eligible
+            .alert_eligible()
     );
     for query in [
         d::QueryKind::Unvalidated,
@@ -346,24 +346,141 @@ fn delayed_and_historical_queries_never_map_to_alert_candidates() {
         d::QueryKind::DelayedHistorical,
         d::QueryKind::StaleUpstreamCache,
     ] {
-        assert!(
-            !MetricDto::from_domain(current.clone(), query)
-                .unwrap()
-                .alert_eligible
-        );
+        assert!(!MetricDto::from_domain(current.clone(), query)
+            .unwrap()
+            .alert_eligible());
     }
     current.reason = Some(d::Reason::NotYetSettled);
     assert!(
         !MetricDto::from_domain(current.clone(), d::QueryKind::ValidatedCurrent)
             .unwrap()
-            .alert_eligible
+            .alert_eligible()
     );
     current.reason = Some(d::Reason::SyncPending);
     assert!(
         MetricDto::from_domain(current, d::QueryKind::ValidatedCurrent)
             .unwrap()
-            .alert_eligible
+            .alert_eligible()
     );
+}
+
+#[test]
+fn alert_claims_are_derived_and_checked_across_all_state_dimensions() {
+    for query in [
+        d::QueryKind::ValidatedCurrent,
+        d::QueryKind::Unvalidated,
+        d::QueryKind::Historical,
+        d::QueryKind::DelayedHistorical,
+        d::QueryKind::StaleUpstreamCache,
+    ] {
+        for provenance in [
+            d::Provenance::OfficialEvent,
+            d::Provenance::OfficialBucket,
+            d::Provenance::ValidatedDerivation,
+            d::Provenance::Observation,
+            d::Provenance::Synthetic,
+        ] {
+            for freshness in [d::Freshness::Current, d::Freshness::Stale] {
+                for reason in [
+                    None,
+                    Some(d::Reason::NotYetSettled),
+                    Some(d::Reason::SyncPending),
+                ] {
+                    for expired in [false, true] {
+                        for has_source_time in [false, true] {
+                            let mut domain = metric();
+                            domain.provenance = provenance;
+                            domain.freshness = freshness;
+                            domain.reason = reason;
+                            domain.period.as_mut().unwrap().expired = expired;
+                            if !has_source_time {
+                                domain.source_as_of = None;
+                            }
+                            let expected = domain.alert_eligible(query);
+                            let dto = MetricDto::from_domain(domain.clone(), query).unwrap();
+                            assert_eq!(dto.alert_eligible(), expected);
+                            assert_eq!(dto.query_kind(), QueryKindDto::from(query));
+                            assert_eq!(dto.provenance(), ProvenanceDto::from(provenance));
+                            assert_eq!(dto.freshness(), FreshnessDto::from(freshness));
+                            assert_eq!(dto.reason(), reason.map(ReasonDto::from));
+                            assert_eq!(dto.source_as_of().is_some(), has_source_time);
+                            let mut wire = serde_json::to_value(&dto).unwrap();
+                            assert_eq!(
+                                serde_json::from_value::<MetricDto>(wire.clone()).unwrap(),
+                                dto
+                            );
+                            wire["alert_eligible"] = json!(!expected);
+                            let error = serde_json::from_value::<MetricDto>(wire).unwrap_err();
+                            assert!(error
+                                .to_string()
+                                .contains("inconsistent metric alert eligibility"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut absent = metric();
+    absent.value = None;
+    absent.availability = d::Availability::Missing;
+    absent.freshness = d::Freshness::NoValue;
+    let dto = MetricDto::from_domain(absent, d::QueryKind::ValidatedCurrent).unwrap();
+    assert!(!dto.alert_eligible());
+    let mut wire = serde_json::to_value(dto).unwrap();
+    wire["alert_eligible"] = json!(true);
+    assert!(serde_json::from_value::<MetricDto>(wire).is_err());
+}
+
+#[test]
+fn stale_payload_cannot_claim_alert_eligibility_or_omit_query_classification() {
+    let mut domain = metric();
+    domain.provenance = d::Provenance::OfficialEvent;
+    domain.freshness = d::Freshness::Current;
+    domain.period = None;
+    let dto = MetricDto::from_domain(domain, d::QueryKind::ValidatedCurrent).unwrap();
+    assert!(dto.alert_eligible());
+    let valid = serde_json::to_value(&dto).unwrap();
+    assert_eq!(valid["query_kind"], "validated_current");
+    assert_eq!(
+        serde_json::from_value::<MetricDto>(valid.clone()).unwrap(),
+        dto
+    );
+    let mut stale = valid.clone();
+    stale["freshness"] = json!("stale");
+    assert!(serde_json::from_value::<MetricDto>(stale.clone()).is_err());
+    stale["alert_eligible"] = json!(false);
+    assert!(!serde_json::from_value::<MetricDto>(stale)
+        .unwrap()
+        .alert_eligible());
+    for field in ["alert_eligible", "query_kind"] {
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<MetricDto>(missing).is_err());
+    }
+    let mut unknown = valid.clone();
+    unknown["query_kind"] = json!("assumed_current");
+    assert!(serde_json::from_value::<MetricDto>(unknown).is_err());
+    let duplicate = serde_json::to_string(&valid).unwrap().replacen(
+        '{',
+        "{\"query_kind\":\"validated_current\",",
+        1,
+    );
+    assert!(serde_json::from_str::<MetricDto>(&duplicate).is_err());
+    let mut consistent_false = valid;
+    consistent_false["alert_eligible"] = json!(false);
+    assert!(serde_json::from_value::<MetricDto>(consistent_false).is_err());
+}
+
+#[test]
+fn retry_timestamp_is_read_only_and_round_trips() {
+    let retry_at: Instant = "2024-06-03T12:01:00Z".to_owned().try_into().unwrap();
+    let error = SafeError::new(ErrorCode::RateLimited, Some(retry_at.clone()));
+    assert_eq!(error.retry_at(), Some(&retry_at));
+    let wire = serde_json::to_value(&error).unwrap();
+    assert_eq!(wire["retry_at"], "2024-06-03T12:01:00Z");
+    let decoded: SafeError = serde_json::from_value(wire).unwrap();
+    assert_eq!(decoded.retry_at(), error.retry_at());
+    assert_eq!(SafeError::new(ErrorCode::Validation, None).retry_at(), None);
 }
 
 #[test]

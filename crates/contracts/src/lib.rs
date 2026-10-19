@@ -99,6 +99,16 @@ domain_enum!(
     }
 );
 domain_enum!(
+    QueryKindDto,
+    QueryKind {
+        ValidatedCurrent,
+        Unvalidated,
+        Historical,
+        DelayedHistorical,
+        StaleUpstreamCache
+    }
+);
+domain_enum!(
     LifecycleDto,
     Lifecycle {
         PendingSetup,
@@ -261,7 +271,8 @@ pub enum UnitDto {
 }
 dto!(TokenFactDto { input: Option<TokenCountDto>, output: Option<TokenCountDto>, cached: Option<TokenCountDto>, reasoning: Option<TokenCountDto>, cached_relation: SubcountRelationDto, reasoning_relation: SubcountRelationDto });
 dto!(CoverageDto { interval: IntervalDto, status: CoverageStatusDto, reason: Option<ReasonDto> });
-/// Unit and value are sealed together; construct via `from_domain` or checked JSON.
+/// Value and alert state are read-only; construct via `from_domain` or checked JSON.
+/// Query classification is explicit because recent collection can still return historical data.
 /// ```compile_fail
 /// use quotavista_contracts::MetricDto;
 /// fn corrupt(metric: &mut MetricDto) { metric.value = Some("NaN".into()); }
@@ -270,6 +281,38 @@ dto!(CoverageDto { interval: IntervalDto, status: CoverageStatusDto, reason: Opt
 /// use quotavista_contracts::{MetricDto, UnitDto};
 /// fn corrupt(metric: &mut MetricDto) { metric.unit = UnitDto::Ratio; }
 /// ```
+/// ```compile_fail
+/// use quotavista_contracts::MetricDto;
+/// fn corrupt(metric: &mut MetricDto) { metric.alert_eligible = true; }
+/// ```
+/// ```compile_fail
+/// use quotavista_contracts::{MetricDto, QueryKindDto};
+/// fn corrupt(metric: &mut MetricDto) { metric.query_kind = QueryKindDto::ValidatedCurrent; }
+/// ```
+/// ```compile_fail
+/// use quotavista_contracts::{MetricDto, FreshnessDto};
+/// fn corrupt(metric: &mut MetricDto) { metric.freshness = FreshnessDto::Current; }
+/// ```
+/// ```compile_fail
+/// use quotavista_contracts::{MetricDto, AvailabilityDto};
+/// fn corrupt(metric: &mut MetricDto) { metric.availability = AvailabilityDto::Available; }
+/// ```
+/// ```compile_fail
+/// use quotavista_contracts::{MetricDto, ProvenanceDto};
+/// fn corrupt(metric: &mut MetricDto) { metric.provenance = ProvenanceDto::OfficialEvent; }
+/// ```
+/// ```compile_fail
+/// use quotavista_contracts::MetricDto;
+/// fn corrupt(metric: &mut MetricDto) { metric.source_as_of = None; }
+/// ```
+/// ```compile_fail
+/// use quotavista_contracts::MetricDto;
+/// fn corrupt(metric: &mut MetricDto) { metric.period = None; }
+/// ```
+/// ```compile_fail
+/// use quotavista_contracts::MetricDto;
+/// fn corrupt(metric: &mut MetricDto) { metric.reason = None; }
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
 pub struct MetricDto {
     pub metric_id: LocalId,
@@ -277,14 +320,15 @@ pub struct MetricDto {
     pub product_id: Option<LocalId>,
     unit: UnitDto,
     value: Option<String>,
-    pub availability: AvailabilityDto,
-    pub provenance: ProvenanceDto,
+    availability: AvailabilityDto,
+    provenance: ProvenanceDto,
     pub observed_at: Instant,
-    pub source_as_of: Option<Instant>,
-    pub freshness: FreshnessDto,
-    pub alert_eligible: bool,
-    pub period: Option<PeriodDto>,
-    pub reason: Option<ReasonDto>,
+    source_as_of: Option<Instant>,
+    freshness: FreshnessDto,
+    query_kind: QueryKindDto,
+    alert_eligible: bool,
+    period: Option<PeriodDto>,
+    reason: Option<ReasonDto>,
 }
 #[derive(Deserialize)]
 #[serde(remote = "MetricDto", deny_unknown_fields)]
@@ -299,6 +343,7 @@ struct MetricDtoWire {
     observed_at: Instant,
     source_as_of: Option<Instant>,
     freshness: FreshnessDto,
+    query_kind: QueryKindDto,
     alert_eligible: bool,
     period: Option<PeriodDto>,
     reason: Option<ReasonDto>,
@@ -309,6 +354,44 @@ impl MetricDto {
     }
     pub fn value(&self) -> Option<&str> {
         self.value.as_deref()
+    }
+    pub fn availability(&self) -> AvailabilityDto {
+        self.availability
+    }
+    pub fn provenance(&self) -> ProvenanceDto {
+        self.provenance
+    }
+    pub fn source_as_of(&self) -> Option<&Instant> {
+        self.source_as_of.as_ref()
+    }
+    pub fn freshness(&self) -> FreshnessDto {
+        self.freshness
+    }
+    pub fn query_kind(&self) -> QueryKindDto {
+        self.query_kind
+    }
+    pub fn alert_eligible(&self) -> bool {
+        self.alert_eligible
+    }
+    pub fn period(&self) -> Option<&PeriodDto> {
+        self.period.as_ref()
+    }
+    pub fn reason(&self) -> Option<ReasonDto> {
+        self.reason
+    }
+
+    fn expected_alert_eligible(&self) -> bool {
+        self.query_kind == QueryKindDto::ValidatedCurrent
+            && self.value.is_some()
+            && self.availability == AvailabilityDto::Available
+            && self.freshness == FreshnessDto::Current
+            && matches!(
+                self.provenance,
+                ProvenanceDto::OfficialEvent | ProvenanceDto::OfficialBucket
+            )
+            && self.source_as_of.is_some()
+            && !self.period.as_ref().is_some_and(|p| p.expired)
+            && self.reason != Some(ReasonDto::NotYetSettled)
     }
     fn validate_value(&self) -> Result<(), &'static str> {
         if let Some(value) = &self.value {
@@ -335,6 +418,11 @@ impl<'de> Deserialize<'de> for MetricDto {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let metric = MetricDtoWire::deserialize(deserializer)?;
         metric.validate_value().map_err(serde::de::Error::custom)?;
+        if metric.alert_eligible != metric.expected_alert_eligible() {
+            return Err(serde::de::Error::custom(
+                "inconsistent metric alert eligibility",
+            ));
+        }
         Ok(metric)
     }
 }
@@ -376,12 +464,16 @@ dto!(ChangeEvent { data_revision: Revision, affected_connection_ids: Vec<LocalId
 /// use quotavista_contracts::{ErrorCode, SafeError};
 /// fn corrupt(error: &mut SafeError) { error.code = ErrorCode::Validation; }
 /// ```
+/// ```compile_fail
+/// use quotavista_contracts::SafeError;
+/// fn corrupt(error: &mut SafeError) { error.retry_at = None; }
+/// ```
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SafeError {
     code: ErrorCode,
     retryable: bool,
-    pub retry_at: Option<Instant>,
+    retry_at: Option<Instant>,
     message: String,
 }
 impl SafeError {
@@ -390,6 +482,9 @@ impl SafeError {
     }
     pub fn retryable(&self) -> bool {
         self.retryable
+    }
+    pub fn retry_at(&self) -> Option<&Instant> {
+        self.retry_at.as_ref()
     }
     pub fn message(&self) -> &str {
         &self.message
@@ -644,6 +739,7 @@ pub fn typescript() -> String {
         Alias,
         SourceLabel,
         ProvenanceDto,
+        QueryKindDto,
         LifecycleDto,
         QueryHealthDto,
         FreshnessDto,

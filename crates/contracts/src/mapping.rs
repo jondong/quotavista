@@ -89,7 +89,6 @@ impl MetricDto {
         if !value.validate() {
             return Err(invalid());
         }
-        let alert_eligible = value.alert_eligible(query);
         let amount = value.value.map(|v| match v {
             d::Value::Tokens(n) => n.0.to_string(),
             d::Value::Money(m) => m.amount.to_string(),
@@ -97,7 +96,7 @@ impl MetricDto {
             d::Value::PercentagePoints(p) => p.to_string(),
             d::Value::Native { amount, .. } => amount.to_string(),
         });
-        let metric = Self {
+        let mut metric = Self {
             metric_id: value.metric_id.try_into().map_err(|_| invalid())?,
             scope_id: value.scope_id.try_into().map_err(|_| invalid())?,
             product_id: value
@@ -114,11 +113,13 @@ impl MetricDto {
                 .source_as_of
                 .map(|at| Instant(at.to_rfc3339().replace("+00:00", "Z"))),
             freshness: value.freshness.into(),
-            alert_eligible,
+            query_kind: query.into(),
+            alert_eligible: false,
             period: value.period.map(TryInto::try_into).transpose()?,
             reason: value.reason.map(Into::into),
         };
         metric.validate_value().map_err(|_| invalid())?;
+        metric.alert_eligible = metric.expected_alert_eligible();
         Ok(metric)
     }
 }

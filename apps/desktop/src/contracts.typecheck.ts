@@ -1,4 +1,4 @@
-import type { Command, Request, SettingsPatch, TokenTotalDto } from "./generated/contracts.js";
+import type { Command, MetricDto, QueryKindDto, Request, SettingsPatch, TokenTotalDto } from "./generated/contracts.js";
 
 // Compile-only fixtures; not imported by the app. Rust checks the same wire shapes.
 const range = {
@@ -24,6 +24,14 @@ export const commands = [
 export const request = { contract_version: 1, request_id: "synthetic-request", command: commands[0] } satisfies Request;
 export const emptyPatch = { ui_locale: null, reporting_zone: null, display_currency: null, polling: null } satisfies SettingsPatch;
 export const largestTotal = "340282366920938463463374607431768211455" satisfies TokenTotalDto;
+export const currentMetric = {
+  metric_id: "tokens", scope_id: "demo", product_id: null, unit: { kind: "tokens" },
+  value: largestTotal, availability: "available", provenance: "official_event",
+  observed_at: "2024-06-03T12:00:00Z", source_as_of: "2024-06-03T12:00:00Z",
+  freshness: "current", query_kind: "validated_current", alert_eligible: true, period: null, reason: null,
+} satisfies MetricDto;
+// @ts-expect-error Query classifications are explicit and closed.
+export const invalidQueryKind: QueryKindDto = "assumed_current";
 
 // @ts-expect-error Exact counts must not become JavaScript numbers.
 export const invalidTotal: TokenTotalDto = 1;
