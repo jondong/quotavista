@@ -21,3 +21,6 @@ dist/
 
 # pi session state
 .pi/
+
+# Orca-managed worktrees
+.orca/
