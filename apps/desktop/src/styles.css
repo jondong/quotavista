@@ -3,10 +3,60 @@
   font-family: system-ui, sans-serif;
 }
 
-.container {
-  margin: 0 auto;
-  max-width: 40rem;
-  padding: 2rem;
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+/* Visible focus for keyboard users on every interactive element. */
+:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  background: #2563eb;
+  color: #fff;
+  padding: 0.5rem 1rem;
+  z-index: 10;
+}
+
+.skip-link:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+}
+
+.app-header {
+  border-bottom: 1px solid #8888;
+  padding: 1rem 2rem 0;
+}
+
+.app-header-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.app-header h1 {
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+.header-language {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.header-language label {
+  font-size: 0.9rem;
 }
 
 .synthetic-banner {
@@ -15,6 +65,38 @@
   color: #b45309;
   font-weight: 600;
   padding: 0.75rem 1rem;
+  margin: 1rem 0;
+}
+
+.nav-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0 2rem 1rem;
+}
+
+.nav-button {
+  border: 1px solid #8888;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.5rem 1rem;
+}
+
+.nav-button[aria-current="page"] {
+  border-color: #2563eb;
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.container {
+  margin: 0 auto;
+  max-width: 48rem;
+  padding: 1rem 2rem 2rem;
 }
 
 dt {
@@ -24,4 +106,90 @@ dt {
 
 dd {
   margin: 0;
+}
+
+.error {
+  border: 1px solid #b91c1c;
+  border-radius: 0.5rem;
+  color: #b91c1c;
+  padding: 0.75rem 1rem;
+}
+
+.empty {
+  border: 1px dashed #8888;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+}
+
+.note {
+  color: #888;
+  font-size: 0.9rem;
+}
+
+.chart {
+  margin: 0;
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-bar {
+  fill: #2563eb;
+}
+
+.chart figcaption {
+  color: #888;
+  font-size: 0.9rem;
+  margin-top: 0.5rem;
+}
+
+table {
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+th,
+td {
+  border: 1px solid #8888;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.language-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+input,
+select,
+button {
+  font: inherit;
+}
+
+#connection-alias {
+  margin-right: 0.5rem;
+}
+
+/* Narrow windows: stack the header and let tables scroll instead of clipping. */
+@media (max-width: 40rem) {
+  .app-header-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .container,
+  .app-header,
+  .nav-list {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  main {
+    overflow-x: auto;
+  }
 }
