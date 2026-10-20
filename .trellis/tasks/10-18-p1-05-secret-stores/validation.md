@@ -14,7 +14,7 @@
 | --- | --- |
 | `cargo fmt --all -- --check` | pass |
 | `cargo clippy --locked --workspace --all-targets -- -D warnings` | pass, 0 errors |
-| `cargo test --locked --workspace` | pass, 91 passed / 0 failed / 1 ignored (13 suites) |
+| `cargo test --locked --workspace` | pass, 91 passed / 0 failed / 1 ignored (13 suites; historical count from the first validation run — review rounds 1-3 added tests; latest run: 94 passed / 0 failed / 1 ignored) |
 | `./scripts/check-core-boundaries.sh` | pass (`quotavista-core calendar-only dependencies: boundary OK`) |
 | `./scripts/test-check-core-boundaries.sh` | pass (all boundary-gate regression checks) |
 | `cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check` | pass (`TypeScript contract is current`) |
@@ -65,3 +65,9 @@ Reviewer confirmed the round-1 blocker fixed and requested one remaining change;
 3. **Validation claim corrected.** The round-1 entry above now names every routed call site instead of implying all were already covered.
 
 Re-validated: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace`, `./scripts/check-core-boundaries.sh`, `./scripts/test-check-core-boundaries.sh`, `cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check`, `git diff --check`, frontend checks (lint, i18n:check, test, typecheck, build), and the ignored macOS Keychain smoke check under `quotavista-test-` (passed, cleanup verified).
+
+## Review round 3 (PR #7, head fd6ebad)
+
+Reviewer found the round-2 starvation test could pass with an inline store call: the releaser task buffered the release before `wait_at_gate` started, since `finish_deletion` yields at `operation()` before reaching the store. Fixed by gating the release on an entry signal fired from inside `wait_at_gate` (a tokio oneshot sent before `recv_timeout`); the releaser task awaits the entry, then releases. With `spawn_blocking`, the entry is observed and the deletion completes; with an inline call the executor is stuck inside the wait, the releaser is never polled, and the deletion fails with `Unavailable` at the 10s bound.
+
+Local negative experiment (not committed): `store_call` was temporarily changed to call the store inline; `blocked_store_call_still_lets_other_async_work_progress` then FAILED with `Unavailable` after 10.02s, as required, and the experiment was reverted. Re-validated after the fix: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace` (94 passed / 0 failed / 1 ignored), boundary scripts, contract drift check, `git diff --check`, and the ignored macOS Keychain smoke check. The stale 91-test count in the status table above is marked historical.
