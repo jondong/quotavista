@@ -32,6 +32,8 @@ jobs:
           ACTIVE=$(npm --version)
           echo "pinned npm: $PIN; active npm: $ACTIVE"
           test "$ACTIVE" = "$PIN"
+      - name: Linux secret service client library
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
       - name: Core dependency boundary
         run: ./scripts/check-core-boundaries.sh
       - name: Boundary gate regression checks

@@ -1,6 +1,6 @@
 //! Lifecycle orchestration: per-connection mutation fences, external journals,
-//! and recovery before scheduling. Fixtures are synthetic; task P1-05 supplies the
-//! native secret store behind [`SecretReferenceStore`].
+//! and recovery before scheduling. Fixtures are synthetic; the value-carrying
+//! stores behind [`SecretReferenceStore`] live in `crate::secrets`.
 //!
 //! The coordinator owns the external safety state and is the only writer, so
 //! `&mut self` *is* the mutation fence: while a caller holds the borrow no other
