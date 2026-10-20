@@ -1410,3 +1410,39 @@ async fn a_reused_operation_identifier_cannot_make_the_journal_undecodable() {
     assert!(harness.secrets.deleted().contains(&PREVIOUS.to_owned()));
     assert!(reopened.journal().is_empty());
 }
+
+#[tokio::test]
+async fn recovery_converges_whichever_order_the_ledger_entries_sort_in() {
+    let harness = fixture().await;
+    let mut coordinator = harness.recovered().await;
+    setup(&mut coordinator, PREVIOUS).await;
+    // A second scope whose identifier sorts before the connection's own ledger
+    // entry, so recovery meets an owned entry first.
+    harness
+        .repo
+        .execute_raw("INSERT INTO provider_scopes(id,connection_id,scope_key,scope_type) VALUES('synthetic-a-scope','synthetic-connection','synthetic-account-a','account')")
+        .await
+        .unwrap();
+    harness.durable.fail_after(1);
+    assert_eq!(
+        coordinator
+            .begin_deletion("synthetic-operation-2", &context(1))
+            .await
+            .unwrap_err(),
+        JournalError::Durability
+    );
+    drop(coordinator);
+    // Re-arm the store: resuming writes a durable acknowledgement.
+    harness.durable.fail_after(4);
+
+    // One recovery pass resolves the owned entry through its owning connection
+    // instead of reporting it pending while the same run cleans it up.
+    let mut coordinator = harness.coordinator();
+    let report = coordinator.recover().await.unwrap();
+    assert!(report.pending.is_empty());
+    assert_eq!(report.finished.len(), 3);
+    assert!(harness.secrets.present().is_empty());
+    assert_eq!(harness.secrets.deleted(), vec![PREVIOUS]);
+    assert!(!coordinator.ledger().has_pending_cleanup());
+    assert!(coordinator.admit_restore(&manifest(&[])).is_ok());
+}

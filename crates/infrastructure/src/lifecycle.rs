@@ -452,10 +452,17 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
     /// that blocks the cleanup leaves the entry pending: visible and retryable,
     /// never reported clean.
     async fn resume_deletion(&mut self, opaque_id: &str) -> Result<(), JournalError> {
-        if self.resumable_deletion(opaque_id).await? {
+        // A scope entry is acknowledged with the connection that owns it, so resume
+        // through the owner: recovery then converges in one pass whichever order the
+        // sorted ledger entries are visited in. The final state check below still
+        // names this entry, so an unresolved scope is never reported clean.
+        let target = self
+            .ledger_owner(opaque_id)
+            .unwrap_or_else(|| opaque_id.to_owned());
+        if self.resumable_deletion(&target).await? {
             // A missing row leaves the owed reference unknown, so the deletion stays
             // pending instead of being acknowledged.
-            let owed = match self.repository.credential_ref(opaque_id).await {
+            let owed = match self.repository.credential_ref(&target).await {
                 Ok(owed) => owed,
                 Err(_) => return Err(JournalError::RecoveryRequired),
             };
@@ -465,7 +472,7 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
                     .delete_reference(&reference)
                     .map_err(|_| JournalError::RecoveryRequired)?;
             }
-            match self.acknowledge_deletion(opaque_id) {
+            match self.acknowledge_deletion(&target) {
                 // An acknowledgement that is not durable leaves the entry pending,
                 // so the next recovery retries it.
                 Ok(()) | Err(JournalError::Durability) => {}
@@ -480,12 +487,10 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
     }
 
     /// Whether a pending ledger entry belongs to a deletion no operation recorded.
-    /// Scope entries are acknowledged with the connection that owns them, and a
-    /// deletion the journal or a projection still carries resumes through its own
-    /// recovery actions.
+    /// Scope entries resume through the connection that owns them; a deletion the
+    /// journal or a projection still carries resumes through its own actions.
     async fn resumable_deletion(&self, opaque_id: &str) -> Result<bool, JournalError> {
         if self.ledger.state(opaque_id) != Some(LedgerState::PendingCleanup)
-            || self.ledger_owner(opaque_id).is_some()
             || self.journal.fences(opaque_id)
         {
             return Ok(false);
