@@ -2,22 +2,23 @@
 //! behind restricted Tauri IPC. The renderer never touches storage, secrets,
 //! providers, or the coordinator directly; it sends a single validated
 //! [`quotavista_contracts::Request`] and receives an [`Envelope`].
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use quotavista_contracts::{
     ChangeEvent, Command, CommandResult, ConnectionDto, ConnectionList, Envelope, ErrorCode,
-    LocalId, OperationDto, OperationList, OverviewDto, RangeInput, Request, Revision, SafeError,
-    StatisticsDto,
+    Instant, LocalId, NextAction, OperationDto, OperationKind, OperationList, OperationState,
+    RefreshTarget, Request, Revision, SafeError, CONTRACT_VERSION,
 };
-
 use quotavista_core::journal::SecretReferenceStore;
-use quotavista_core::provider::RefreshClock;
-use quotavista_core::secrets::SecretStore;
-use quotavista_core::storage::{Connection, Repository, StorageError, WriteContext};
+use quotavista_core::provider::{ProviderError, RefreshClock};
+use quotavista_core::secrets::{SecretError, SecretStore};
+use quotavista_core::storage::{Repository, StorageError, WriteContext};
 use quotavista_infrastructure::durable::{FileStore, SharedFileStore};
-use quotavista_infrastructure::refresh::RefreshCoordinator;
+use quotavista_infrastructure::refresh::{Admission, HistoryOutcome, Outcome, RefreshCoordinator};
 use quotavista_infrastructure::sqlite::SqliteRepository;
 use quotavista_providers::simulated::SimulatedAdapter;
 use quotavista_providers::synthetic_providers;
@@ -39,14 +40,6 @@ impl RefreshClock for UtcClock {
     }
 }
 
-/// Pin the secrets backend that the desktop ships to non-native builds. macOS
-/// and Linux use [`NativeSecrets`]; every other platform falls back to the
-/// in-memory session store so tests and CI runs stay platform-neutral.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-type DesktopSecrets = quotavista_infrastructure::secrets::NativeSecrets;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-type DesktopSecrets = quotavista_core::secrets::SessionSecrets;
-
 /// Sink for revision-only change events. Production wires this to the Tauri
 /// `qv://change` channel; tests record events into a vector. The renderer
 /// never sees values: every event carries opaque identifiers and revisions
@@ -54,20 +47,6 @@ type DesktopSecrets = quotavista_core::secrets::SessionSecrets;
 /// prose.
 pub trait ChangeSink: Send + Sync {
     fn emit(&self, event: ChangeEvent);
-
-    /// Test-only introspection hook. Production sinks return nothing
-    /// meaningful; only `RecordingChangeSink` overrides this to allow tests
-    /// to inspect emissions without leaking the trait object into the public
-    /// surface.
-    #[cfg(test)]
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        // Default impl is only callable for non-RecordingChangeSink trait
-        // objects; tests must downcast to the recording sink.
-        unimplemented!("ChangeSink::as_any is only overridden for RecordingChangeSink")
-    }
 }
 
 struct TauriChangeSink {
@@ -83,21 +62,23 @@ impl ChangeSink for TauriChangeSink {
     }
 }
 
+/// Records the emitted change events so tests can assert that an event is
+/// published only after a commit.
 #[cfg(test)]
 pub struct RecordingChangeSink {
-    events: tokio::sync::Mutex<Vec<ChangeEvent>>,
+    events: std::sync::Mutex<Vec<ChangeEvent>>,
 }
 
 #[cfg(test)]
 impl RecordingChangeSink {
     pub fn new() -> Self {
         Self {
-            events: tokio::sync::Mutex::new(Vec::new()),
+            events: std::sync::Mutex::new(Vec::new()),
         }
     }
 
-    pub async fn snapshot(&self) -> Vec<ChangeEvent> {
-        self.events.lock().await.clone()
+    pub fn events(&self) -> Vec<ChangeEvent> {
+        self.events.lock().expect("change sink lock").clone()
     }
 }
 
@@ -111,18 +92,48 @@ impl Default for RecordingChangeSink {
 #[cfg(test)]
 impl ChangeSink for RecordingChangeSink {
     fn emit(&self, event: ChangeEvent) {
-        // Use blocking_lock because emit is sync and the events list is
-        // short-lived (test scope).
-        let mut guard = self.events.blocking_lock();
-        guard.push(event);
+        self.events.lock().expect("change sink lock").push(event);
     }
+}
 
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: 'static,
-    {
-        self
+/// The credential store the desktop uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SecretChoice {
+    /// The platform-native store (macOS keychain, Linux Secret Service). This
+    /// is the default; a native store that cannot be opened leaves the
+    /// composition degraded instead of being replaced.
+    Native,
+    /// The in-memory session store. Selecting it is a deliberate opt-in and
+    /// never a fallback for a locked or missing native store.
+    SessionOnly,
+}
+
+/// Environment variable that records the explicit session-only opt-in.
+pub const SESSION_ONLY_ENV: &str = "QUOTAVISTA_SECRET_STORE";
+
+/// Resolve the credential store choice. The native store is the default;
+/// `QUOTAVISTA_SECRET_STORE=session-only` is the only way to select the
+/// in-memory store, and it is a visible, deliberate opt-in.
+pub fn secret_choice_from_env() -> SecretChoice {
+    match std::env::var(SESSION_ONLY_ENV).as_deref() {
+        Ok("session-only") => SecretChoice::SessionOnly,
+        _ => SecretChoice::Native,
     }
+}
+
+/// Open the platform-native credential store.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn open_native_secrets() -> Result<Arc<dyn SecretStore>, SecretError> {
+    Ok(Arc::new(
+        quotavista_infrastructure::secrets::NativeSecrets::open()?,
+    ))
+}
+
+/// No native backend exists on this platform, so the composition runs
+/// degraded until the user selects a store explicitly.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn open_native_secrets() -> Result<Arc<dyn SecretStore>, SecretError> {
+    Err(SecretError::Unavailable)
 }
 
 /// Everything the renderer can reach through Tauri commands. Held in Tauri's
@@ -130,24 +141,99 @@ impl ChangeSink for RecordingChangeSink {
 /// (which would defeat the lifecycle fence and the cooldown journal).
 pub struct AppState {
     pub repository: Arc<SqliteRepository>,
-    pub secrets: Arc<dyn SecretStore>,
-    pub coordinator: tokio::sync::Mutex<
-        quotavista_infrastructure::lifecycle::Coordinator<
-            SqliteRepository,
-            SharedFileStore,
-            Arc<dyn SecretReferenceStore>,
-        >,
-    >,
-    pub refresh: tokio::sync::Mutex<
-        RefreshCoordinator<SqliteRepository, SimulatedAdapter, SharedFileStore, UtcClock>,
-    >,
+    /// The selected credential store. `None` while the composition runs
+    /// degraded: the native store could not be opened, and the session store
+    /// is never substituted for it.
+    pub secrets: Option<Arc<dyn SecretStore>>,
+    /// Typed reason the composition runs degraded, if it does.
+    pub degraded: Option<SafeError>,
+    /// Lifecycle coordinator. It needs a credential reference store, so it is
+    /// absent while the composition runs degraded.
+    pub coordinator: Option<tokio::sync::Mutex<LifecycleCoordinator>>,
+    pub refresh: tokio::sync::Mutex<RefreshState>,
+    /// Refresh job id to connection id, so a polled operation can name the
+    /// connection it belongs to.
+    pub jobs: tokio::sync::Mutex<BTreeMap<String, String>>,
+    /// Operations that were reported without a coordinator job (a refused or
+    /// cooldown-blocked admission). Keeping them makes every operation id the
+    /// refresh command returns pollable.
+    pub admissions: tokio::sync::Mutex<BTreeMap<String, OperationDto>>,
+    /// Counter behind the synthetic operation ids of admissions without a job.
+    pub admission_counter: std::sync::atomic::AtomicU64,
     pub changes: Arc<dyn ChangeSink>,
 }
+impl AppState {
+    /// Synthetic operation id for an admission that has no coordinator job.
+    fn next_admission_id(&self) -> LocalId {
+        let sequence = self.admission_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        LocalId::try_from(format!("admission-{sequence}")).expect("synthetic LocalId shape")
+    }
+
+    /// Keep an admission without a job so its operation id stays pollable.
+    async fn remember_admission(&self, dto: OperationDto) -> OperationDto {
+        self.admissions
+            .lock()
+            .await
+            .insert(dto.operation_id.as_str().to_owned(), dto.clone());
+        dto
+    }
+}
+
+/// The lifecycle coordinator wired to the SQLite store, the file journal, and
+/// the credential reference store.
+type LifecycleCoordinator = quotavista_infrastructure::lifecycle::Coordinator<
+    SqliteRepository,
+    SharedFileStore,
+    Arc<dyn SecretReferenceStore>,
+>;
+
+/// The refresh coordinator wired to the synthetic provider adapter.
+type RefreshState =
+    RefreshCoordinator<SqliteRepository, SimulatedAdapter, SharedFileStore, UtcClock>;
 
 /// Initialise the desktop composition in a caller-supplied root directory.
 /// The desktop binary uses `std::env::temp_dir()`; tests pass a
 /// `tempfile::TempDir` so no real application directory is ever touched.
-pub async fn build(root: PathBuf, changes: Arc<dyn ChangeSink>) -> Result<AppState, SafeError> {
+pub async fn build(
+    root: PathBuf,
+    changes: Arc<dyn ChangeSink>,
+    secrets: SecretChoice,
+) -> Result<AppState, SafeError> {
+    build_with_provider(
+        root,
+        changes,
+        secrets,
+        SimulatedAdapter::new(synthetic_providers()[0]),
+    )
+    .await
+}
+
+/// Initialise the desktop composition with an explicit provider adapter.
+/// Tests use this to inject a failing synthetic scenario.
+pub async fn build_with_provider(
+    root: PathBuf,
+    changes: Arc<dyn ChangeSink>,
+    secrets: SecretChoice,
+    provider: SimulatedAdapter,
+) -> Result<AppState, SafeError> {
+    build_inner(root, changes, open_choice(secrets), provider).await
+}
+
+/// Open the chosen credential store. The in-memory session store is only
+/// reachable through an explicit choice; it is never a fallback.
+fn open_choice(choice: SecretChoice) -> Result<Arc<dyn SecretStore>, SecretError> {
+    match choice {
+        SecretChoice::SessionOnly => Ok(Arc::new(quotavista_core::secrets::SessionSecrets::new())),
+        SecretChoice::Native => open_native_secrets(),
+    }
+}
+
+async fn build_inner(
+    root: PathBuf,
+    changes: Arc<dyn ChangeSink>,
+    opened: Result<Arc<dyn SecretStore>, SecretError>,
+    provider: SimulatedAdapter,
+) -> Result<AppState, SafeError> {
     std::fs::create_dir_all(&root).map_err(|_| safe(ErrorCode::InternalError))?;
     let database = SqliteRepository::open(&root.join("quotavista.sqlite"))
         .await
@@ -156,28 +242,44 @@ pub async fn build(root: PathBuf, changes: Arc<dyn ChangeSink>) -> Result<AppSta
         FileStore::new(root.join("journal")).map_err(|_| safe(ErrorCode::InternalError))?,
     ));
 
-    let secrets = open_secrets().map_err(|_| safe(ErrorCode::SecretStoreUnavailable))?;
-    let references: Arc<dyn SecretReferenceStore> = secrets.clone();
-    let mut coordinator = quotavista_infrastructure::lifecycle::Coordinator::open(
-        database.clone(),
-        durable.clone(),
-        references,
-    )
-    .map_err(|_| safe(ErrorCode::InternalError))?;
-    coordinator
-        .recover()
-        .await
-        .map_err(|_| safe(ErrorCode::InternalError))?;
+    // A credential store that could not be opened leaves the composition
+    // degraded: the typed error is kept and reported, and the session store
+    // is never substituted for it.
+    let (store, degraded): (Option<Arc<dyn SecretStore>>, Option<SafeError>) = match opened {
+        Ok(store) => (Some(store), None),
+        Err(error) => (None, Some(secret_error(&error))),
+    };
 
-    let adapter = SimulatedAdapter::new(synthetic_providers()[0]);
-    let refresh = RefreshCoordinator::open(database.clone(), adapter, durable.clone(), UtcClock)
+    let coordinator = match &store {
+        Some(store) => {
+            let references: Arc<dyn SecretReferenceStore> = store.clone();
+            let mut coordinator = quotavista_infrastructure::lifecycle::Coordinator::open(
+                database.clone(),
+                durable.clone(),
+                references,
+            )
+            .map_err(|_| safe(ErrorCode::InternalError))?;
+            coordinator
+                .recover()
+                .await
+                .map_err(|_| safe(ErrorCode::InternalError))?;
+            Some(tokio::sync::Mutex::new(coordinator))
+        }
+        None => None,
+    };
+
+    let refresh = RefreshCoordinator::open(database.clone(), provider, durable.clone(), UtcClock)
         .map_err(|_| safe(ErrorCode::InternalError))?;
 
     Ok(AppState {
         repository: Arc::new(database),
-        secrets,
-        coordinator: tokio::sync::Mutex::new(coordinator),
+        secrets: store,
+        degraded,
+        coordinator,
         refresh: tokio::sync::Mutex::new(refresh),
+        jobs: tokio::sync::Mutex::new(BTreeMap::new()),
+        admissions: tokio::sync::Mutex::new(BTreeMap::new()),
+        admission_counter: std::sync::atomic::AtomicU64::new(0),
         changes,
     })
 }
@@ -190,43 +292,21 @@ pub async fn build_for_tauri(
     handle: tauri::AppHandle,
 ) -> Result<AppState, SafeError> {
     let sink: Arc<dyn ChangeSink> = Arc::new(TauriChangeSink { handle });
-    build(root, sink).await
-}
-
-/// Try the platform-native secret store first; if the backend is unavailable
-/// (locked keychain, no Secret Service bus, headless container, ...), fall
-/// back to the in-memory session store and remember the degraded mode so the
-/// application can advertise the choice to the user.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn open_secrets() -> Result<Arc<dyn SecretStore>, SafeError> {
-    match DesktopSecrets::open() {
-        Ok(native) => Ok(Arc::new(native)),
-        Err(_) => Ok(Arc::new(quotavista_core::secrets::SessionSecrets::new())),
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn open_secrets() -> Result<Arc<dyn SecretStore>, SafeError> {
-    Ok(Arc::new(DesktopSecrets::new()))
+    build(root, sink, secret_choice_from_env()).await
 }
 
 fn safe(code: ErrorCode) -> SafeError {
     SafeError::new(code, None)
 }
-
-/// Convenience helpers for tests. Every literal here satisfies the contract
-/// scalar validators, so an unwrap is appropriate in tests that have already
-/// confirmed the invariants at compile time.
-#[cfg(test)]
-mod test_helpers {
-    use quotavista_contracts::{LocalId, Revision};
-
-    pub fn local_id(value: &str) -> LocalId {
-        LocalId::try_from(value.to_owned()).expect("valid LocalId literal")
-    }
-
-    pub fn revision(value: u64) -> Revision {
-        Revision::try_from(value.to_string()).expect("valid Revision literal")
+/// Map a credential-store failure onto its typed safe error. A locked store and
+/// an unavailable store stay distinct: a locked store waits for the user, an
+/// unavailable one means the backend is missing.
+fn secret_error(error: &SecretError) -> SafeError {
+    match error {
+        SecretError::Locked => safe(ErrorCode::SecretStoreLocked),
+        SecretError::Unavailable => safe(ErrorCode::SecretStoreUnavailable),
+        SecretError::NeedsCredentials => safe(ErrorCode::NeedsCredentials),
+        SecretError::Validation => safe(ErrorCode::Validation),
     }
 }
 
@@ -235,69 +315,76 @@ mod test_helpers {
 /// renderer can never reach a handler that accepts credentials outside this
 /// dispatcher.
 ///
-/// `request_value` is accepted as a raw JSON value so the application owns the
-/// decode boundary. A malformed or oversized payload never reaches Tauri's
-/// `CommandArg` machinery; the application returns a sealed
-/// [`Envelope::Error`] with a fixed message instead of echoing the input.
+/// The request is accepted as an optional raw JSON value so the application
+/// owns the whole decode boundary. A missing, malformed, or oversized payload
+/// never reaches Tauri's `CommandArg` machinery; the application returns a
+/// sealed [`Envelope::Error`] with a fixed message instead of echoing the
+/// input.
 #[tauri::command]
 async fn dispatch_command(
     state: tauri::State<'_, AppState>,
-    request_value: serde_json::Value,
+    request: Option<serde_json::Value>,
 ) -> Result<Envelope, Envelope> {
-    let parsed: Result<Request, _> = serde_json::from_value(request_value);
-    let request = match parsed {
-        Ok(request) => request,
-        // Decode failures stay inside the application envelope: the renderer
-        // never sees the framework's source-traced error path, and the safe
-        // message never echoes the offending value, field name, or provider.
-        Err(_) => {
-            return Ok(Envelope::Error {
-                contract_version: quotavista_contracts::CONTRACT_VERSION,
-                request_id: synthetic_request_id(),
-                error: SafeError::new(ErrorCode::Validation, None),
-            });
-        }
+    Ok(run_request(state.inner(), request).await)
+}
+
+/// Decode, validate, and run one request. The Tauri command and the tests
+/// share this path, so a test exercises the production behaviour and not a
+/// parallel implementation.
+async fn run_request(state: &AppState, request: Option<serde_json::Value>) -> Envelope {
+    let request = match request {
+        Some(value) => match serde_json::from_value::<Request>(value) {
+            Ok(request) => request,
+            // Decode failures stay inside the application envelope: the
+            // renderer never sees the framework's source-traced error path,
+            // and the safe message never echoes the offending value, field
+            // name, or provider.
+            Err(_) => return envelope_error(synthetic_request_id(), safe(ErrorCode::Validation)),
+        },
+        // A missing argument is answered with the same sealed error as a
+        // malformed one.
+        None => return envelope_error(synthetic_request_id(), safe(ErrorCode::Validation)),
     };
 
     if let Err(error) = request.validate(&UtcClock) {
-        return Ok(envelope_error(request.request_id, error));
+        return envelope_error(request.request_id.clone(), error);
     }
     let request_id = request.request_id.clone();
-    match dispatch(&state, request).await {
-        Ok(data) => Ok(Envelope::Ok {
-            contract_version: quotavista_contracts::CONTRACT_VERSION,
+    match dispatch(state, request).await {
+        Ok(data) => Envelope::Ok {
+            contract_version: CONTRACT_VERSION,
             request_id,
             data: Box::new(data),
-        }),
-        Err(error) => Ok(envelope_error(request_id, error)),
+        },
+        Err(error) => envelope_error(request_id, error),
     }
 }
 
-/// Testable dispatch entry point. The Tauri command wrapper above exists so
-/// the renderer can reach the boundary; this function exists so tests can
-/// drive the same code path with a constructed [`AppState`].
-pub async fn dispatch(
-    state: &tauri::State<'_, AppState>,
-    request: Request,
-) -> Result<CommandResult, SafeError> {
+/// Run a validated request against the composition.
+pub async fn dispatch(state: &AppState, request: Request) -> Result<CommandResult, SafeError> {
     match request.command {
         Command::ListConnections => list_connections(state)
             .await
             .map(CommandResult::ListConnections),
-        Command::ConnectProvider { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
+        Command::ConnectProvider { .. } | Command::ReplaceCredentials { .. } => {
+            // The credential store is the only reason these two commands
+            // cannot be served yet, so a degraded composition reports that
+            // first instead of a generic "not implemented yet".
+            match &state.degraded {
+                Some(error) => Err(error.clone()),
+                None => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
+            }
+        }
         Command::UpdateConnection { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-        Command::ReplaceCredentials { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
         Command::SetConnectionEnabled { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
         Command::RemoveConnection { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
         Command::RefreshConnections { target } => refresh_connections(state, target)
             .await
             .map(CommandResult::RefreshConnections),
-        Command::GetOverview { range } => get_overview(state, range)
-            .await
-            .map(CommandResult::GetOverview),
-        Command::QueryStatistics { range } => query_statistics(state, range)
-            .await
-            .map(CommandResult::QueryStatistics),
+        // The overview and statistics queries belong to the later analytics
+        // phase. They report that state instead of an invented success.
+        Command::GetOverview { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
+        Command::QueryStatistics { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
         Command::UpdateSettings { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
         Command::GetOperation { operation_id } => get_operation(state, operation_id)
             .await
@@ -307,7 +394,7 @@ pub async fn dispatch(
 
 fn envelope_error(request_id: LocalId, error: SafeError) -> Envelope {
     Envelope::Error {
-        contract_version: quotavista_contracts::CONTRACT_VERSION,
+        contract_version: CONTRACT_VERSION,
         request_id,
         error,
     }
@@ -320,7 +407,7 @@ fn synthetic_request_id() -> LocalId {
     LocalId::try_from("qv-malformed".to_owned()).expect("static LocalId literal")
 }
 
-async fn list_connections(state: &tauri::State<'_, AppState>) -> Result<ConnectionList, SafeError> {
+async fn list_connections(state: &AppState) -> Result<ConnectionList, SafeError> {
     let connections = state
         .repository
         .connections()
@@ -332,27 +419,50 @@ async fn list_connections(state: &tauri::State<'_, AppState>) -> Result<Connecti
         .collect();
     Ok(ConnectionList {
         connections: dtos,
-        data_revision: Revision::try_from(state_data_revision(state).await?.to_string())
-            .map_err(|_| safe(ErrorCode::InternalError))?,
+        data_revision: data_revision(state).await?,
     })
 }
 
+/// The store-wide data revision. Every committed snapshot or published
+/// partition advances it, so it is the monotonic revision the change events
+/// carry.
+async fn data_revision(state: &AppState) -> Result<Revision, SafeError> {
+    let revision = state
+        .repository
+        .data_revision()
+        .await
+        .map_err(storage_error)?;
+    Revision::try_from(revision.max(0).to_string()).map_err(|_| safe(ErrorCode::InternalError))
+}
+
+/// Upper bound on the coordinator steps one refresh request drives. The
+/// synthetic provider needs eight; the bound only keeps a provider that never
+/// terminates from stalling the request.
+const MAX_REFRESH_STEPS: usize = 64;
+
 async fn refresh_connections(
-    state: &tauri::State<'_, AppState>,
-    target: quotavista_contracts::RefreshTarget,
+    state: &AppState,
+    target: RefreshTarget,
 ) -> Result<OperationList, SafeError> {
     let connections = state
         .repository
         .connections()
         .await
         .map_err(storage_error)?;
-    let selected: Vec<Connection> = match &target {
-        quotavista_contracts::RefreshTarget::All => connections,
-        quotavista_contracts::RefreshTarget::Selected(ids) => {
-            let id_set: std::collections::BTreeSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+
+    // An unknown selected id is rejected before any job is admitted: dropping
+    // it silently would refresh a different set than the caller asked for.
+    let selected: Vec<&quotavista_core::storage::Connection> = match &target {
+        RefreshTarget::All => connections.iter().collect(),
+        RefreshTarget::Selected(ids) => {
+            let known: BTreeSet<&str> = connections.iter().map(|c| c.id.as_str()).collect();
+            if ids.iter().any(|id| !known.contains(id.as_str())) {
+                return Err(safe(ErrorCode::Validation));
+            }
+            let wanted: BTreeSet<&str> = ids.iter().map(|id| id.as_str()).collect();
             connections
-                .into_iter()
-                .filter(|c| id_set.contains(c.id.as_str()))
+                .iter()
+                .filter(|c| wanted.contains(c.id.as_str()))
                 .collect()
         }
     };
@@ -374,73 +484,109 @@ async fn refresh_connections(
         .map(|(id, ctx)| (id.as_str(), ctx.clone()))
         .collect();
 
+    let revision_before = state
+        .repository
+        .data_revision()
+        .await
+        .map_err(storage_error)?;
+
     let mut refresh = state.refresh.lock().await;
     let admissions = refresh.request_manual(&request_refs).await;
+
+    // Drive the admitted jobs far enough that the returned operation ids are
+    // pollable and a committed revision can be reported.
+    for _ in 0..MAX_REFRESH_STEPS {
+        let running = admissions.iter().any(|admission| match admission {
+            Admission::Admitted { job } | Admission::Coalesced { job } => {
+                refresh.outcome(job).is_none()
+            }
+            _ => false,
+        });
+        if !running {
+            break;
+        }
+        refresh.pump().await;
+    }
+
     let mut operations = Vec::with_capacity(admissions.len());
     let mut affected_connections: Vec<LocalId> = Vec::new();
     let mut affected_scopes: Vec<LocalId> = Vec::new();
 
-    for (admission, (id, _ctx)) in admissions.into_iter().zip(requests.iter()) {
-        let local_id = LocalId::try_from(id.clone()).map_err(|_| safe(ErrorCode::Validation))?;
+    for (admission, (connection_id, _)) in admissions.iter().zip(requests.iter()) {
+        let local_id =
+            LocalId::try_from(connection_id.clone()).map_err(|_| safe(ErrorCode::Validation))?;
         match admission {
-            quotavista_infrastructure::refresh::Admission::Admitted { job } => {
-                affected_connections.push(local_id.clone());
-                let scopes = state
-                    .repository
-                    .scope_ids(id)
+            Admission::Admitted { job } | Admission::Coalesced { job } => {
+                let job_id =
+                    LocalId::try_from(job.clone()).map_err(|_| safe(ErrorCode::InternalError))?;
+                state
+                    .jobs
+                    .lock()
                     .await
-                    .map_err(storage_error)?;
-                for scope in scopes {
-                    if let Ok(scope_local) = LocalId::try_from(scope) {
-                        affected_scopes.push(scope_local);
+                    .insert(job.clone(), connection_id.clone());
+                let outcome = refresh.outcome(job);
+                let committed = matches!(outcome, Some(Outcome::Completed { .. }));
+                operations.push(operation_dto(
+                    job_id,
+                    Some(local_id.clone()),
+                    outcome.as_ref(),
+                )?);
+                if committed {
+                    affected_connections.push(local_id);
+                    for scope in state
+                        .repository
+                        .scope_ids(connection_id)
+                        .await
+                        .map_err(storage_error)?
+                    {
+                        if let Ok(scope) = LocalId::try_from(scope) {
+                            affected_scopes.push(scope);
+                        }
                     }
                 }
-                operations.push(operation_dto(
-                    local_id.clone(),
-                    quotavista_contracts::OperationKind::Refresh,
-                    quotavista_contracts::OperationState::Running,
-                ));
-                let _ = job;
             }
-            quotavista_infrastructure::refresh::Admission::Coalesced { job } => {
-                operations.push(operation_dto(
-                    local_id.clone(),
-                    quotavista_contracts::OperationKind::Refresh,
-                    quotavista_contracts::OperationState::Running,
-                ));
-                let _ = job;
-            }
-            quotavista_infrastructure::refresh::Admission::CooldownBlocked { until } => {
-                let retry_at = quotavista_contracts::Instant::try_from(
-                    until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                )
-                .map_err(|_| safe(ErrorCode::InternalError))?;
-                operations.push(OperationDto {
-                    operation_id: local_id.clone(),
+            Admission::CooldownBlocked { until } => {
+                let retry_at = Instant::try_from(until.to_rfc3339_opts(SecondsFormat::Secs, true))
+                    .map_err(|_| safe(ErrorCode::InternalError))?;
+                let dto = OperationDto {
+                    operation_id: state.next_admission_id(),
                     connection_id: Some(local_id),
-                    kind: quotavista_contracts::OperationKind::Refresh,
-                    state: quotavista_contracts::OperationState::Pending,
-                    next_action: quotavista_contracts::NextAction::Retry,
+                    kind: OperationKind::Refresh,
+                    state: OperationState::Pending,
+                    next_action: NextAction::Retry,
                     retryable: true,
                     retry_at: Some(retry_at.clone()),
                     error: Some(SafeError::new(ErrorCode::RateLimited, Some(retry_at))),
-                });
+                };
+                operations.push(state.remember_admission(dto).await);
             }
-            quotavista_infrastructure::refresh::Admission::Refused => {
-                operations.push(operation_dto(
-                    local_id.clone(),
-                    quotavista_contracts::OperationKind::Refresh,
-                    quotavista_contracts::OperationState::Failed,
-                ));
+            Admission::Refused => {
+                let dto = OperationDto {
+                    operation_id: state.next_admission_id(),
+                    connection_id: Some(local_id),
+                    kind: OperationKind::Refresh,
+                    state: OperationState::Failed,
+                    next_action: NextAction::None,
+                    retryable: false,
+                    retry_at: None,
+                    error: Some(SafeError::new(ErrorCode::Conflict, None)),
+                };
+                operations.push(state.remember_admission(dto).await);
             }
         }
     }
-
     drop(refresh);
 
-    if !affected_connections.is_empty() {
+    // The event is published only when a commit advanced the store revision,
+    // so a refresh that failed or wrote nothing announces no change.
+    let revision_after = state
+        .repository
+        .data_revision()
+        .await
+        .map_err(storage_error)?;
+    if revision_after > revision_before {
         state.changes.emit(ChangeEvent {
-            data_revision: Revision::try_from(state_data_revision(state).await?.to_string())
+            data_revision: Revision::try_from(revision_after.max(0).to_string())
                 .map_err(|_| safe(ErrorCode::InternalError))?,
             affected_connection_ids: affected_connections,
             affected_scope_ids: affected_scopes,
@@ -450,90 +596,125 @@ async fn refresh_connections(
     Ok(OperationList { operations })
 }
 
-async fn get_overview(
-    state: &tauri::State<'_, AppState>,
-    range: quotavista_contracts::OverviewRangeInput,
-) -> Result<OverviewDto, SafeError> {
-    let _ = state;
-    let _ = range;
-    Ok(OverviewDto {
-        metrics: Vec::new(),
-        summary: stub_summary(),
-    })
-}
-
-async fn query_statistics(
-    state: &tauri::State<'_, AppState>,
-    range: RangeInput,
-) -> Result<StatisticsDto, SafeError> {
-    let _ = state;
-    let _ = range;
-    Ok(stub_summary())
-}
-
-async fn get_operation(
-    state: &tauri::State<'_, AppState>,
-    operation_id: LocalId,
-) -> Result<OperationDto, SafeError> {
+async fn get_operation(state: &AppState, operation_id: LocalId) -> Result<OperationDto, SafeError> {
+    let target = operation_id.as_str().to_owned();
+    {
+        let mut refresh = state.refresh.lock().await;
+        if refresh.job_ids().iter().any(|job| job == &target) {
+            if refresh.outcome(&target).is_none() {
+                // A job that is still running is advanced by the poll itself, so
+                // polling is the continuation path for a job that outlived the
+                // refresh command's own step budget.
+                refresh.pump().await;
+            }
+            let outcome = refresh.outcome(&target);
+            let connection = state
+                .jobs
+                .lock()
+                .await
+                .get(&target)
+                .cloned()
+                .and_then(|id| LocalId::try_from(id).ok());
+            return operation_dto(operation_id, connection, outcome.as_ref());
+        }
+    }
+    // An admission without a coordinator job keeps its operation id pollable.
+    if let Some(dto) = state.admissions.lock().await.get(&target).cloned() {
+        return Ok(dto);
+    }
+    // Not a refresh job: fall back to the durable operation ledger.
     let operations = state
         .repository
         .operations(None)
         .await
         .map_err(storage_error)?;
-    let target = operation_id.as_str().to_owned();
     let record = operations
         .into_iter()
-        .find(|r| r.operation_id == target)
+        .find(|record| record.operation_id == target)
         .ok_or_else(|| safe(ErrorCode::Validation))?;
-    Ok(quotavista_contracts::OperationDto::from_record(&record))
+    Ok(OperationDto::from_record(&record))
 }
 
+/// Map a refresh outcome onto the operation the renderer polls. A job that is
+/// still running stays `Running` so the caller can poll it again.
 fn operation_dto(
-    connection_local: LocalId,
-    kind: quotavista_contracts::OperationKind,
-    state: quotavista_contracts::OperationState,
-) -> OperationDto {
-    OperationDto {
-        operation_id: connection_local.clone(),
-        connection_id: Some(connection_local),
-        kind,
-        state,
-        next_action: quotavista_contracts::NextAction::None,
+    operation_id: LocalId,
+    connection_id: Option<LocalId>,
+    outcome: Option<&Outcome>,
+) -> Result<OperationDto, SafeError> {
+    let mut dto = OperationDto {
+        operation_id,
+        connection_id,
+        kind: OperationKind::Refresh,
+        state: OperationState::Running,
+        next_action: NextAction::None,
         retryable: false,
         retry_at: None,
         error: None,
-    }
-}
-
-async fn state_data_revision(state: &tauri::State<'_, AppState>) -> Result<u64, SafeError> {
-    // P1-07 reads the storage-side revision once a query path mutates it;
-    // until then the empty-store revision is 0. The integer revision is the
-    // upper bound the wire `Revision` scalar accepts.
-    let settings = state.repository.settings().await.map_err(storage_error)?;
-    Ok(settings.revision.max(0) as u64)
-}
-
-fn stub_summary() -> StatisticsDto {
-    use quotavista_contracts::{Grain, Instant, IntervalDto, Revision, Zone};
-    StatisticsDto {
-        requested_interval: IntervalDto {
-            start: Instant::try_from("1970-01-01T00:00:00Z".to_owned())
-                .expect("static Instant literal"),
-            end: Instant::try_from("1970-01-02T00:00:00Z".to_owned())
-                .expect("static Instant literal"),
+    };
+    let Some(outcome) = outcome else {
+        return Ok(dto);
+    };
+    match outcome {
+        Outcome::Completed { history } => match history {
+            HistoryOutcome::Published { .. } | HistoryOutcome::Skipped => {
+                dto.state = OperationState::Succeeded;
+            }
+            // The history stream never attested completeness, so nothing was
+            // published. The refresh must not report synchronization success.
+            HistoryOutcome::Incomplete => {
+                dto.state = OperationState::Failed;
+                dto.next_action = NextAction::Retry;
+                dto.retryable = true;
+                dto.error = Some(SafeError::new(ErrorCode::InvalidResponse, None));
+            }
         },
-        effective_intervals: Vec::new(),
-        reporting_zone: Zone::try_from("UTC".to_owned()).expect("static Zone literal"),
-        grain: Grain::Day,
-        as_of: Instant::try_from("1970-01-01T00:00:00Z".to_owned())
-            .expect("static Instant literal"),
-        provisional: false,
-        coverage: Vec::new(),
-        excluded_scopes: Vec::new(),
-        totals: Vec::new(),
-        series: Vec::new(),
-        plans: Vec::new(),
-        data_revision: Revision::try_from("0".to_owned()).expect("static Revision literal"),
+        Outcome::Cancelled => {
+            dto.state = OperationState::Cancelled;
+            dto.retryable = true;
+            dto.error = Some(SafeError::new(ErrorCode::Cancelled, None));
+        }
+        Outcome::Fenced => {
+            dto.state = OperationState::Failed;
+            dto.next_action = NextAction::Retry;
+            dto.retryable = true;
+            dto.error = Some(SafeError::new(ErrorCode::Conflict, None));
+        }
+        Outcome::Cooldown { until } => {
+            let retry_at = Instant::try_from(until.to_rfc3339_opts(SecondsFormat::Secs, true))
+                .map_err(|_| safe(ErrorCode::InternalError))?;
+            dto.state = OperationState::Pending;
+            dto.next_action = NextAction::Retry;
+            dto.retryable = true;
+            dto.retry_at = Some(retry_at.clone());
+            dto.error = Some(SafeError::new(ErrorCode::RateLimited, Some(retry_at)));
+        }
+        Outcome::Failed { error } => {
+            dto.state = OperationState::Failed;
+            dto.retryable = true;
+            dto.error = Some(provider_error(error));
+            dto.next_action = match error {
+                ProviderError::PermissionRequired => NextAction::ProvideCredentials,
+                _ => NextAction::Retry,
+            };
+        }
+        Outcome::StorageFailed => {
+            dto.state = OperationState::Failed;
+            dto.next_action = NextAction::Retry;
+            dto.retryable = true;
+            dto.error = Some(SafeError::new(ErrorCode::StorageError, None));
+        }
+    }
+    Ok(dto)
+}
+
+fn provider_error(error: &ProviderError) -> SafeError {
+    match error {
+        ProviderError::RateLimited { .. } => SafeError::new(ErrorCode::RateLimited, None),
+        ProviderError::PermissionRequired => SafeError::new(ErrorCode::PermissionRequired, None),
+        ProviderError::Offline => SafeError::new(ErrorCode::Offline, None),
+        ProviderError::Timeout => SafeError::new(ErrorCode::Timeout, None),
+        ProviderError::InvalidResponse => SafeError::new(ErrorCode::InvalidResponse, None),
     }
 }
 
@@ -563,6 +744,14 @@ pub fn run() {
             let state = runtime
                 .block_on(build_for_tauri(root.clone(), handle))
                 .expect("desktop composition must initialise");
+            if let Some(error) = &state.degraded {
+                // The credential store is unavailable: report the typed error
+                // instead of quietly using a weaker store.
+                eprintln!(
+                    "quotavista: credential store unavailable: {}",
+                    error.message()
+                );
+            }
             app.manage(state);
             Ok(())
         })
@@ -574,150 +763,128 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_helpers::*;
-    use quotavista_contracts::{Alias, Provider, RefreshTarget, SecretInput, SettingsPatch};
+    use quotavista_contracts::{Alias, Provider, SecretInput, SettingsPatch};
+    use quotavista_core::domain::Lifecycle;
+    use quotavista_core::storage::{Connection, Scope};
+    use quotavista_providers::simulated::Scenario;
     use tempfile::TempDir;
 
-    async fn fixture() -> (TempDir, AppState) {
+    const CONNECTION_ID: &str = "synthetic-connection-0";
+
+    /// Hermetic fixture: a throwaway directory, the in-memory session store
+    /// chosen explicitly, and the recording change sink. No keychain, Secret
+    /// Service, or application directory is touched.
+    async fn fixture() -> (TempDir, AppState, Arc<RecordingChangeSink>) {
+        fixture_with_provider(SimulatedAdapter::new(synthetic_providers()[0])).await
+    }
+
+    async fn fixture_with_provider(
+        provider: SimulatedAdapter,
+    ) -> (TempDir, AppState, Arc<RecordingChangeSink>) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let sink: Arc<dyn ChangeSink> = Arc::new(RecordingChangeSink::new());
-        let state = build(dir.path().to_path_buf(), sink)
-            .await
-            .expect("composition must initialise");
-        (dir, state)
+        let sink = Arc::new(RecordingChangeSink::new());
+        let changes: Arc<dyn ChangeSink> = sink.clone();
+        let state = build_with_provider(
+            dir.path().to_path_buf(),
+            changes,
+            SecretChoice::SessionOnly,
+            provider,
+        )
+        .await
+        .expect("composition must initialise");
+        (dir, state, sink)
     }
 
-    fn fixture_request(command: Command) -> Request {
-        Request {
-            contract_version: quotavista_contracts::CONTRACT_VERSION,
-            request_id: local_id("fixture-request"),
-            command,
-        }
+    /// Add a connection with one scope so the coordinator can admit a job for
+    /// it.
+    async fn seed_connection(state: &AppState, lifecycle: Lifecycle) {
+        seed_connection_with_id(state, CONNECTION_ID, lifecycle).await;
     }
 
-    async fn run(state: &AppState, request: Request) -> Result<CommandResult, SafeError> {
-        // Bypass Tauri's State wrapper by passing the underlying AppState.
-        // We re-implement the inner dispatch path here so tests can drive the
-        // composition root without booting a Tauri runtime.
-        match request.command {
-            Command::ListConnections => list_connections_test(state)
-                .await
-                .map(CommandResult::ListConnections),
-            Command::ConnectProvider { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-            Command::UpdateConnection { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-            Command::ReplaceCredentials { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-            Command::SetConnectionEnabled { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-            Command::RemoveConnection { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-            Command::RefreshConnections { target } => refresh_connections_test(state, target)
-                .await
-                .map(CommandResult::RefreshConnections),
-            Command::GetOverview { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-            Command::QueryStatistics { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-            Command::UpdateSettings { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-            Command::GetOperation { operation_id } => get_operation_test(state, operation_id)
-                .await
-                .map(CommandResult::GetOperation),
-        }
-    }
-
-    async fn list_connections_test(state: &AppState) -> Result<ConnectionList, SafeError> {
-        let connections = state
+    async fn seed_connection_with_id(state: &AppState, id: &str, lifecycle: Lifecycle) {
+        state
             .repository
-            .connections()
+            .create_connection(
+                &Connection {
+                    id: id.to_owned(),
+                    provider: format!("synthetic-provider-{id}"),
+                    alias: format!("Synthetic {id}"),
+                    generation: 0,
+                    lifecycle,
+                },
+                &Scope {
+                    id: format!("synthetic-scope-{id}"),
+                    connection_id: id.to_owned(),
+                    key: format!("synthetic-account-{id}"),
+                    kind: "account".to_owned(),
+                },
+            )
             .await
-            .map_err(storage_error)?;
-        let dtos = connections
-            .iter()
-            .map(|c| ConnectionDto::from_domain(c, Vec::new(), Vec::new()))
-            .collect();
-        Ok(ConnectionList {
-            connections: dtos,
-            data_revision: revision(state_data_revision_test(state).await?),
+            .expect("connection must be stored");
+    }
+
+    fn local_id(value: &str) -> LocalId {
+        LocalId::try_from(value.to_owned()).expect("valid LocalId literal")
+    }
+
+    fn revision(value: u64) -> Revision {
+        Revision::try_from(value.to_string()).expect("valid Revision literal")
+    }
+
+    /// The canonical wire shape of a request, exactly as the renderer sends
+    /// it: the command stays a nested tagged object.
+    fn canonical(command: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "contract_version": CONTRACT_VERSION,
+            "request_id": "fixture-request",
+            "command": command,
         })
     }
 
-    async fn refresh_connections_test(
-        state: &AppState,
-        target: RefreshTarget,
-    ) -> Result<OperationList, SafeError> {
-        let connections = state
-            .repository
-            .connections()
-            .await
-            .map_err(storage_error)?;
-        let _ = target;
-        let mut refresh = state.refresh.lock().await;
-        let requests: Vec<(String, WriteContext)> = connections
-            .iter()
-            .map(|c| {
-                (
-                    c.id.clone(),
-                    WriteContext {
-                        connection_id: c.id.clone(),
-                        generation: c.generation,
-                    },
-                )
-            })
-            .collect();
-        let request_refs: Vec<(&str, WriteContext)> = requests
-            .iter()
-            .map(|(id, ctx)| (id.as_str(), ctx.clone()))
-            .collect();
-        let admissions = refresh.request_manual(&request_refs).await;
-        let operations = admissions
-            .into_iter()
-            .map(|admission| match admission {
-                quotavista_infrastructure::refresh::Admission::Admitted { job: _ } => {
-                    operation_dto(
-                        local_id("admitted"),
-                        quotavista_contracts::OperationKind::Refresh,
-                        quotavista_contracts::OperationState::Running,
-                    )
-                }
-                quotavista_infrastructure::refresh::Admission::Coalesced { job: _ } => {
-                    operation_dto(
-                        local_id("coalesced"),
-                        quotavista_contracts::OperationKind::Refresh,
-                        quotavista_contracts::OperationState::Running,
-                    )
-                }
-                quotavista_infrastructure::refresh::Admission::CooldownBlocked { .. } => {
-                    operation_dto(
-                        local_id("cooldown"),
-                        quotavista_contracts::OperationKind::Refresh,
-                        quotavista_contracts::OperationState::Pending,
-                    )
-                }
-                quotavista_infrastructure::refresh::Admission::Refused => operation_dto(
-                    local_id("refused"),
-                    quotavista_contracts::OperationKind::Refresh,
-                    quotavista_contracts::OperationState::Failed,
-                ),
-            })
-            .collect();
-        Ok(OperationList { operations })
+    fn list_connections_request() -> serde_json::Value {
+        canonical(serde_json::json!({ "command": "list_connections" }))
     }
 
-    async fn get_operation_test(
-        state: &AppState,
-        operation_id: LocalId,
-    ) -> Result<OperationDto, SafeError> {
-        let operations = state
-            .repository
-            .operations(None)
-            .await
-            .map_err(storage_error)?;
-        let target = operation_id.as_str().to_owned();
-        let record = operations
-            .into_iter()
-            .find(|r| r.operation_id == target)
-            .ok_or_else(|| safe(ErrorCode::Validation))?;
-        Ok(quotavista_contracts::OperationDto::from_record(&record))
+    fn refresh_all_request() -> serde_json::Value {
+        canonical(serde_json::json!({
+            "command": "refresh_connections",
+            "args": { "target": { "kind": "all" } },
+        }))
     }
 
-    async fn state_data_revision_test(state: &AppState) -> Result<u64, SafeError> {
-        let settings = state.repository.settings().await.map_err(storage_error)?;
-        Ok(settings.revision.max(0) as u64)
+    fn refresh_selected_request(ids: &[&str]) -> serde_json::Value {
+        canonical(serde_json::json!({
+            "command": "refresh_connections",
+            "args": { "target": { "kind": "selected", "connection_ids": ids } },
+        }))
+    }
+
+    fn get_operation_request(operation_id: &str) -> serde_json::Value {
+        canonical(serde_json::json!({
+            "command": "get_operation",
+            "args": { "operation_id": operation_id },
+        }))
+    }
+
+    /// The single operation of a refresh envelope.
+    fn only_operation(envelope: &Envelope) -> OperationDto {
+        match envelope {
+            Envelope::Ok { data, .. } => match data.as_ref() {
+                CommandResult::RefreshConnections(list) => {
+                    assert_eq!(list.operations.len(), 1);
+                    list.operations[0].clone()
+                }
+                other => panic!("expected RefreshConnections, got {other:?}"),
+            },
+            other => panic!("expected Envelope::Ok, got {other:?}"),
+        }
+    }
+
+    fn expect_error(envelope: &Envelope, code: ErrorCode) {
+        match envelope {
+            Envelope::Error { error, .. } => assert_eq!(error.code(), code),
+            other => panic!("expected Envelope::Error with {code:?}, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -734,26 +901,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_rejects_oversized_secret_via_decode() {
-        // SecretInput rejects oversized values during serde deserialization,
-        // so the envelope never crosses the dispatch boundary.
-        let oversized = "x".repeat(64 * 1024 + 1);
-        let raw = serde_json::json!({
-            "contract_version": quotavista_contracts::CONTRACT_VERSION,
-            "request_id": "fixture",
+    async fn oversized_secret_is_rejected_while_a_valid_credential_decodes() {
+        // The canonical nested request shape accepts a one-byte credential, so
+        // the rejection below is about the size and not about the shape.
+        let valid = canonical(serde_json::json!({
             "command": "connect_provider",
             "args": {
                 "provider": "kimi",
                 "alias": "Demo",
                 "credential_kind": "api_key",
-                "secret": oversized,
+                "secret": "x",
                 "storage_mode": "session_only",
-            }
-        });
-        let parsed: Result<Request, _> = serde_json::from_value(raw);
+            },
+        }));
         assert!(
-            parsed.is_err(),
-            "oversized secret must fail before validation"
+            serde_json::from_value::<Request>(valid).is_ok(),
+            "a valid one-byte credential must decode"
+        );
+
+        let oversized = canonical(serde_json::json!({
+            "command": "connect_provider",
+            "args": {
+                "provider": "kimi",
+                "alias": "Demo",
+                "credential_kind": "api_key",
+                "secret": "x".repeat(64 * 1024 + 1),
+                "storage_mode": "session_only",
+            },
+        }));
+        assert!(
+            serde_json::from_value::<Request>(oversized).is_err(),
+            "an oversized credential must fail before validation"
         );
     }
 
@@ -763,18 +941,26 @@ mod tests {
         for i in 0..101 {
             ids.push(local_id(&format!("scope-{i}")));
         }
-        let request = fixture_request(Command::RefreshConnections {
-            target: RefreshTarget::Selected(ids),
-        });
+        let request = Request {
+            contract_version: CONTRACT_VERSION,
+            request_id: local_id("fixture-request"),
+            command: Command::RefreshConnections {
+                target: RefreshTarget::Selected(ids),
+            },
+        };
         let error = request.validate(&UtcClock).expect_err("101 ids must fail");
         assert_eq!(error.code(), ErrorCode::Validation);
     }
 
     #[tokio::test]
     async fn dispatch_rejects_empty_selected_target() {
-        let request = fixture_request(Command::RefreshConnections {
-            target: RefreshTarget::Selected(Vec::new()),
-        });
+        let request = Request {
+            contract_version: CONTRACT_VERSION,
+            request_id: local_id("fixture-request"),
+            command: Command::RefreshConnections {
+                target: RefreshTarget::Selected(Vec::new()),
+            },
+        };
         let error = request
             .validate(&UtcClock)
             .expect_err("empty selection must fail");
@@ -784,14 +970,7 @@ mod tests {
     #[tokio::test]
     async fn only_connect_and_replace_accept_secret_input() {
         fn decode(json: serde_json::Value) -> Command {
-            let envelope = serde_json::json!({
-                "contract_version": quotavista_contracts::CONTRACT_VERSION,
-                "request_id": "fixture",
-                "command": json,
-            });
-            serde_json::from_value::<Request>(envelope)
-                .expect("request must decode")
-                .command
+            serde_json::from_value::<Command>(json).expect("command must decode")
         }
 
         let raw_connect = serde_json::json!({
@@ -838,8 +1017,10 @@ mod tests {
                 "deletion_intent": "credentials_history_and_managed_backups",
             }
         });
-        let raw_refresh =
-            serde_json::json!({ "command": "refresh_connections", "args": { "all": null } });
+        let raw_refresh = serde_json::json!({
+            "command": "refresh_connections",
+            "args": { "target": { "kind": "all" } }
+        });
         let raw_get_operation =
             serde_json::json!({ "command": "get_operation", "args": { "operation_id": "o" } });
 
@@ -869,13 +1050,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_rejects_malformed_input_without_echo() {
-        // The Tauri command entry point accepts a raw JSON value; decode
-        // failures must stay inside the application envelope and never echo
-        // the input through the framework's source-traced error path.
-        let raw = serde_json::json!({
-            "contract_version": quotavista_contracts::CONTRACT_VERSION,
-            "request_id": "fixture",
+    async fn malformed_request_answers_with_a_sealed_error() {
+        let (_dir, state, _sink) = fixture().await;
+        // A numeric secret must not reach the error message.
+        let raw = canonical(serde_json::json!({
             "command": "connect_provider",
             "args": {
                 "provider": "kimi",
@@ -883,85 +1061,208 @@ mod tests {
                 "credential_kind": "api_key",
                 "secret": 123456789,
                 "storage_mode": "session_only",
-            }
-        });
-        // Simulate the dispatch_command body path.
-        let parsed: Result<Request, _> = serde_json::from_value(raw.clone());
-        assert!(parsed.is_err(), "numeric secret must fail decode");
-        let error = parsed.err().unwrap();
-        let error_text = error.to_string();
-        // The serde error must not echo the integer credential through the
-        // safe message: the dispatcher replaces it with a sealed Validation
-        // and never reaches serde's source-traced string.
-        assert!(
-            !error_text.contains("123456789"),
-            "decode error leaked the offending value: {error_text}"
-        );
-        let envelope = Envelope::Error {
-            contract_version: quotavista_contracts::CONTRACT_VERSION,
-            request_id: synthetic_request_id(),
-            error: SafeError::new(ErrorCode::Validation, None),
-        };
+            },
+        }));
+        let envelope = run_request(&state, Some(raw)).await;
         match envelope {
-            Envelope::Error { error, .. } => {
+            Envelope::Error {
+                error, request_id, ..
+            } => {
                 assert_eq!(error.code(), ErrorCode::Validation);
+                assert_eq!(request_id, local_id("qv-malformed"));
                 assert!(!error.message().contains("123456789"));
             }
-            _ => panic!("malformed input must produce Envelope::Error"),
+            other => panic!("malformed input must produce Envelope::Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_request_answers_with_a_sealed_error() {
+        let (_dir, state, _sink) = fixture().await;
+        let envelope = run_request(&state, None).await;
+        match envelope {
+            Envelope::Error {
+                error, request_id, ..
+            } => {
+                assert_eq!(error.code(), ErrorCode::Validation);
+                assert_eq!(request_id, local_id("qv-malformed"));
+            }
+            other => panic!("missing input must produce Envelope::Error, got {other:?}"),
         }
     }
 
     #[tokio::test]
     async fn list_connections_returns_persisted_state() {
-        let (_dir, state) = fixture().await;
-        let result = run(&state, fixture_request(Command::ListConnections))
-            .await
-            .expect("empty storage lists cleanly");
-        match result {
-            CommandResult::ListConnections(list) => {
-                assert!(list.connections.is_empty());
-            }
-            other => panic!("expected ListConnections, got {other:?}"),
+        let (_dir, state, _sink) = fixture().await;
+        seed_connection(&state, Lifecycle::Active).await;
+        let envelope = run_request(&state, Some(list_connections_request())).await;
+        match envelope {
+            Envelope::Ok { data, .. } => match *data {
+                CommandResult::ListConnections(list) => {
+                    assert_eq!(list.connections.len(), 1);
+                    assert_eq!(list.connections[0].connection_id, local_id(CONNECTION_ID));
+                    // The revision is the store revision, not the settings
+                    // revision.
+                    assert_eq!(list.data_revision, revision(0));
+                }
+                other => panic!("expected ListConnections, got {other:?}"),
+            },
+            other => panic!("expected Envelope::Ok, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn refresh_connections_schedules_through_coordinator() {
-        let (_dir, state) = fixture().await;
-        let result = run(
+    async fn refresh_rejects_an_unknown_selected_connection() {
+        let (_dir, state, sink) = fixture().await;
+        seed_connection(&state, Lifecycle::Active).await;
+        let envelope = run_request(
             &state,
-            fixture_request(Command::RefreshConnections {
-                target: RefreshTarget::All,
-            }),
+            Some(refresh_selected_request(&["synthetic-unknown"])),
         )
-        .await
-        .expect("refresh schedules through coordinator");
-        match result {
-            CommandResult::RefreshConnections(list) => {
-                // No persisted connections means no jobs.
-                assert!(list.operations.is_empty());
-            }
-            other => panic!("expected RefreshConnections, got {other:?}"),
+        .await;
+        expect_error(&envelope, ErrorCode::Validation);
+        // Nothing was admitted, so no change event was published.
+        assert!(sink.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn refresh_drives_the_coordinator_and_returns_pollable_job_ids() {
+        let (_dir, state, sink) = fixture().await;
+        seed_connection(&state, Lifecycle::Active).await;
+
+        let envelope = run_request(&state, Some(refresh_all_request())).await;
+        let operation = only_operation(&envelope);
+
+        // The operation id is the coordinator job id, not the connection id.
+        assert_ne!(operation.operation_id, local_id(CONNECTION_ID));
+        assert_eq!(operation.connection_id, Some(local_id(CONNECTION_ID)));
+        assert_eq!(operation.state, OperationState::Succeeded);
+
+        // The same id polls the same operation.
+        let polled = run_request(
+            &state,
+            Some(get_operation_request(operation.operation_id.as_str())),
+        )
+        .await;
+        match polled {
+            Envelope::Ok { data, .. } => match *data {
+                CommandResult::GetOperation(polled) => {
+                    assert_eq!(polled.operation_id, operation.operation_id);
+                    assert_eq!(polled.state, OperationState::Succeeded);
+                }
+                other => panic!("expected GetOperation, got {other:?}"),
+            },
+            other => panic!("expected Envelope::Ok, got {other:?}"),
         }
+
+        // The commit advanced the store revision, so exactly one change event
+        // was published and it carries that revision.
+        let events = sink.events();
+        assert_eq!(events.len(), 1);
+        let committed = state
+            .repository
+            .data_revision()
+            .await
+            .expect("store revision");
+        assert_eq!(
+            events[0].data_revision,
+            Revision::try_from(committed.max(0).to_string()).expect("revision")
+        );
+        assert_eq!(
+            events[0].affected_connection_ids,
+            vec![local_id(CONNECTION_ID)]
+        );
+        assert!(!events[0].affected_scope_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_refresh_publishes_no_change_event() {
+        let adapter = SimulatedAdapter::new(synthetic_providers()[0]);
+        adapter.set_scenario(Scenario::RateLimited);
+        let (_dir, state, sink) = fixture_with_provider(adapter).await;
+        seed_connection(&state, Lifecycle::Active).await;
+
+        let envelope = run_request(&state, Some(refresh_all_request())).await;
+        let operation = only_operation(&envelope);
+        // A rate-limited provider never reports synchronization success.
+        assert_eq!(operation.state, OperationState::Pending);
+        assert!(operation.retryable);
+        assert_eq!(
+            operation.error.as_ref().map(|error| error.code()),
+            Some(ErrorCode::RateLimited)
+        );
+        // Nothing was committed, so no revision event was published.
+        assert!(sink.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_reports_a_failure_without_an_event() {
+        let (_dir, state, sink) = fixture().await;
+        seed_connection(&state, Lifecycle::PendingSetup).await;
+
+        let envelope = run_request(&state, Some(refresh_all_request())).await;
+        let operation = only_operation(&envelope);
+        assert_eq!(operation.state, OperationState::Failed);
+        assert!(sink.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_returned_operation_id_can_be_polled() {
+        let (_dir, state, _sink) = fixture().await;
+        seed_connection(&state, Lifecycle::PendingSetup).await;
+
+        let envelope = run_request(&state, Some(refresh_all_request())).await;
+        let operation = only_operation(&envelope);
+        assert_eq!(operation.state, OperationState::Failed);
+
+        // A refused admission has no coordinator job, but the operation id it
+        // hands out stays pollable.
+        let polled = run_request(
+            &state,
+            Some(get_operation_request(operation.operation_id.as_str())),
+        )
+        .await;
+        match polled {
+            Envelope::Ok { data, .. } => match *data {
+                CommandResult::GetOperation(polled) => {
+                    assert_eq!(polled.operation_id, operation.operation_id);
+                    assert_eq!(polled.state, OperationState::Failed);
+                }
+                other => panic!("expected GetOperation, got {other:?}"),
+            },
+            other => panic!("expected Envelope::Ok, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn change_event_revisions_only_move_forward() {
+        let (_dir, state, sink) = fixture().await;
+        seed_connection(&state, Lifecycle::Active).await;
+
+        run_request(&state, Some(refresh_all_request())).await;
+        run_request(&state, Some(refresh_all_request())).await;
+
+        let events = sink.events();
+        assert_eq!(events.len(), 2);
+        let first: u64 = events[0].data_revision.as_str().parse().expect("revision");
+        let second: u64 = events[1].data_revision.as_str().parse().expect("revision");
+        assert!(
+            second > first,
+            "the store revision must move forward: {first} then {second}"
+        );
     }
 
     #[tokio::test]
     async fn get_operation_rejects_missing_id() {
-        let (_dir, state) = fixture().await;
-        let result = run(
-            &state,
-            fixture_request(Command::GetOperation {
-                operation_id: local_id("missing"),
-            }),
-        )
-        .await;
-        assert!(matches!(result, Err(ref e) if e.code() == ErrorCode::Validation));
+        let (_dir, state, _sink) = fixture().await;
+        let envelope = run_request(&state, Some(get_operation_request("missing"))).await;
+        expect_error(&envelope, ErrorCode::Validation);
     }
 
     #[tokio::test]
     async fn later_phase_commands_return_typed_unsupported_state() {
-        let (_dir, state) = fixture().await;
-        let cases = [
+        let (_dir, state, _sink) = fixture().await;
+        let commands = [
             Command::ConnectProvider {
                 provider: Provider::Kimi,
                 alias: Alias::try_from("Demo".to_owned()).unwrap(),
@@ -970,7 +1271,7 @@ mod tests {
                 storage_mode: quotavista_contracts::StorageMode::SessionOnly,
             },
             Command::UpdateSettings {
-                expected_settings_revision: Revision::try_from("0".to_owned()).unwrap(),
+                expected_settings_revision: revision(0),
                 changes: SettingsPatch {
                     ui_locale: None,
                     reporting_zone: None,
@@ -979,39 +1280,258 @@ mod tests {
                 },
             },
         ];
-        for command in cases {
-            let result = run(&state, fixture_request(command)).await;
-            let error = result.expect_err("later-phase command must fail");
-            assert_eq!(
-                error.code(),
-                ErrorCode::UnsupportedInPhaseOne,
-                "later-phase command returned {error:?}"
-            );
+        for command in commands {
+            let request = Request {
+                contract_version: CONTRACT_VERSION,
+                request_id: local_id("fixture-request"),
+                command,
+            };
+            let error = dispatch(&state, request)
+                .await
+                .expect_err("later-phase command must fail");
+            assert_eq!(error.code(), ErrorCode::UnsupportedInPhaseOne);
         }
     }
 
-    #[test]
-    fn change_sink_records_commit_only_events() {
-        // The change sink is wired after a successful refresh admission, so a
-        // test that records every emission proves events arrive only after a
-        // commit and never on validation failures.
-        let sink: Arc<dyn ChangeSink> = Arc::new(RecordingChangeSink::new());
-        let event = ChangeEvent {
-            data_revision: revision(7),
-            affected_connection_ids: vec![local_id("c")],
-            affected_scope_ids: vec![local_id("s")],
+    #[tokio::test]
+    async fn a_degraded_composition_reports_the_credential_store_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sink = Arc::new(RecordingChangeSink::new());
+        let changes: Arc<dyn ChangeSink> = sink.clone();
+        // A credential store that cannot be opened leaves the composition
+        // degraded instead of falling back to the session store.
+        let state = build_inner(
+            dir.path().to_path_buf(),
+            changes,
+            Err(SecretError::Unavailable),
+            SimulatedAdapter::new(synthetic_providers()[0]),
+        )
+        .await
+        .expect("composition must initialise");
+        assert!(state.secrets.is_none());
+        assert_eq!(
+            state.degraded.as_ref().map(|error| error.code()),
+            Some(ErrorCode::SecretStoreUnavailable)
+        );
+
+        // The commands that need the credential store report the typed error.
+        let request = Request {
+            contract_version: CONTRACT_VERSION,
+            request_id: local_id("fixture-request"),
+            command: Command::ConnectProvider {
+                provider: Provider::Kimi,
+                alias: Alias::try_from("Demo".to_owned()).unwrap(),
+                credential_kind: quotavista_contracts::CredentialKind::ApiKey,
+                secret: SecretInput::try_from("synthetic-only".to_owned()).unwrap(),
+                storage_mode: quotavista_contracts::StorageMode::SessionOnly,
+            },
         };
-        sink.emit(event.clone());
-        // Verify trait dispatch by downcasting through the Arc.
-        let recorded = sink
-            .as_any()
-            .downcast_ref::<RecordingChangeSink>()
-            .expect("test sink must be a RecordingChangeSink");
-        // We can't block_on here without an async runtime, so rely on the
-        // RecordingChangeSink being instant-collecting: emit synchronously
-        // appends.
-        let guard = recorded.events.blocking_lock();
-        assert_eq!(guard.len(), 1);
-        assert_eq!(guard[0].data_revision, revision(7));
+        let error = dispatch(&state, request)
+            .await
+            .expect_err("a degraded composition must refuse");
+        assert_eq!(error.code(), ErrorCode::SecretStoreUnavailable);
+
+        // Cached local data still reads back.
+        seed_connection(&state, Lifecycle::Active).await;
+        let envelope = run_request(&state, Some(list_connections_request())).await;
+        match envelope {
+            Envelope::Ok { data, .. } => match *data {
+                CommandResult::ListConnections(list) => assert_eq!(list.connections.len(), 1),
+                other => panic!("expected ListConnections, got {other:?}"),
+            },
+            other => panic!("expected Envelope::Ok, got {other:?}"),
+        }
+    }
+
+    /// The generated handler is the transport the renderer uses. This test
+    /// sends the exact argument shape the renderer sends and reads the
+    /// envelope the renderer reads.
+    #[test]
+    fn the_generated_handler_accepts_the_renderer_argument_shape() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sink = Arc::new(RecordingChangeSink::new());
+        let changes: Arc<dyn ChangeSink> = sink.clone();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = runtime
+            .block_on(build_with_provider(
+                dir.path().to_path_buf(),
+                changes,
+                SecretChoice::SessionOnly,
+                SimulatedAdapter::new(synthetic_providers()[0]),
+            ))
+            .expect("composition must initialise");
+
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![dispatch_command])
+            .manage(state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock window");
+
+        // The renderer sends `invoke("dispatch_command", { request })`.
+        let body = serde_json::json!({
+            "request": {
+                "contract_version": CONTRACT_VERSION,
+                "request_id": "renderer-request",
+                "command": { "command": "list_connections" },
+            }
+        });
+        let response = tauri::test::get_ipc_response(
+            &webview,
+            tauri::webview::InvokeRequest {
+                cmd: "dispatch_command".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "tauri://localhost".parse().expect("url"),
+                body: tauri::ipc::InvokeBody::Json(body),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+        .expect("invoke response");
+        match response {
+            tauri::ipc::InvokeResponseBody::Json(body) => {
+                let value: serde_json::Value =
+                    serde_json::from_str(&body).expect("json response body");
+                assert_eq!(value["status"], "ok");
+                assert_eq!(value["request_id"], "renderer-request");
+            }
+            other => panic!("expected a JSON body, got {other:?}"),
+        }
+    }
+
+    /// A missing argument is answered inside the application envelope instead
+    /// of failing the framework's argument binding.
+    #[test]
+    fn the_generated_handler_answers_a_missing_argument_with_an_error_envelope() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sink = Arc::new(RecordingChangeSink::new());
+        let changes: Arc<dyn ChangeSink> = sink.clone();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = runtime
+            .block_on(build_with_provider(
+                dir.path().to_path_buf(),
+                changes,
+                SecretChoice::SessionOnly,
+                SimulatedAdapter::new(synthetic_providers()[0]),
+            ))
+            .expect("composition must initialise");
+
+        let app = tauri::test::mock_builder()
+            .invoke_handler(tauri::generate_handler![dispatch_command])
+            .manage(state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock window");
+
+        let response = tauri::test::get_ipc_response(
+            &webview,
+            tauri::webview::InvokeRequest {
+                cmd: "dispatch_command".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "tauri://localhost".parse().expect("url"),
+                body: tauri::ipc::InvokeBody::Json(serde_json::json!({})),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+        .expect("invoke response");
+        match response {
+            tauri::ipc::InvokeResponseBody::Json(body) => {
+                let value: serde_json::Value =
+                    serde_json::from_str(&body).expect("json response body");
+                assert_eq!(value["status"], "error");
+                assert_eq!(value["error"]["code"], "validation");
+            }
+            other => panic!("expected a JSON body, got {other:?}"),
+        }
+    }
+
+    /// A credential-store failure keeps its own code: a locked store and an
+    /// unavailable store are different states for the user.
+    #[test]
+    fn secret_errors_keep_locked_and_unavailable_distinct() {
+        assert_eq!(
+            secret_error(&SecretError::Locked).code(),
+            ErrorCode::SecretStoreLocked
+        );
+        assert_eq!(
+            secret_error(&SecretError::Unavailable).code(),
+            ErrorCode::SecretStoreUnavailable
+        );
+        assert_eq!(
+            secret_error(&SecretError::NeedsCredentials).code(),
+            ErrorCode::NeedsCredentials
+        );
+        assert_eq!(
+            secret_error(&SecretError::Validation).code(),
+            ErrorCode::Validation
+        );
+    }
+
+    /// A job that outlives the refresh command's step budget is finished by
+    /// polling: the poll advances the coordinator, so a caller is never left
+    /// with an operation that can no longer progress.
+    #[tokio::test]
+    async fn polling_finishes_a_job_that_outlived_the_refresh_budget() {
+        let (_dir, state, _sink) = fixture().await;
+        // The coordinator runs at most two jobs at a time, so more connections
+        // than the budget can carry leave jobs behind.
+        for index in 0..24 {
+            seed_connection_with_id(
+                &state,
+                &format!("synthetic-connection-{index}"),
+                Lifecycle::Active,
+            )
+            .await;
+        }
+
+        let envelope = run_request(&state, Some(refresh_all_request())).await;
+        let operations = match envelope {
+            Envelope::Ok { data, .. } => match *data {
+                CommandResult::RefreshConnections(list) => list.operations,
+                other => panic!("expected RefreshConnections, got {other:?}"),
+            },
+            other => panic!("expected Envelope::Ok, got {other:?}"),
+        };
+        let running: Vec<OperationDto> = operations
+            .into_iter()
+            .filter(|operation| operation.state == OperationState::Running)
+            .collect();
+        assert!(
+            !running.is_empty(),
+            "the refresh budget must leave a job running"
+        );
+
+        let mut polled = running[0].clone();
+        for _ in 0..200 {
+            if polled.state != OperationState::Running {
+                break;
+            }
+            let envelope = run_request(
+                &state,
+                Some(get_operation_request(polled.operation_id.as_str())),
+            )
+            .await;
+            polled = match envelope {
+                Envelope::Ok { data, .. } => match *data {
+                    CommandResult::GetOperation(operation) => operation,
+                    other => panic!("expected GetOperation, got {other:?}"),
+                },
+                other => panic!("expected Envelope::Ok, got {other:?}"),
+            };
+        }
+        assert_eq!(polled.state, OperationState::Succeeded);
     }
 }

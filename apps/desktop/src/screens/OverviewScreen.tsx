@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { ipc } from "../ipc";
+import {
+  ipc,
+  isObsoleteResponse,
+  revisionTracker,
+  subscribeToChanges,
+} from "../ipc";
 import { useI18n, type MessageKey } from "../i18n";
 import type { ConnectionList } from "../generated/contracts";
 
@@ -25,10 +30,51 @@ export default function OverviewScreen() {
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    ipc
-      .listConnections()
-      .then(setConnections)
-      .catch(() => setFailed(true));
+    let disposed = false;
+    let unsubscribe: (() => Promise<void>) | undefined;
+
+    // A response older than the observed revision is obsolete: rendering it
+    // would overwrite newer data, so it is discarded.
+    const load = async (): Promise<void> => {
+      try {
+        const list = await ipc.listConnections();
+        if (disposed) return;
+        if (isObsoleteResponse(list.data_revision, revisionTracker.observed())) return;
+        revisionTracker.observe(list.data_revision);
+        setConnections(list);
+        setFailed(false);
+      } catch {
+        if (!disposed) setFailed(true);
+      }
+    };
+
+    // The listener is installed before the first read. A commit that lands
+    // between the read and the registration would otherwise be missed.
+    const start = async (): Promise<void> => {
+      try {
+        const dispose = await subscribeToChanges(revisionTracker, (_event, update) => {
+          // A gap means a revision was skipped, so the local view cannot be
+          // patched and is reloaded instead. A stale event carries nothing
+          // newer than the rendered revision, so it is ignored.
+          if (update.kind === "apply" || update.kind === "gap") void load();
+        });
+        if (disposed) {
+          void dispose();
+          return;
+        }
+        unsubscribe = dispose;
+      } catch {
+        // A live channel that cannot be installed leaves the screen on its
+        // last known state instead of an empty view.
+      }
+      await load();
+    };
+    void start();
+
+    return () => {
+      disposed = true;
+      void unsubscribe?.();
+    };
   }, []);
 
   if (failed) {

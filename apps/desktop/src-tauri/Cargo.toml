@@ -25,4 +25,7 @@ tauri = { version = "2", features = [] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
+# The `test` feature provides the mock runtime used by the generated-handler
+# test that exercises the real renderer argument shape.
+tauri = { version = "2", features = ["test"] }
 tempfile = "3"

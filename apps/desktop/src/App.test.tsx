@@ -6,6 +6,12 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
+// The overview screen subscribes to `qv://change`; jsdom has no Tauri event
+// bridge, so the listener is stubbed out.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
 const PROTOTYPE_ENVELOPE = {
   status: "ok",
   contract_version: 1,

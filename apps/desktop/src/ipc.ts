@@ -87,16 +87,27 @@ export function isObsoleteResponse(responseRevision: string, observedAt: string)
 }
 
 /**
- * Returns true when `seen` and `incoming` form a gap: the new revision is
- * not exactly one greater than the previous one. The renderer treats gaps
- * as "must reload" because we cannot trust a partial update.
+ * Returns true when `seen` and `incoming` form a gap: the new revision
+ * skipped one or more steps. The renderer treats gaps as "must reload"
+ * because we cannot trust a partial update. A repeated revision is not a gap.
  */
 export function isRevisionGap(seen: string, incoming: string): boolean {
   // We accept the very first event (seen === "0") regardless of value, since
   // an empty storage always returns revision 0.
   if (seen === "0") return false;
-  return BigInt(incoming) - BigInt(seen) !== 1n;
+  return BigInt(incoming) - BigInt(seen) > 1n;
 }
+
+/**
+ * Outcome of folding a revision into the tracker.
+ * - `apply`: the revision is the next expected value.
+ * - `gap`: the revision skipped one or more steps; the view must be reloaded.
+ * - `stale`: the revision is not newer than the watermark; it is ignored.
+ */
+export type RevisionUpdate = {
+  kind: "apply" | "gap" | "stale";
+  gap: boolean;
+};
 
 /**
  * Revision-only state shared by every screen. The renderer stores the latest
@@ -104,34 +115,69 @@ export function isRevisionGap(seen: string, incoming: string): boolean {
  * than this value is treated as obsolete and discarded.
  */
 export class RevisionTracker {
-  private latest: string;
-  private readonly subscribers = new Set<(event: ChangeEvent) => void>();
+  /**
+   * The newest revision the renderer has seen, from a response or from an
+   * event. A response whose `data_revision` is older than this is obsolete
+   * and is discarded.
+   */
+  private rendered: string;
+  /**
+   * The newest revision received through the event stream. It is tracked
+   * separately from `rendered` so that a response observed by one consumer
+   * cannot silence the invalidation another consumer is still waiting for.
+   */
+  private announced: string;
+  private readonly subscribers = new Set<
+    (event: ChangeEvent, update: RevisionUpdate) => void
+  >();
 
   constructor(initial: string = "0") {
-    this.latest = initial;
+    this.rendered = initial;
+    this.announced = initial;
   }
 
   /** Current best-known revision. The renderer treats responses older than this as obsolete. */
   observed(): string {
-    return this.latest;
+    return this.rendered;
   }
 
   /**
-   * Apply a `qv://change` event. Returns one of:
-   * - `{"kind":"apply"}`: revision is the next expected value; subscribers fired.
-   * - `{"kind":"gap"}`: revision skipped one or more steps; subscribers fired with `gap=true`
-   *   so screens can trigger a full reload.
+   * Record a revision the renderer has actually rendered. Returns false when
+   * the revision is not newer than the watermark, so the caller can discard
+   * the response that carried it. The event watermark is untouched: a
+   * rendered response is not an announcement.
    */
-  apply(event: ChangeEvent): { kind: "apply" | "gap"; gap: boolean } {
-    const gap = isRevisionGap(this.latest, event.data_revision);
-    this.latest = event.data_revision;
-    for (const subscriber of this.subscribers) {
-      subscriber(event);
-    }
-    return { kind: gap ? "gap" : "apply", gap };
+  observe(revision: string): boolean {
+    if (compareRevisions(revision, this.rendered) <= 0) return false;
+    this.rendered = revision;
+    return true;
   }
 
-  subscribe(handler: (event: ChangeEvent) => void): () => void {
+  /**
+   * Apply a `qv://change` event. Neither watermark ever moves backward: an
+   * event that repeats the event stream is dropped without notifying
+   * subscribers, and an event older than what the renderer already showed
+   * is reported as `stale` but still reaches the subscribers that have not
+   * seen it.
+   */
+  apply(event: ChangeEvent): RevisionUpdate {
+    if (compareRevisions(event.data_revision, this.announced) <= 0) {
+      return { kind: "stale", gap: false };
+    }
+    const newer = compareRevisions(event.data_revision, this.rendered) > 0;
+    const gap = newer && isRevisionGap(this.rendered, event.data_revision);
+    this.announced = event.data_revision;
+    if (newer) {
+      this.rendered = event.data_revision;
+    }
+    const update: RevisionUpdate = { kind: gap ? "gap" : newer ? "apply" : "stale", gap };
+    for (const subscriber of this.subscribers) {
+      subscriber(event, update);
+    }
+    return update;
+  }
+
+  subscribe(handler: (event: ChangeEvent, update: RevisionUpdate) => void): () => void {
     this.subscribers.add(handler);
     return () => {
       this.subscribers.delete(handler);
@@ -140,9 +186,16 @@ export class RevisionTracker {
 
   /** Test/debug access: replace the current revision. */
   reset(value: string): void {
-    this.latest = value;
+    this.rendered = value;
+    this.announced = value;
   }
 }
+
+/**
+ * The renderer's single revision watermark. Every screen shares it so a
+ * response that is obsolete for one screen is obsolete for all of them.
+ */
+export const revisionTracker = new RevisionTracker();
 
 /**
  * Build a per-request id from a monotonic counter. The id is opaque to the
@@ -278,17 +331,24 @@ export const ipc = {
  */
 export async function subscribeToChanges(
   tracker: RevisionTracker,
-  handler: (event: ChangeEvent) => void,
+  handler: (event: ChangeEvent, update: RevisionUpdate) => void,
 ): Promise<() => Promise<void>> {
   const unsubTracker = tracker.subscribe(handler);
-  const unlisten = await listen<ChangeEvent>(
-    "qv://change",
-    (event: Event<ChangeEvent>) => {
-      tracker.apply(event.payload);
-    },
-  );
-  return async () => {
+  try {
+    const unlisten = await listen<ChangeEvent>(
+      "qv://change",
+      (event: Event<ChangeEvent>) => {
+        tracker.apply(event.payload);
+      },
+    );
+    return async () => {
+      unsubTracker();
+      await unlisten();
+    };
+  } catch (error) {
+    // A listener that never installed must not leave a tracker subscriber
+    // behind that nothing can ever unsubscribe.
     unsubTracker();
-    unlisten();
-  };
+    throw error;
+  }
 }

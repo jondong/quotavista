@@ -412,6 +412,12 @@ impl Repository for SqliteRepository {
             })
             .collect()
     }
+    async fn data_revision(&self) -> Result<i64, StorageError> {
+        sqlx::query_scalar("SELECT data_revision FROM store_state WHERE id=1")
+            .fetch_one(&self.readers)
+            .await
+            .map_err(db_error)
+    }
     async fn set_lifecycle(
         &self,
         context: &WriteContext,
