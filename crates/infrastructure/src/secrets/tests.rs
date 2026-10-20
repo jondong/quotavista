@@ -10,8 +10,11 @@ use crate::{
 };
 use quotavista_core::{
     domain::Lifecycle,
-    journal::{DurableStore, JournalError, OperationKind, SecretStoreError},
-    secrets::{mint_reference, validate_secret, SecretBackend, SessionSecrets},
+    journal::{
+        DurableStore, JournalError, OperationKind, OperationPhase, OperationRecord,
+        SecretStoreError,
+    },
+    secrets::{mint_reference, validate_secret, SecretBackend, SecretStore, SessionSecrets},
     storage::{Connection, Repository, Scope},
 };
 use std::{
@@ -344,8 +347,9 @@ async fn session_only_restart_loses_the_secret_and_enters_needs_credentials() {
     );
 
     // Reconciliation enters needs-credentials instead of falling back.
+    let dyn_store: Arc<dyn SecretStore> = restarted.clone();
     assert!(
-        !reconcile_connection_credentials(&harness.repo, restarted.as_ref(), CONNECTION)
+        !reconcile_connection_credentials(&harness.repo, &dyn_store, CONNECTION)
             .await
             .unwrap()
     );
@@ -375,17 +379,18 @@ async fn locked_and_unavailable_are_distinct_and_leave_the_connection_untouched(
         .await
         .unwrap();
 
-    let failing = FakeStore::default();
+    let failing = Arc::new(FakeStore::default());
     failing.fail_read(Some(SecretError::Locked));
+    let dyn_store: Arc<dyn SecretStore> = failing.clone();
     assert_eq!(
-        reconcile_connection_credentials(&harness.repo, &failing, CONNECTION).await,
+        reconcile_connection_credentials(&harness.repo, &dyn_store, CONNECTION).await,
         Err(SecretError::Locked)
     );
     assert_eq!(lifecycle_of(&harness).await, Lifecycle::Active);
 
     failing.fail_read(Some(SecretError::Unavailable));
     assert_eq!(
-        reconcile_connection_credentials(&harness.repo, &failing, CONNECTION).await,
+        reconcile_connection_credentials(&harness.repo, &dyn_store, CONNECTION).await,
         Err(SecretError::Unavailable)
     );
     assert_eq!(lifecycle_of(&harness).await, Lifecycle::Active);
@@ -464,6 +469,172 @@ async fn secret_values_never_reach_journals_or_the_database() {
     // database, so the check is real.
     assert!(database.contains("synthetic-provider-"));
     assert!(database.contains("qv1:session-only:synthetic-candidate-b"));
+}
+
+/// When `begin_operation` fails, the abort compensates the never-written
+/// candidate: the staged bytes are dropped, so the same reference cannot be
+/// committed later, and the fence is released.
+#[tokio::test]
+async fn abort_after_failed_begin_operation_drops_the_staged_candidate() {
+    let harness = harness().await;
+    let store = Arc::new(SessionSecrets::new());
+    let mut coordinator =
+        Coordinator::open(harness.repo.clone(), durable(&harness), store.clone()).unwrap();
+    coordinator.recover().await.unwrap();
+
+    // A completed projection for the operation id refuses begin_operation.
+    let candidate = reference("synthetic-candidate-a");
+    let completed = OperationRecord {
+        operation_id: "synthetic-operation-a".into(),
+        connection_id: CONNECTION.into(),
+        kind: OperationKind::Setup,
+        phase: OperationPhase::Complete,
+        candidate_ref: Some(candidate.clone()),
+        previous_ref: None,
+        generation: 0,
+    };
+    harness.repo.begin_operation(&completed).await.unwrap();
+
+    store.stage_candidate(&candidate, SECRET).unwrap();
+    let context = coordinator.schedule_context(CONNECTION).await.unwrap();
+    let error = coordinator
+        .activate_credentials(
+            "synthetic-operation-a",
+            &context,
+            OperationKind::Setup,
+            &candidate,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error, JournalError::Conflict);
+    // The abort acknowledged cleanup only after the staged bytes were dropped:
+    // the same reference cannot be committed, and the fence is released.
+    assert_eq!(
+        store.write_candidate(&candidate),
+        Err(SecretStoreError::Unavailable)
+    );
+    assert!(coordinator.schedule_context(CONNECTION).await.is_ok());
+}
+
+/// Fake backend for the worker-logic checks: counts backend writes and can
+/// refuse deletions, so the staging rules are exercised deterministically.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[derive(Default)]
+struct FakeWorkerBackend {
+    state: Mutex<FakeWorkerState>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[derive(Default)]
+struct FakeWorkerState {
+    present: BTreeMap<String, String>,
+    writes: usize,
+    refuse_delete: bool,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Backend for FakeWorkerBackend {
+    fn write(&self, _service: &str, reference: &str, value: &str) -> Result<(), SecretError> {
+        let mut state = self.state.lock().unwrap();
+        state.writes += 1;
+        state.present.insert(reference.to_owned(), value.to_owned());
+        Ok(())
+    }
+
+    fn read(&self, _service: &str, reference: &str) -> Result<String, SecretError> {
+        self.state
+            .lock()
+            .unwrap()
+            .present
+            .get(reference)
+            .cloned()
+            .ok_or(SecretError::NeedsCredentials)
+    }
+
+    fn delete(&self, _service: &str, reference: &str) -> Result<(), SecretError> {
+        let mut state = self.state.lock().unwrap();
+        if state.refuse_delete {
+            return Err(SecretError::Locked);
+        }
+        state.present.remove(reference);
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn worker_command<T>(
+    backend: &FakeWorkerBackend,
+    kind: SecretBackend,
+    staged: &mut BTreeMap<String, String>,
+    command: impl FnOnce(std::sync::mpsc::Sender<Result<T, SecretError>>) -> Command,
+) -> Result<T, SecretError> {
+    let (reply, receiver) = std::sync::mpsc::channel();
+    handle(
+        backend,
+        kind,
+        "quotavista-test-worker",
+        staged,
+        command(reply),
+    );
+    receiver.recv().unwrap()
+}
+
+/// Deleting a staged candidate drops the staged bytes: a later write fails
+/// without ever reaching the backend, and a real backend deletion error is
+/// still reported, so durable cleanup stays retryable.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn delete_drops_the_staged_value_and_backend_errors_stay_reported() {
+    let kind = default_backend();
+    let backend = FakeWorkerBackend::default();
+    let mut staged: BTreeMap<String, String> = BTreeMap::new();
+    let candidate = mint_reference(kind, "synthetic-entry");
+
+    // stage → delete → write: the write fails without touching the backend.
+    worker_command(&backend, kind, &mut staged, |reply| Command::Stage {
+        reference: candidate.clone(),
+        secret: SECRET.to_owned(),
+        reply,
+    })
+    .unwrap();
+    worker_command(&backend, kind, &mut staged, |reply| Command::Delete {
+        reference: candidate.clone(),
+        reply,
+    })
+    .unwrap();
+    assert_eq!(
+        worker_command(&backend, kind, &mut staged, |reply| Command::Write {
+            reference: candidate.clone(),
+            reply,
+        }),
+        Err(SecretError::Unavailable)
+    );
+    assert_eq!(backend.state.lock().unwrap().writes, 0);
+
+    // A real backend deletion error is reported (durable cleanup stays
+    // retryable), and the staged bytes are still dropped.
+    backend.state.lock().unwrap().refuse_delete = true;
+    worker_command(&backend, kind, &mut staged, |reply| Command::Stage {
+        reference: candidate.clone(),
+        secret: SECRET.to_owned(),
+        reply,
+    })
+    .unwrap();
+    assert_eq!(
+        worker_command(&backend, kind, &mut staged, |reply| Command::Delete {
+            reference: candidate.clone(),
+            reply,
+        }),
+        Err(SecretError::Locked)
+    );
+    assert_eq!(
+        worker_command(&backend, kind, &mut staged, |reply| Command::Write {
+            reference: candidate.clone(),
+            reply,
+        }),
+        Err(SecretError::Unavailable)
+    );
+    assert_eq!(backend.state.lock().unwrap().writes, 0);
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

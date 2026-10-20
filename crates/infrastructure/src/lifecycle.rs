@@ -50,7 +50,9 @@ pub struct Coordinator<R, D, S> {
     recovered: bool,
 }
 
-impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, S> {
+impl<R: Repository, D: DurableStore, S: SecretReferenceStore + Clone + Send + 'static>
+    Coordinator<R, D, S>
+{
     /// Load the external safety state. Corrupt or unreadable state is a visible
     /// recovery condition: no coordinator is returned, so nothing can be
     /// scheduled or mutated from it.
@@ -242,7 +244,11 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
         }
         // 3. Record the boundary the candidate write happens at.
         let mut record = self.step(&record, OperationPhase::CandidateWritten)?;
-        if let Err(error) = self.secrets.write_candidate(candidate_ref) {
+        let candidate = candidate_ref.to_owned();
+        if let Err(error) = self
+            .store_call(move |store| store.write_candidate(&candidate))
+            .await
+        {
             return Err(self.abort(record, error.into()).await);
         }
         // 4. Activation: the final generation and fence check runs inside the
@@ -285,8 +291,30 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
             record.candidate_ref.clone()
         };
         match owed {
-            Some(reference) => self.secrets.delete_reference(&reference),
+            Some(reference) => {
+                self.store_call(move |store| store.delete_reference(&reference))
+                    .await
+            }
             None => Ok(()),
+        }
+    }
+
+    /// Run one blocking store call off the async worker: a stalled keychain
+    /// prompt or D-Bus round-trip must not occupy a tokio worker. The
+    /// coordinator runs on a tokio runtime. A panicked or cancelled store task
+    /// leaves the backend state unknown, so it reports unavailable, never
+    /// locked.
+    async fn store_call<T>(
+        &self,
+        call: impl FnOnce(&S) -> Result<T, SecretStoreError> + Send + 'static,
+    ) -> Result<T, SecretStoreError>
+    where
+        T: Send + 'static,
+    {
+        let store = self.secrets.clone();
+        match tokio::task::spawn_blocking(move || call(&store)).await {
+            Ok(result) => result,
+            Err(_) => Err(SecretStoreError::Unavailable),
         }
     }
 

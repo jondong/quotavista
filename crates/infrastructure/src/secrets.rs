@@ -13,16 +13,6 @@
 //! platform detail and no part of a secret value.
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::collections::BTreeMap;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::sync::{
-    mpsc::{channel, Receiver, Sender},
-    Arc,
-};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::thread::JoinHandle;
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 use quotavista_core::journal::SecretStoreError;
 use quotavista_core::{
     domain::Lifecycle,
@@ -34,6 +24,13 @@ use quotavista_core::{
     journal::SecretReferenceStore,
     secrets::{reference_backend, validate_reference, validate_secret, SecretBackend},
 };
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::collections::BTreeMap;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::thread::JoinHandle;
 
 /// Service name the production native stores write under.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -49,7 +46,7 @@ const SERVICE: &str = "quotavista";
 /// or plaintext storage.
 pub async fn reconcile_connection_credentials<R: Repository>(
     repository: &R,
-    store: &dyn SecretStore,
+    store: &Arc<dyn SecretStore>,
     connection_id: &str,
 ) -> Result<bool, SecretError> {
     let connection = repository
@@ -68,11 +65,18 @@ pub async fn reconcile_connection_credentials<R: Repository>(
         // An active connection with no reference at all has no credential
         // material either way.
         None => false,
-        Some(reference) => match store.read(reference) {
-            Ok(_) => true,
-            Err(SecretError::NeedsCredentials) => false,
-            Err(error) => return Err(error),
-        },
+        Some(reference) => {
+            // The read can stall on a keychain prompt or a D-Bus round-trip:
+            // keep it off the async worker. The caller runs on a tokio runtime.
+            let store = store.clone();
+            let reference = reference.to_owned();
+            match tokio::task::spawn_blocking(move || store.read(&reference)).await {
+                Ok(Ok(_)) => true,
+                Ok(Err(SecretError::NeedsCredentials)) => false,
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(SecretError::Unavailable),
+            }
+        }
     };
     if retrievable {
         return Ok(true);
@@ -144,7 +148,9 @@ impl NativeSecrets {
     /// touching production entries.
     pub fn open_with_service(service: &str) -> Result<Self, SecretError> {
         let backend = default_backend();
-        let store = open_keyring_store()?;
+        let store: Box<dyn Backend> = Box::new(KeyringBackend {
+            store: open_keyring_store()?,
+        });
         let (sender, receiver) = channel();
         let worker_service = service.to_owned();
         let worker = std::thread::spawn(move || run(store, backend, worker_service, receiver));
@@ -298,92 +304,123 @@ fn map_keyring_error(error: keyring_core::Error) -> SecretError {
     }
 }
 
-/// Worker loop: owns the keyring store handle and the staged values, so the
-/// calling thread never blocks on the platform backend.
+/// The platform backend behind the worker. The keyring adapter implements it;
+/// tests substitute a fake, so the staging and cleanup rules are exercised
+/// deterministically.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+trait Backend: Send {
+    fn write(&self, service: &str, reference: &str, value: &str) -> Result<(), SecretError>;
+    fn read(&self, service: &str, reference: &str) -> Result<String, SecretError>;
+    fn delete(&self, service: &str, reference: &str) -> Result<(), SecretError>;
+}
+
+/// keyring-core backend: the pinned macOS Keychain or Linux Secret Service
+/// store behind [`Arc<keyring_core::CredentialStore>`].
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+struct KeyringBackend {
+    store: Arc<keyring_core::CredentialStore>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl KeyringBackend {
+    /// Build the keyring entry for a reference: the reference itself is the
+    /// account name, so entries are namespaced by the `qv1` scheme and the
+    /// backend tag.
+    fn entry(&self, service: &str, reference: &str) -> Result<keyring_core::Entry, SecretError> {
+        self.store
+            .build(service, reference, None)
+            .map_err(map_keyring_error)
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Backend for KeyringBackend {
+    fn write(&self, service: &str, reference: &str, value: &str) -> Result<(), SecretError> {
+        self.entry(service, reference).and_then(|entry| {
+            entry
+                .set_secret(value.as_bytes())
+                .map_err(map_keyring_error)
+        })
+    }
+
+    fn read(&self, service: &str, reference: &str) -> Result<String, SecretError> {
+        self.entry(service, reference)
+            .and_then(|entry| entry.get_secret().map_err(map_keyring_error))
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|_| SecretError::Unavailable))
+    }
+
+    fn delete(&self, service: &str, reference: &str) -> Result<(), SecretError> {
+        match self.entry(service, reference) {
+            Ok(entry) => match entry.delete_credential() {
+                // Deleting an absent reference succeeds, so recovery resumes
+                // cleanup idempotently.
+                Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+                Err(error) => Err(map_keyring_error(error)),
+            },
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// Worker loop: owns the backend handle and the staged values, so the calling
+/// thread never blocks on the platform backend.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run(
-    store: Arc<keyring_core::CredentialStore>,
-    backend: SecretBackend,
+    backend: Box<dyn Backend>,
+    kind: SecretBackend,
     service: String,
     receiver: Receiver<Command>,
 ) {
     let mut staged: BTreeMap<String, String> = BTreeMap::new();
     while let Ok(command) = receiver.recv() {
-        match command {
-            Command::Stage {
-                reference,
-                secret,
-                reply,
-            } => {
-                let result = if reference_backend(&reference) == Some(backend) {
-                    staged.insert(reference, secret);
-                    Ok(())
-                } else {
-                    Err(SecretError::Validation)
-                };
-                let _ = reply.send(result);
-            }
-            Command::Write { reference, reply } => {
-                let _ = reply.send(commit_staged(
-                    store.as_ref(),
-                    &service,
-                    &mut staged,
-                    &reference,
-                ));
-            }
-            Command::Read { reference, reply } => {
-                let result = entry(store.as_ref(), &service, &reference)
-                    .and_then(|entry| entry.get_secret().map_err(map_keyring_error))
-                    .and_then(|bytes| {
-                        String::from_utf8(bytes).map_err(|_| SecretError::Unavailable)
-                    });
-                let _ = reply.send(result);
-            }
-            Command::Delete { reference, reply } => {
-                let result = match entry(store.as_ref(), &service, &reference) {
-                    Ok(entry) => match entry.delete_credential() {
-                        // Deleting an absent reference succeeds, so recovery
-                        // resumes cleanup idempotently.
-                        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-                        Err(error) => Err(map_keyring_error(error)),
-                    },
-                    Err(error) => Err(error),
-                };
-                let _ = reply.send(result);
-            }
-        }
+        handle(backend.as_ref(), kind, &service, &mut staged, command);
     }
 }
 
-/// Commit one staged value to the backend. The staging slot is always
-/// consumed, so a failed commit cannot leak a value into a later write.
+/// Handle one command against the staged values and the backend.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn commit_staged(
-    store: &keyring_core::CredentialStore,
+fn handle(
+    backend: &dyn Backend,
+    kind: SecretBackend,
     service: &str,
     staged: &mut BTreeMap<String, String>,
-    reference: &str,
-) -> Result<(), SecretError> {
-    let value = staged.remove(reference).ok_or(SecretError::Unavailable)?;
-    entry(store, service, reference).and_then(|entry| {
-        entry
-            .set_secret(value.as_bytes())
-            .map_err(map_keyring_error)
-    })
-}
-
-/// Build the keyring entry for a reference: the reference itself is the
-/// account name, so entries are namespaced by the `qv1` scheme and the
-/// backend tag.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn entry(
-    store: &keyring_core::CredentialStore,
-    service: &str,
-    reference: &str,
-) -> Result<keyring_core::Entry, SecretError> {
-    store
-        .build(service, reference, None)
-        .map_err(map_keyring_error)
+    command: Command,
+) {
+    match command {
+        Command::Stage {
+            reference,
+            secret,
+            reply,
+        } => {
+            let result = if reference_backend(&reference) == Some(kind) {
+                staged.insert(reference, secret);
+                Ok(())
+            } else {
+                Err(SecretError::Validation)
+            };
+            let _ = reply.send(result);
+        }
+        Command::Write { reference, reply } => {
+            // The staging slot is always consumed, so a failed commit cannot
+            // leak a value into a later write.
+            let result = match staged.remove(&reference) {
+                Some(value) => backend.write(service, &reference, &value),
+                None => Err(SecretError::Unavailable),
+            };
+            let _ = reply.send(result);
+        }
+        Command::Read { reference, reply } => {
+            let _ = reply.send(backend.read(service, &reference));
+        }
+        Command::Delete { reference, reply } => {
+            // The cleanup postcondition: the staged bytes are dropped with the
+            // entry, so a later write of the same reference cannot resurrect
+            // them. A backend error is still reported, so durable cleanup
+            // stays retryable.
+            staged.remove(&reference);
+            let _ = reply.send(backend.delete(service, &reference));
+        }
+    }
 }
 
 #[cfg(test)]

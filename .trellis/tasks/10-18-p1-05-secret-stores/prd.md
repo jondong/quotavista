@@ -31,4 +31,4 @@ No browser-cookie import, real credentials, provider authorization, or automatic
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. Implemented and validated; per-criterion evidence is recorded in `validation.md`.

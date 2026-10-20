@@ -44,3 +44,14 @@
 - The `SecretStore` port, native adapters, session-only store, and `reconcile_connection_credentials` are implemented but not yet composed into desktop startup or provider calls; P1-06 (simulated providers) and P1-07 (restricted IPC) wire them in.
 - Candidate validation is synthetic in Phase 1: the secret validator enforces shape only (non-empty, size, no header line breaks); it cannot prove provider access until providers exist.
 - Linux native smoke evidence remains pending until a host with a Secret Service session bus is available; the check is in place and non-destructive.
+
+## Review round 1 (PR #7, head f080ade)
+
+Reviewer requested changes; all were addressed on this branch:
+
+1. **Blocking — native delete left staged values committable.** `Command::Delete` now removes the staged entry from the worker before calling the backend, so a later `Write` of the same reference fails without touching the backend; real backend deletion errors are still reported, so durable cleanup stays retryable. Evidence: `delete_drops_the_staged_value_and_backend_errors_stay_reported` (stage → delete → write fails with the backend never written; refused delete returns `Locked` and still drops the staged bytes) and `abort_after_failed_begin_operation_drops_the_staged_candidate` (Coordinator abort after a refused `begin_operation` leaves the candidate uncommittable and releases the fence).
+2. **Should-fix — sync store port called inline on the async runtime.** `Coordinator` routes `write_candidate`/`delete_reference` through `tokio::task::spawn_blocking` (`store_call`); `reconcile_connection_credentials` wraps its store read the same way. A panicking or dead worker surfaces as `Unavailable`, never a hang on the async worker.
+3. **Should-fix — stale PRD planning status.** `prd.md` now points to this validation record.
+4. **Nit — backend spec mention.** `.trellis/spec/backend/index.md` names the P1-05 secret-store boundary and the blocking-call offload rule. Linux smoke evidence stays honestly pending above.
+
+Re-validated after the fixes: `cargo fmt --all -- --check`, `cargo clippy --locked --workspace --all-targets -- -D warnings`, `cargo test --locked --workspace` (93 passed / 0 failed / 1 ignored), `./scripts/check-core-boundaries.sh`, `./scripts/test-check-core-boundaries.sh`, `cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check`, `git diff --check`, and the ignored macOS Keychain smoke check (passed, entries cleaned up under `quotavista-test-`).

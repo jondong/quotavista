@@ -12,6 +12,8 @@ chrono = "0.4.42"
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 # SQLx 0.9 accepts <0.38; this bundle is SQLite 3.51.3 with the WAL-reset fix.
 libsqlite3-sys = { version = "=0.37.0", features = ["bundled"] }
+# Blocking secret-store calls are offloaded so they never occupy an async worker.
+tokio = { version = "1", features = ["rt"] }
 # Native secret stores: pinned keyring-core with explicit platform adapters.
 # Versions are locked because error variants and constructors drive the
 # adapter's locked/unavailable/needs-credentials mapping.
