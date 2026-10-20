@@ -29,6 +29,8 @@ Commands run in this worktree, in order:
 
 Final validation commands and results: `cargo fmt --all -- --check` clean, `cargo clippy --locked --workspace --all-targets -- -D warnings` clean, `cargo test --locked --workspace` 70 passed / 0 failed, both boundary scripts clean, contract generation check clean, desktop checks clean, `git diff --check` clean.
 
+- PR CI: [PR #5](https://github.com/jondong/quotavista/pull/5) targets `main` from this task branch. Implementation commit: `5f7fadc`. The latest-commit check results and worker handoff are recorded on the PR after verification; a passing local run is not a substitute. This task remains in review and is not archived.
+
 ## Synthetic acceptance evidence verified
 
 | PRD criterion | Fixture and required result |
