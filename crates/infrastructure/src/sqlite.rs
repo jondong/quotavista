@@ -401,7 +401,10 @@ impl Repository for SqliteRepository {
         state: Lifecycle,
     ) -> Result<i64, StorageError> {
         let mut tx = self.write().await?;
-        let next: Option<i64> = sqlx::query_scalar("UPDATE connections SET lifecycle=?,generation=generation+1 WHERE id=? AND generation=? RETURNING generation")
+        // The fence is re-checked inside the write transaction: a lifecycle
+        // mutation is itself a lifecycle event, so an incomplete operation row must
+        // refuse it even when the captured generation still matches.
+        let next: Option<i64> = sqlx::query_scalar("UPDATE connections SET lifecycle=?,generation=generation+1 WHERE id=? AND generation=? AND NOT EXISTS(SELECT 1 FROM lifecycle_operations o WHERE o.connection_id=connections.id AND o.state <> 'complete') RETURNING generation")
             .bind(lifecycle(state)).bind(&context.connection_id).bind(context.generation)
             .fetch_optional(&mut *tx).await.map_err(db_error)?;
         let next = next.ok_or(StorageError::Conflict)?;

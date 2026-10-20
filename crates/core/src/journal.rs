@@ -290,7 +290,8 @@ impl Journal {
     }
 
     /// Insert or replace a record. Replacing a completed operation is rejected so
-    /// a stale retry cannot reopen a finished mutation.
+    /// a stale retry cannot reopen a finished mutation, and an identifier already
+    /// held for another connection is rejected so the journal stays decodable.
     pub fn record(&mut self, record: OperationRecord) -> Result<(), JournalError> {
         record.validate()?;
         if record.phase == OperationPhase::Complete {
@@ -298,9 +299,18 @@ impl Journal {
             // journal never carries an operation whose fence is already released.
             return Err(JournalError::Validation);
         }
-        match self.records.iter_mut().find(|r| {
-            r.operation_id == record.operation_id && r.connection_id == record.connection_id
+        if self.records.iter().any(|r| {
+            r.operation_id == record.operation_id && r.connection_id != record.connection_id
         }) {
+            // Decoding rejects a repeated operation identifier, so persisting one
+            // would leave external state no coordinator could ever read again.
+            return Err(JournalError::Conflict);
+        }
+        match self
+            .records
+            .iter_mut()
+            .find(|r| r.operation_id == record.operation_id)
+        {
             Some(existing) => {
                 if !existing.phase.allows(record.phase) {
                     return Err(JournalError::Conflict);
@@ -702,4 +712,62 @@ pub fn reconcile(
         }
     }
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(operation_id: &str, connection_id: &str, phase: OperationPhase) -> OperationRecord {
+        OperationRecord {
+            operation_id: operation_id.to_owned(),
+            connection_id: connection_id.to_owned(),
+            kind: OperationKind::Setup,
+            phase,
+            candidate_ref: Some("synthetic-reference".to_owned()),
+            previous_ref: None,
+            generation: 0,
+        }
+    }
+
+    #[test]
+    fn a_reused_identifier_for_another_connection_is_refused_before_persistence() {
+        let mut journal = Journal::default();
+        journal
+            .record(record(
+                "synthetic-operation",
+                "synthetic-connection",
+                OperationPhase::Pending,
+            ))
+            .unwrap();
+
+        // Decoding rejects a repeated operation identifier, so persisting one would
+        // leave external state that no coordinator could read again.
+        assert_eq!(
+            journal
+                .record(record(
+                    "synthetic-operation",
+                    "synthetic-other",
+                    OperationPhase::Pending
+                ))
+                .unwrap_err(),
+            JournalError::Conflict
+        );
+        assert_eq!(journal.records().len(), 1);
+        assert_eq!(Journal::decode(&journal.encode()).unwrap(), journal);
+
+        // The owning connection may still advance its own record.
+        journal
+            .record(record(
+                "synthetic-operation",
+                "synthetic-connection",
+                OperationPhase::CandidateWritten,
+            ))
+            .unwrap();
+        assert_eq!(
+            journal.get("synthetic-operation").unwrap().phase,
+            OperationPhase::CandidateWritten
+        );
+        assert_eq!(Journal::decode(&journal.encode()).unwrap(), journal);
+    }
 }

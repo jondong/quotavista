@@ -116,13 +116,7 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
                     .map_err(JournalError::from),
                 RecoveryAction::FinishOperation { record } => self.finish(record.clone()).await,
                 RecoveryAction::DeletionPending { opaque_id } => {
-                    // A deletion finished above is acknowledged; anything else
-                    // stays visible rather than being reported clean.
-                    if self.ledger.state(opaque_id) == Some(LedgerState::PendingCleanup) {
-                        Err(JournalError::RecoveryRequired)
-                    } else {
-                        Ok(())
-                    }
+                    self.resume_deletion(opaque_id).await
                 }
             };
             match outcome {
@@ -159,6 +153,17 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
     ) -> Result<WriteContext, JournalError> {
         self.require_recovered()?;
         self.assert_unfenced(connection_id)?;
+        // Database projections fence a connection whose state this coordinator did
+        // not write, so admission consults them as well as the external journals.
+        if !self
+            .repository
+            .operations(Some(connection_id))
+            .await
+            .map_err(JournalError::from)?
+            .is_empty()
+        {
+            return Err(JournalError::Conflict);
+        }
         for scope in self
             .repository
             .scope_ids(connection_id)
@@ -209,10 +214,14 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
             .repository
             .credential_ref(&connection_id)
             .await
-            .map_err(JournalError::from)?
-            // Never treat the candidate as its own predecessor: a retry that
-            // reuses a reference must not delete what it just activated.
-            .filter(|previous| previous != candidate_ref);
+            .map_err(JournalError::from)?;
+        // A reference the connection already holds has nothing to supersede and
+        // nothing to compensate, so it is refused before any state is written. That
+        // keeps every later step honest: neither `abort` nor a projection that
+        // recovery resumes can end up owing cleanup of a secret still in use.
+        if previous_ref.as_deref() == Some(candidate_ref) {
+            return Err(JournalError::Validation);
+        }
         let record = OperationRecord {
             operation_id: operation_id.to_owned(),
             connection_id,
@@ -292,7 +301,13 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
     ) -> Result<i64, JournalError> {
         self.require_recovered()?;
         let connection_id = context.connection_id.clone();
-        self.assert_unfenced(&connection_id)?;
+        // A journal record means this connection already owes a deletion: finish
+        // that one instead of starting a second. A ledger entry without an
+        // operation is an interrupted deletion, which this call resumes, so it must
+        // not be refused here.
+        if self.journal.fences(&connection_id) {
+            return Err(JournalError::Conflict);
+        }
         let credential_ref = self
             .repository
             .credential_ref(&connection_id)
@@ -428,6 +443,68 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
             }
             Ok(())
         })
+    }
+
+    /// Resume a deletion the ledger fenced but no operation recorded. An
+    /// interruption between the durable ledger write and the journal write leaves
+    /// the connection `deletion_pending` with nothing to finish, so the ledger
+    /// supplies the connection and the database the reference it owes. Anything
+    /// that blocks the cleanup leaves the entry pending: visible and retryable,
+    /// never reported clean.
+    async fn resume_deletion(&mut self, opaque_id: &str) -> Result<(), JournalError> {
+        if self.resumable_deletion(opaque_id).await? {
+            // A missing row leaves the owed reference unknown, so the deletion stays
+            // pending instead of being acknowledged.
+            let owed = match self.repository.credential_ref(opaque_id).await {
+                Ok(owed) => owed,
+                Err(_) => return Err(JournalError::RecoveryRequired),
+            };
+            if let Some(reference) = owed {
+                // A locked or unavailable store leaves the cleanup owed.
+                self.secrets
+                    .delete_reference(&reference)
+                    .map_err(|_| JournalError::RecoveryRequired)?;
+            }
+            match self.acknowledge_deletion(opaque_id) {
+                // An acknowledgement that is not durable leaves the entry pending,
+                // so the next recovery retries it.
+                Ok(()) | Err(JournalError::Durability) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if self.ledger.state(opaque_id) == Some(LedgerState::PendingCleanup) {
+            Err(JournalError::RecoveryRequired)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Whether a pending ledger entry belongs to a deletion no operation recorded.
+    /// Scope entries are acknowledged with the connection that owns them, and a
+    /// deletion the journal or a projection still carries resumes through its own
+    /// recovery actions.
+    async fn resumable_deletion(&self, opaque_id: &str) -> Result<bool, JournalError> {
+        if self.ledger.state(opaque_id) != Some(LedgerState::PendingCleanup)
+            || self.ledger_owner(opaque_id).is_some()
+            || self.journal.fences(opaque_id)
+        {
+            return Ok(false);
+        }
+        Ok(self
+            .repository
+            .operations(Some(opaque_id))
+            .await
+            .map_err(JournalError::from)?
+            .is_empty())
+    }
+
+    /// Connection a ledger entry belongs to, when it fences a scope rather than the
+    /// connection itself.
+    fn ledger_owner(&self, opaque_id: &str) -> Option<String> {
+        self.ledger
+            .entries()
+            .find(|(id, _)| id.as_str() == opaque_id)
+            .and_then(|(_, entry)| entry.owner.clone())
     }
 
     /// Compensate a failed activation: remove the orphan candidate, then release
