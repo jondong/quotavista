@@ -3,6 +3,7 @@ pub mod calendar;
 pub mod domain;
 pub mod journal;
 pub mod number;
+pub mod secrets;
 pub mod storage;
 
 pub use domain::Provenance;

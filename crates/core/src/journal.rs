@@ -606,8 +606,8 @@ pub trait DurableStore: Send + Sync {
 }
 
 /// Why an opaque secret reference could not be written or deleted. The port
-/// never carries secret values, only references. Task P1-05 supplies the native
-/// store implementation behind this boundary.
+/// never carries secret values, only references; the value-carrying supertrait
+/// and its native and session-only stores live in `crate::secrets`.
 pub trait SecretReferenceStore: Send + Sync {
     /// Create a candidate reference. Called only after the intent is durable.
     fn write_candidate(&self, reference: &str) -> Result<(), SecretStoreError>;

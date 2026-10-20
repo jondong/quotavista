@@ -8,7 +8,7 @@ Validate credential isolation through explicit native stores and an opt-in memor
 
 [Requirements 0.9](../../../docs/requirements.md), [Architecture 0.4](../../../docs/architecture.md), [development plan](../../../docs/development-plan.md), and [traceability](../../../docs/traceability.md).
 
-Dependencies: [P1-04](../10-18-p1-04-recovery-fences/prd.md)
+Dependencies: [P1-04](../archive/2026-10/10-18-p1-04-recovery-fences/prd.md)
 
 Acceptance mapping: A10, A18, A21. These are prototype contributions, not closure of full-release acceptance.
 
@@ -20,10 +20,10 @@ Acceptance mapping: A10, A18, A21. These are prototype contributions, not closur
 
 ## Acceptance criteria
 
-- [ ] Synthetic create/read/rotate/delete works on each available native store; rotation failure keeps the previous active credential and exposes failed compensation.
-- [ ] Locked and unavailable store errors remain distinct. No file or plaintext persistence fallback occurs.
-- [ ] An explicit session-only choice works until exit; restart retains nonsecret data, has no retrievable session secret, and enters Needs credentials.
-- [ ] Representative success/error/serialization paths do not leak the synthetic secret into SQLite, journals, logs, events, or DTOs. Native Linux evidence remains pending when unavailable.
+- [x] Synthetic create/read/rotate/delete works on each available native store; rotation failure keeps the previous active credential and exposes failed compensation.
+- [x] Locked and unavailable store errors remain distinct. No file or plaintext persistence fallback occurs.
+- [x] An explicit session-only choice works until exit; restart retains nonsecret data, has no retrievable session secret, and enters Needs credentials.
+- [x] Representative success/error/serialization paths do not leak the synthetic secret into SQLite, journals, logs, events, or DTOs. Native Linux evidence remains pending when unavailable.
 
 ## Out of scope
 
@@ -31,4 +31,4 @@ No browser-cookie import, real credentials, provider authorization, or automatic
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. Implemented and validated; per-criterion evidence is recorded in `validation.md`.

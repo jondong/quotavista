@@ -2,22 +2,22 @@
 
 ## Entry checks
 
-- [ ] Read the PRD, design, relevant specs, and reviewed baseline.
-- [ ] Confirm predecessor tasks are completed, including archived records: [P1-04](../10-18-p1-04-recovery-fences/prd.md)
-- [ ] Review the plan against any newer decisions and existing user authorization before activation.
+- [x] Read the PRD, design, relevant specs, and reviewed baseline.
+- [x] Confirm predecessor tasks are completed, including archived records: [P1-04](../archive/2026-10/10-18-p1-04-recovery-fences/prd.md)
+- [x] Review the plan against any newer decisions and existing user authorization before activation.
 
 ## Work sequence
 
-- [ ] Check current official crate APIs and pin compatible native-store versions.
-- [ ] Implement adapters and journal-backed lifecycle integration; add session-only mode.
-- [ ] Exercise fake-store failures and available macOS native checks with disposable synthetic secrets; remove test entries.
+- [x] Check current official crate APIs and pin compatible native-store versions.
+- [x] Implement adapters and journal-backed lifecycle integration; add session-only mode.
+- [x] Exercise fake-store failures and available macOS native checks with disposable synthetic secrets; remove test entries.
 
 ## Validation and review
 
-- [ ] Fake-store crash/rotation/locked/unavailable tests and session-only restart checks.
-- [ ] Native smoke checks use disposable synthetic values only; record host and cleanup evidence.
-- [ ] Record evidence for each PRD criterion, review the complete diff, and update only affected specs/traceability.
-- [ ] Run `git diff --check`; commit with an English message before archiving.
+- [x] Fake-store crash/rotation/locked/unavailable tests and session-only restart checks.
+- [x] Native smoke checks use disposable synthetic values only; record host and cleanup evidence.
+- [x] Record evidence for each PRD criterion, review the complete diff, and update only affected specs/traceability.
+- [x] Run `git diff --check`; commit with an English message before archiving.
 
 ## Recovery and completion
 

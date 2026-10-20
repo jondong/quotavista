@@ -1,6 +1,7 @@
 //! Infrastructure adapters for backend-owned boundaries.
 pub mod durable;
 pub mod lifecycle;
+pub mod secrets;
 pub mod sqlite;
 
 /// The desktop scaffold remains in-memory until the composition task wires the

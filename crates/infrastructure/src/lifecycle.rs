@@ -1,6 +1,6 @@
 //! Lifecycle orchestration: per-connection mutation fences, external journals,
-//! and recovery before scheduling. Fixtures are synthetic; task P1-05 supplies the
-//! native secret store behind [`SecretReferenceStore`].
+//! and recovery before scheduling. Fixtures are synthetic; the value-carrying
+//! stores behind [`SecretReferenceStore`] live in `crate::secrets`.
 //!
 //! The coordinator owns the external safety state and is the only writer, so
 //! `&mut self` *is* the mutation fence: while a caller holds the borrow no other
@@ -50,7 +50,9 @@ pub struct Coordinator<R, D, S> {
     recovered: bool,
 }
 
-impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, S> {
+impl<R: Repository, D: DurableStore, S: SecretReferenceStore + Clone + Send + 'static>
+    Coordinator<R, D, S>
+{
     /// Load the external safety state. Corrupt or unreadable state is a visible
     /// recovery condition: no coordinator is returned, so nothing can be
     /// scheduled or mutated from it.
@@ -111,8 +113,11 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
             }
             let outcome = match &action {
                 RecoveryAction::DeleteReference { reference, .. } => self
-                    .secrets
-                    .delete_reference(reference)
+                    .store_call({
+                        let reference = reference.clone();
+                        move |store| store.delete_reference(&reference)
+                    })
+                    .await
                     .map_err(JournalError::from),
                 RecoveryAction::FinishOperation { record } => self.finish(record.clone()).await,
                 RecoveryAction::DeletionPending { opaque_id } => {
@@ -242,7 +247,11 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
         }
         // 3. Record the boundary the candidate write happens at.
         let mut record = self.step(&record, OperationPhase::CandidateWritten)?;
-        if let Err(error) = self.secrets.write_candidate(candidate_ref) {
+        let candidate = candidate_ref.to_owned();
+        if let Err(error) = self
+            .store_call(move |store| store.write_candidate(&candidate))
+            .await
+        {
             return Err(self.abort(record, error.into()).await);
         }
         // 4. Activation: the final generation and fence check runs inside the
@@ -285,8 +294,30 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
             record.candidate_ref.clone()
         };
         match owed {
-            Some(reference) => self.secrets.delete_reference(&reference),
+            Some(reference) => {
+                self.store_call(move |store| store.delete_reference(&reference))
+                    .await
+            }
             None => Ok(()),
+        }
+    }
+
+    /// Run one blocking store call off the async worker: a stalled keychain
+    /// prompt or D-Bus round-trip must not occupy a tokio worker. The
+    /// coordinator runs on a tokio runtime. A panicked or cancelled store task
+    /// leaves the backend state unknown, so it reports unavailable, never
+    /// locked.
+    async fn store_call<T>(
+        &self,
+        call: impl FnOnce(&S) -> Result<T, SecretStoreError> + Send + 'static,
+    ) -> Result<T, SecretStoreError>
+    where
+        T: Send + 'static,
+    {
+        let store = self.secrets.clone();
+        match tokio::task::spawn_blocking(move || call(&store)).await {
+            Ok(result) => result,
+            Err(_) => Err(SecretStoreError::Unavailable),
         }
     }
 
@@ -366,8 +397,8 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
             return Err(JournalError::Validation);
         }
         if let Some(reference) = record.candidate_ref.clone() {
-            self.secrets
-                .delete_reference(&reference)
+            self.store_call(move |store| store.delete_reference(&reference))
+                .await
                 .map_err(JournalError::from)?;
         }
         self.finish(record).await
@@ -468,8 +499,8 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
             };
             if let Some(reference) = owed {
                 // A locked or unavailable store leaves the cleanup owed.
-                self.secrets
-                    .delete_reference(&reference)
+                self.store_call(move |store| store.delete_reference(&reference))
+                    .await
                     .map_err(|_| JournalError::RecoveryRequired)?;
             }
             match self.acknowledge_deletion(&target) {
@@ -530,10 +561,10 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
     /// the fence. When the candidate cannot be removed the operation stays visibly
     /// pending cleanup and recovery retries it. Returns the error to report.
     async fn abort(&mut self, record: OperationRecord, cause: JournalError) -> JournalError {
-        let removal = match &record.candidate_ref {
+        let removal = match record.candidate_ref.clone() {
             Some(reference) => self
-                .secrets
-                .delete_reference(reference)
+                .store_call(move |store| store.delete_reference(&reference))
+                .await
                 .map_err(JournalError::from),
             None => Ok(()),
         };
