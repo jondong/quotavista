@@ -113,8 +113,11 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore + Clone + Send + 's
             }
             let outcome = match &action {
                 RecoveryAction::DeleteReference { reference, .. } => self
-                    .secrets
-                    .delete_reference(reference)
+                    .store_call({
+                        let reference = reference.clone();
+                        move |store| store.delete_reference(&reference)
+                    })
+                    .await
                     .map_err(JournalError::from),
                 RecoveryAction::FinishOperation { record } => self.finish(record.clone()).await,
                 RecoveryAction::DeletionPending { opaque_id } => {
@@ -394,8 +397,8 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore + Clone + Send + 's
             return Err(JournalError::Validation);
         }
         if let Some(reference) = record.candidate_ref.clone() {
-            self.secrets
-                .delete_reference(&reference)
+            self.store_call(move |store| store.delete_reference(&reference))
+                .await
                 .map_err(JournalError::from)?;
         }
         self.finish(record).await
@@ -496,8 +499,8 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore + Clone + Send + 's
             };
             if let Some(reference) = owed {
                 // A locked or unavailable store leaves the cleanup owed.
-                self.secrets
-                    .delete_reference(&reference)
+                self.store_call(move |store| store.delete_reference(&reference))
+                    .await
                     .map_err(|_| JournalError::RecoveryRequired)?;
             }
             match self.acknowledge_deletion(&target) {
@@ -558,10 +561,10 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore + Clone + Send + 's
     /// the fence. When the candidate cannot be removed the operation stays visibly
     /// pending cleanup and recovery retries it. Returns the error to report.
     async fn abort(&mut self, record: OperationRecord, cause: JournalError) -> JournalError {
-        let removal = match &record.candidate_ref {
+        let removal = match record.candidate_ref.clone() {
             Some(reference) => self
-                .secrets
-                .delete_reference(reference)
+                .store_call(move |store| store.delete_reference(&reference))
+                .await
                 .map_err(JournalError::from),
             None => Ok(()),
         };

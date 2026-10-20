@@ -101,6 +101,53 @@ impl SecretReferenceStore for FakeSecrets {
     }
 }
 
+/// Store whose calls block on a channel until released, mimicking a stalled
+/// keychain prompt or D-Bus round-trip. Used to prove the coordinator runs the
+/// sync port off the async executor.
+#[derive(Clone, Default)]
+struct GatedSecrets {
+    inner: FakeSecrets,
+    gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
+}
+
+impl GatedSecrets {
+    /// Arm the next store call to block until the returned sender fires (or is
+    /// dropped).
+    fn gate_next_call(&self) -> std::sync::mpsc::Sender<()> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.gate.lock().unwrap() = Some(receiver);
+        sender
+    }
+
+    /// Block until the armed gate fires. The wait is bounded: if the call ran
+    /// on the async executor the release could never arrive, and a bounded
+    /// wait turns that regression into a test failure instead of a hang.
+    fn wait_at_gate(&self) -> Result<(), SecretStoreError> {
+        let gate = self.gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            if gate
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .is_err()
+            {
+                return Err(SecretStoreError::Unavailable);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl SecretReferenceStore for GatedSecrets {
+    fn write_candidate(&self, reference: &str) -> Result<(), SecretStoreError> {
+        self.wait_at_gate()?;
+        self.inner.write_candidate(reference)
+    }
+
+    fn delete_reference(&self, reference: &str) -> Result<(), SecretStoreError> {
+        self.wait_at_gate()?;
+        self.inner.delete_reference(reference)
+    }
+}
+
 /// In-memory durable store that can refuse from the Nth replacement on, so an
 /// interruption lands exactly on a journal or ledger write.
 #[derive(Clone, Debug, Default)]
@@ -1691,4 +1738,48 @@ async fn a_crash_between_the_ledger_write_and_the_transition_is_retried_not_resu
             .unwrap_err(),
         JournalError::Conflict
     );
+}
+
+/// A blocked native store must not starve the async executor: on a
+/// single-threaded runtime, other async work still progresses while a store
+/// call waits, and it is that other work which releases the store (P1-05).
+#[tokio::test(flavor = "current_thread")]
+async fn blocked_store_call_still_lets_other_async_work_progress() {
+    let harness = fixture().await;
+    let secrets = GatedSecrets::default();
+    let mut coordinator = Coordinator::open(
+        harness.repo.clone(),
+        harness.durable.clone(),
+        secrets.clone(),
+    )
+    .unwrap();
+    coordinator.recover().await.unwrap();
+    coordinator
+        .activate_credentials(OPERATION, &context(0), OperationKind::Setup, PREVIOUS)
+        .await
+        .unwrap();
+    coordinator
+        .begin_deletion("synthetic-operation-2", &context(1))
+        .await
+        .unwrap();
+
+    // The deletion's store call blocks until the release fires. The release
+    // comes from another async task on this same single-threaded runtime, so
+    // it can only arrive while the executor is free: an inline blocking call
+    // would gate out after 10 seconds and fail the deletion with Unavailable.
+    let release = secrets.gate_next_call();
+    let (progressed, rx) = tokio::sync::oneshot::channel();
+    let releaser = tokio::spawn(async move {
+        let _ = progressed.send(());
+        let _ = release.send(());
+    });
+
+    coordinator
+        .finish_deletion("synthetic-operation-2")
+        .await
+        .unwrap();
+    releaser.await.unwrap();
+    assert!(rx.await.is_ok());
+    assert!(secrets.inner.present().is_empty());
+    assert_eq!(secrets.inner.deleted(), vec![PREVIOUS]);
 }
