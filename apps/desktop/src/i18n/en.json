@@ -14,7 +14,7 @@
   "overview.heading": "Overview",
   "overview.status.provenance": "Data provenance",
   "overview.status.providers": "Demo providers",
-  "overview.status.store": "Storage",
+  "overview.status.dataRevision": "Data revision",
   "overview.status.scaffoldMessage": "Development scaffold running without provider credentials.",
   "overview.status.message": "Status",
   "overview.metrics.heading": "Demo quota snapshot",

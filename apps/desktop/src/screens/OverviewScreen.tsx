@@ -52,7 +52,7 @@ export default function OverviewScreen() {
         <dd>{provenance}</dd>
         <dt>{t("overview.status.providers")}</dt>
         <dd>{providerCount}</dd>
-        <dt>{t("overview.status.store")}</dt>
+        <dt>{t("overview.status.dataRevision")}</dt>
         <dd>{dataRevision}</dd>
         <dt>{t("overview.status.message")}</dt>
         <dd>

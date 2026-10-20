@@ -9,7 +9,7 @@
  * never the secret.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type Event, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type Event } from "@tauri-apps/api/event";
 import type {
   ChangeEvent,
   Command,
@@ -52,7 +52,10 @@ function makeIpcError(message: string, code: string, retryable: boolean, retryAt
 }
 
 /** Map a non-`ok` envelope into a JS `Error` that callers can branch on. */
-export function envelopeToError(requestId: LocalId, envelope: Extract<Envelope, { status: "error" }>): IpcError {
+export function envelopeToError(
+  requestId: LocalId,
+  envelope: Extract<Envelope, { status: "error" }>,
+): IpcError {
   void requestId;
   return makeIpcError(
     envelope.error.message,
@@ -60,6 +63,85 @@ export function envelopeToError(requestId: LocalId, envelope: Extract<Envelope, 
     envelope.error.retryable,
     envelope.error.retry_at,
   );
+}
+
+/**
+ * Compare two revisions as decimals. Returns -1 / 0 / 1 so callers can sort
+ * or branch on a strict ordering.
+ */
+export function compareRevisions(a: string, b: string): -1 | 0 | 1 {
+  const ai = BigInt(a);
+  const bi = BigInt(b);
+  if (ai < bi) return -1;
+  if (ai > bi) return 1;
+  return 0;
+}
+
+/**
+ * Returns true when `responseRevision` is at least as new as `observedAt`,
+ * i.e. the response was generated from data no older than what the renderer
+ * last saw. A response older than the latest observation is "obsolete".
+ */
+export function isObsoleteResponse(responseRevision: string, observedAt: string): boolean {
+  return compareRevisions(responseRevision, observedAt) < 0;
+}
+
+/**
+ * Returns true when `seen` and `incoming` form a gap: the new revision is
+ * not exactly one greater than the previous one. The renderer treats gaps
+ * as "must reload" because we cannot trust a partial update.
+ */
+export function isRevisionGap(seen: string, incoming: string): boolean {
+  // We accept the very first event (seen === "0") regardless of value, since
+  // an empty storage always returns revision 0.
+  if (seen === "0") return false;
+  return BigInt(incoming) - BigInt(seen) !== 1n;
+}
+
+/**
+ * Revision-only state shared by every screen. The renderer stores the latest
+ * revision it has observed; every response whose `data_revision` is older
+ * than this value is treated as obsolete and discarded.
+ */
+export class RevisionTracker {
+  private latest: string;
+  private readonly subscribers = new Set<(event: ChangeEvent) => void>();
+
+  constructor(initial: string = "0") {
+    this.latest = initial;
+  }
+
+  /** Current best-known revision. The renderer treats responses older than this as obsolete. */
+  observed(): string {
+    return this.latest;
+  }
+
+  /**
+   * Apply a `qv://change` event. Returns one of:
+   * - `{"kind":"apply"}`: revision is the next expected value; subscribers fired.
+   * - `{"kind":"gap"}`: revision skipped one or more steps; subscribers fired with `gap=true`
+   *   so screens can trigger a full reload.
+   */
+  apply(event: ChangeEvent): { kind: "apply" | "gap"; gap: boolean } {
+    const gap = isRevisionGap(this.latest, event.data_revision);
+    this.latest = event.data_revision;
+    for (const subscriber of this.subscribers) {
+      subscriber(event);
+    }
+    return { kind: gap ? "gap" : "apply", gap };
+  }
+
+  subscribe(handler: (event: ChangeEvent) => void): () => void {
+    this.subscribers.add(handler);
+    return () => {
+      this.subscribers.delete(handler);
+    };
+  }
+
+  /** Test/debug access: replace the current revision. */
+  reset(value: string): void {
+    this.latest = value;
+  }
 }
 
 /**
@@ -143,7 +225,9 @@ export const ipc = {
   }): Promise<OperationDto> {
     return dispatch({ command: "remove_connection", args });
   },
-  refreshConnections(target: { all: true } | { selected: ReadonlyArray<string> }): Promise<OperationList> {
+  refreshConnections(
+    target: { all: true } | { selected: ReadonlyArray<string> },
+  ): Promise<OperationList> {
     if ("all" in target) {
       return dispatch({ command: "refresh_connections", args: { target: { kind: "all" } } });
     }
@@ -187,12 +271,24 @@ export const ipc = {
 } as const;
 
 /**
- * Subscribe to revision-change events. Each call wires a fresh listener; the
- * returned `dispose` removes it. Events are invalidation hints: the receiver
- * decides what to refetch.
+ * Wire the `qv://change` channel to a revision tracker. Returns a disposer
+ * that unbinds both the listener and every subscriber registered through the
+ * tracker. The renderer should treat the returned tracker as the single
+ * source of truth for "what revision am I looking at".
  */
 export async function subscribeToChanges(
+  tracker: RevisionTracker,
   handler: (event: ChangeEvent) => void,
-): Promise<UnlistenFn> {
-  return await listen<ChangeEvent>("qv://change", (event: Event<ChangeEvent>) => handler(event.payload));
+): Promise<() => Promise<void>> {
+  const unsubTracker = tracker.subscribe(handler);
+  const unlisten = await listen<ChangeEvent>(
+    "qv://change",
+    (event: Event<ChangeEvent>) => {
+      tracker.apply(event.payload);
+    },
+  );
+  return async () => {
+    unsubTracker();
+    unlisten();
+  };
 }

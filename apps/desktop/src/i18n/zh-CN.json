@@ -14,7 +14,7 @@
   "overview.heading": "概览",
   "overview.status.provenance": "数据来源",
   "overview.status.providers": "演示服务商",
-  "overview.status.store": "存储",
+  "overview.status.dataRevision": "数据版本",
   "overview.status.scaffoldMessage": "开发脚手架正在运行，未配置任何服务商凭据。",
   "overview.status.message": "状态",
   "overview.metrics.heading": "演示额度快照",

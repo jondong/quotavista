@@ -14,14 +14,31 @@ const PROTOTYPE_ENVELOPE = {
     command: "list_connections",
     data: {
       connections: [
-        { provider: "kimi" },
-        { provider: "openrouter" },
+        {
+          connection_id: "demo-kimi",
+          provider: "kimi",
+          alias: "Demo Kimi",
+          lifecycle: "active",
+          config_revision: "1",
+          generation: "1",
+          datasets: [],
+          capabilities: [],
+        },
+        {
+          connection_id: "demo-openrouter",
+          provider: "openrouter",
+          alias: "Demo OpenRouter",
+          lifecycle: "active",
+          config_revision: "1",
+          generation: "1",
+          datasets: [],
+          capabilities: [],
+        },
       ],
-      data_revision: "synthetic-memory",
+      data_revision: "1",
     },
   },
 } as const;
-
 function setNavigatorLanguages(languages: string[]) {
   Object.defineProperty(window.navigator, "languages", {
     value: languages,
