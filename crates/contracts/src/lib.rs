@@ -210,8 +210,9 @@ wire_enum!(ErrorCode {
     InvalidResponse,
     ResourceLimit,
     StorageError,
+    Cancelled,
     InternalError,
-    Cancelled
+    UnsupportedInPhaseOne,
 });
 wire_enum!(OperationState {
     Pending,
@@ -519,6 +520,9 @@ impl SafeError {
                 ErrorCode::StorageError => "Local storage failed.",
                 ErrorCode::InternalError => "An internal error occurred.",
                 ErrorCode::Cancelled => "The operation was cancelled.",
+                ErrorCode::UnsupportedInPhaseOne => {
+                    "This action is intentionally deferred to a later phase."
+                }
             })
             .to_owned(),
         }
