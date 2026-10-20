@@ -2,22 +2,22 @@
 
 ## Entry checks
 
-- [ ] Read the PRD, design, relevant specs, and reviewed baseline.
-- [ ] Confirm predecessor tasks are completed, including archived records: [P1-03](../10-18-p1-03-sqlite/prd.md)
-- [ ] Review the plan against any newer decisions and existing user authorization before activation.
+- [x] Read the PRD, design, relevant specs, and reviewed baseline.
+- [x] Confirm predecessor tasks are completed, including archived records: [P1-03](../10-18-p1-03-sqlite/prd.md)
+- [x] Review the plan against any newer decisions and existing user authorization before activation.
 
 ## Work sequence
 
-- [ ] Define journal records and operation states using opaque IDs only.
-- [ ] Implement durable writes, recovery reconciliation, and transactional generation checks.
-- [ ] Add interruption/race tests with fake stores and manifests; document platform durability constraints.
+- [x] Define journal records and operation states using opaque IDs only.
+- [x] Implement durable writes, recovery reconciliation, and transactional generation checks.
+- [x] Add interruption/race tests with fake stores and manifests; document platform durability constraints.
 
 ## Validation and review
 
-- [ ] Fault-injection tests at operation boundaries, stale-result race tests, corrupt-journal checks, and manifest admission tests.
-- [ ] Review persisted synthetic artifacts for secret/identity fields.
-- [ ] Record evidence for each PRD criterion, review the complete diff, and update only affected specs/traceability.
-- [ ] Run `git diff --check`; commit with an English message before archiving.
+- [x] Fault-injection tests at operation boundaries, stale-result race tests, corrupt-journal checks, and manifest admission tests.
+- [x] Review persisted synthetic artifacts for secret/identity fields.
+- [x] Record evidence for each PRD criterion, review the complete diff, and update only affected specs/traceability.
+- [x] Run `git diff --check`; commit with an English message before archiving.
 
 ## Recovery and completion
 

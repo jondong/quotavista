@@ -3,6 +3,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use quotavista_core::{
     calendar::Interval,
     domain::{Lifecycle, Provenance, Value},
+    journal::{OperationKind, OperationPhase, OperationRecord},
     number::{Money, TokenTotal},
     storage::*,
 };
@@ -197,13 +198,19 @@ impl SqliteRepository {
     }
 }
 
+/// Mutation fence, checked inside the write transaction: the connection must
+/// still exist at the captured generation with an active lifecycle, the scope
+/// must belong to it, and no incomplete lifecycle operation may be pending for
+/// it. `operation` excludes one operation from the fence so the operation that
+/// is committing its own activation can proceed.
 async fn guard(
     conn: &mut SqliteConnection,
     context: &WriteContext,
     scope: Option<&str>,
+    operation: Option<&str>,
 ) -> Result<(), StorageError> {
-    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connections c WHERE c.id=? AND c.generation=? AND c.lifecycle='active' AND (? IS NULL OR EXISTS(SELECT 1 FROM provider_scopes s WHERE s.id=? AND s.connection_id=c.id)) AND NOT EXISTS(SELECT 1 FROM lifecycle_operations o WHERE o.connection_id=c.id AND o.state <> 'complete'))")
-        .bind(&context.connection_id).bind(context.generation).bind(scope).bind(scope)
+    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connections c WHERE c.id=? AND c.generation=? AND c.lifecycle='active' AND (? IS NULL OR EXISTS(SELECT 1 FROM provider_scopes s WHERE s.id=? AND s.connection_id=c.id)) AND NOT EXISTS(SELECT 1 FROM lifecycle_operations o WHERE o.connection_id=c.id AND o.state <> 'complete' AND (? IS NULL OR o.id <> ?)))")
+        .bind(&context.connection_id).bind(context.generation).bind(scope).bind(scope).bind(operation).bind(operation)
         .fetch_one(conn).await.map_err(db_error)?;
     if valid {
         Ok(())
@@ -211,6 +218,44 @@ async fn guard(
         Err(StorageError::Conflict)
     }
 }
+
+/// Lifecycle-mutation fence: the connection must exist at the captured
+/// generation and no *other* incomplete operation may be pending for it. Unlike
+/// [`guard`] it does not require an active lifecycle, because activating a
+/// candidate reference is what moves a pending setup to active.
+async fn mutation_fence(
+    conn: &mut SqliteConnection,
+    context: &WriteContext,
+    operation: &str,
+) -> Result<(), StorageError> {
+    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connections c WHERE c.id=? AND c.generation=? AND c.lifecycle <> 'deletion_pending' AND NOT EXISTS(SELECT 1 FROM lifecycle_operations o WHERE o.connection_id=c.id AND o.state <> 'complete' AND o.id <> ?))")
+        .bind(&context.connection_id).bind(context.generation).bind(operation)
+        .fetch_one(conn).await.map_err(db_error)?;
+    if valid {
+        Ok(())
+    } else {
+        Err(StorageError::Conflict)
+    }
+}
+
+fn operation_record(row: &SqliteRow) -> Result<OperationRecord, StorageError> {
+    let record = OperationRecord {
+        operation_id: text(row, "id")?.into(),
+        connection_id: text(row, "connection_id")?.into(),
+        kind: OperationKind::parse(text(row, "kind")?).ok_or(StorageError::Unavailable)?,
+        phase: OperationPhase::parse(text(row, "state")?).ok_or(StorageError::Unavailable)?,
+        candidate_ref: row
+            .try_get::<Option<String>, _>("candidate_ref")
+            .map_err(db_error)?,
+        previous_ref: row
+            .try_get::<Option<String>, _>("previous_ref")
+            .map_err(db_error)?,
+        generation: row.try_get("generation").map_err(db_error)?,
+    };
+    record.validate().map_err(|_| StorageError::Unavailable)?;
+    Ok(record)
+}
+
 async fn revision(conn: &mut SqliteConnection) -> Result<i64, StorageError> {
     sqlx::query_scalar(
         "UPDATE store_state SET data_revision=data_revision+1 WHERE id=1 RETURNING data_revision",
@@ -236,7 +281,7 @@ async fn run(
 ) -> Result<SqliteRow, StorageError> {
     let row = sqlx::query("SELECT r.*, p.scope_id,p.product_key,p.dataset,p.metric,p.start_at,p.end_at,p.grain,p.dimensions,p.authority FROM sync_runs r JOIN partitions p ON p.id=r.partition_id WHERE r.id=? AND r.generation=?")
         .bind(id).bind(context.generation).fetch_optional(&mut *conn).await.map_err(db_error)?.ok_or(StorageError::Conflict)?;
-    guard(conn, context, Some(text(&row, "scope_id")?)).await?;
+    guard(conn, context, Some(text(&row, "scope_id")?), None).await?;
     Ok(row)
 }
 fn fact(row: SqliteRow) -> Result<Fact, StorageError> {
@@ -356,8 +401,110 @@ impl Repository for SqliteRepository {
         state: Lifecycle,
     ) -> Result<i64, StorageError> {
         let mut tx = self.write().await?;
-        let next: Option<i64> = sqlx::query_scalar("UPDATE connections SET lifecycle=?,generation=generation+1 WHERE id=? AND generation=? RETURNING generation")
+        // The fence is re-checked inside the write transaction: a lifecycle
+        // mutation is itself a lifecycle event, so an incomplete operation row must
+        // refuse it even when the captured generation still matches.
+        let next: Option<i64> = sqlx::query_scalar("UPDATE connections SET lifecycle=?,generation=generation+1 WHERE id=? AND generation=? AND NOT EXISTS(SELECT 1 FROM lifecycle_operations o WHERE o.connection_id=connections.id AND o.state <> 'complete') RETURNING generation")
             .bind(lifecycle(state)).bind(&context.connection_id).bind(context.generation)
+            .fetch_optional(&mut *tx).await.map_err(db_error)?;
+        let next = next.ok_or(StorageError::Conflict)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(next)
+    }
+    async fn scope_ids(&self, connection_id: &str) -> Result<Vec<String>, StorageError> {
+        nonempty(connection_id)?;
+        sqlx::query_scalar("SELECT id FROM provider_scopes WHERE connection_id=? ORDER BY id")
+            .bind(connection_id)
+            .fetch_all(&self.readers)
+            .await
+            .map_err(db_error)
+    }
+    async fn credential_ref(&self, connection_id: &str) -> Result<Option<String>, StorageError> {
+        nonempty(connection_id)?;
+        let row: Option<Option<String>> =
+            sqlx::query_scalar("SELECT credential_ref FROM connections WHERE id=?")
+                .bind(connection_id)
+                .fetch_optional(&self.readers)
+                .await
+                .map_err(db_error)?;
+        // A missing connection is a conflict; a present one may hold no reference.
+        row.ok_or(StorageError::Conflict)
+    }
+    async fn begin_operation(&self, record: &OperationRecord) -> Result<(), StorageError> {
+        record.validate().map_err(|_| StorageError::Validation)?;
+        let mut tx = self.write().await?;
+        let rows = sqlx::query("INSERT INTO lifecycle_operations(id,connection_id,kind,state,candidate_ref,previous_ref,generation) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET connection_id=excluded.connection_id,kind=excluded.kind,state=excluded.state,candidate_ref=excluded.candidate_ref,previous_ref=excluded.previous_ref,generation=excluded.generation WHERE lifecycle_operations.state <> 'complete'")
+            .bind(&record.operation_id).bind(&record.connection_id).bind(record.kind.as_str())
+            .bind(record.phase.as_str()).bind(record.candidate_ref.as_deref())
+            .bind(record.previous_ref.as_deref()).bind(record.generation)
+            .execute(&mut *tx).await.map_err(db_error)?.rows_affected();
+        if rows == 0 {
+            // A completed projection is final: the operation may not be reopened.
+            return Err(StorageError::Conflict);
+        }
+        tx.commit().await.map_err(db_error)
+    }
+    async fn advance_operation(&self, record: &OperationRecord) -> Result<(), StorageError> {
+        record.validate().map_err(|_| StorageError::Validation)?;
+        let mut tx = self.write().await?;
+        let rows = sqlx::query("UPDATE lifecycle_operations SET state=?,candidate_ref=?,previous_ref=?,generation=? WHERE id=? AND state <> 'complete'")
+            .bind(record.phase.as_str()).bind(record.candidate_ref.as_deref())
+            .bind(record.previous_ref.as_deref()).bind(record.generation).bind(&record.operation_id)
+            .execute(&mut *tx).await.map_err(db_error)?.rows_affected();
+        if rows == 0 {
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM lifecycle_operations WHERE id=?)")
+                    .bind(&record.operation_id)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db_error)?;
+            // A projection that was never written holds no fence, so recovery may
+            // complete it; a completed projection may not be reopened.
+            if exists || record.phase != OperationPhase::Complete {
+                return Err(StorageError::Conflict);
+            }
+        }
+        tx.commit().await.map_err(db_error)
+    }
+    async fn operations(
+        &self,
+        connection_id: Option<&str>,
+    ) -> Result<Vec<OperationRecord>, StorageError> {
+        if let Some(id) = connection_id {
+            nonempty(id)?;
+        }
+        let rows = sqlx::query(
+            "SELECT * FROM lifecycle_operations WHERE state <> 'complete' AND (? IS NULL OR connection_id=?) ORDER BY id",
+        )
+        .bind(connection_id)
+        .bind(connection_id)
+        .fetch_all(&self.readers)
+        .await
+        .map_err(db_error)?;
+        rows.iter().map(operation_record).collect()
+    }
+    async fn activate_reference(
+        &self,
+        context: &WriteContext,
+        operation_id: &str,
+        candidate_ref: &str,
+        previous_ref: Option<&str>,
+    ) -> Result<i64, StorageError> {
+        nonempty(operation_id)?;
+        nonempty(candidate_ref)?;
+        let mut tx = self.write().await?;
+        mutation_fence(&mut tx, context, operation_id).await?;
+        let rows = sqlx::query("UPDATE lifecycle_operations SET state='committed',candidate_ref=?,previous_ref=coalesce(?,previous_ref),generation=? WHERE id=? AND connection_id=? AND state <> 'complete'")
+            .bind(candidate_ref).bind(previous_ref).bind(context.generation)
+            .bind(operation_id).bind(&context.connection_id)
+            .execute(&mut *tx).await.map_err(db_error)?.rows_affected();
+        if rows != 1 {
+            return Err(StorageError::Conflict);
+        }
+        // Credential replacement increments the generation, so a task that
+        // captured the previous generation can no longer publish results.
+        let next: Option<i64> = sqlx::query_scalar("UPDATE connections SET credential_ref=?,generation=generation+1,lifecycle=CASE WHEN lifecycle IN ('pending_setup','needs_credentials') THEN 'active' ELSE lifecycle END WHERE id=? AND generation=? RETURNING generation")
+            .bind(candidate_ref).bind(&context.connection_id).bind(context.generation)
             .fetch_optional(&mut *tx).await.map_err(db_error)?;
         let next = next.ok_or(StorageError::Conflict)?;
         tx.commit().await.map_err(db_error)?;
@@ -375,7 +522,7 @@ impl Repository for SqliteRepository {
         }
         let (kind, amount, detail) = encode_value(&snapshot.value)?;
         let mut tx = self.write().await?;
-        guard(&mut tx, context, Some(&snapshot.scope_id)).await?;
+        guard(&mut tx, context, Some(&snapshot.scope_id), None).await?;
         let next = revision(&mut tx).await?;
         sqlx::query("INSERT INTO snapshots(scope_id,product_key,product_id,metric,value_kind,amount,unit_detail,provenance,observed_at,source_as_of,successful_sync_at,data_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope_id,product_key,metric) DO UPDATE SET value_kind=excluded.value_kind,amount=excluded.amount,unit_detail=excluded.unit_detail,provenance=excluded.provenance,observed_at=excluded.observed_at,source_as_of=excluded.source_as_of,successful_sync_at=excluded.successful_sync_at,data_revision=excluded.data_revision")
             .bind(&snapshot.scope_id).bind(snapshot.product_id.as_deref().unwrap_or("")).bind(&snapshot.product_id).bind(&snapshot.metric)
@@ -436,7 +583,7 @@ impl Repository for SqliteRepository {
             return Err(StorageError::Validation);
         }
         let mut tx = self.write().await?;
-        guard(&mut tx, context, Some(&p.scope_id)).await?;
+        guard(&mut tx, context, Some(&p.scope_id), None).await?;
         if !p.product_key.is_empty() {
             let exists: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM products WHERE id=? AND scope_id=?)",
@@ -638,6 +785,20 @@ impl Repository for SqliteRepository {
             successful_sync_at: time(&row, "successful_sync_at")?,
             watermark: text(&row, "watermark")?.into(),
         }))
+    }
+}
+
+#[cfg(test)]
+impl SqliteRepository {
+    /// Throwaway fault fixture: run one raw statement so a test can model a
+    /// projection that was never committed, or an earlier backup that a restore
+    /// put back. Production code never calls this.
+    pub async fn execute_raw(&self, sql: &'static str) -> Result<(), StorageError> {
+        sqlx::raw_sql(sql)
+            .execute(&self.writer)
+            .await
+            .map_err(db_error)?;
+        Ok(())
     }
 }
 
