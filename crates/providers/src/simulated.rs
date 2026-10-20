@@ -48,7 +48,12 @@ pub enum Scenario {
     /// Whole-call rate limit, the retry window becomes a persisted cooldown.
     RateLimited,
     /// History never attests completeness; current state stays healthy.
+    /// History never attests completeness; current state stays healthy.
     IncompleteHistory,
+    /// The source serves current state but reports no history stream at all.
+    NoHistory,
+    /// A complete attestation is withdrawn by the final page's truncation.
+    PartialAttestation,
 }
 
 /// Which datasets a provider exposes; the two demo capability fixtures.
@@ -150,7 +155,9 @@ impl SimulatedAdapter {
             Scenario::Nominal
             | Scenario::PartialPermission
             | Scenario::RateLimited
-            | Scenario::IncompleteHistory => (
+            | Scenario::IncompleteHistory
+            | Scenario::NoHistory
+            | Scenario::PartialAttestation => (
                 Some(Value::Tokens(TokenTotal(capability.token_total))),
                 Availability::Available,
                 None,
@@ -262,7 +269,37 @@ impl ProviderPort for SimulatedAdapter {
         request: &ProviderRequest,
         cursor: Option<&str>,
     ) -> Result<Option<HistoryPage>, ProviderError> {
+        if self.scenario() == Scenario::NoHistory {
+            // The source reports current state but no history stream at all;
+            // the coordinator records the job without a published partition.
+            return Ok(None);
+        }
         let partition = self.token_partition(request);
+        if self.scenario() == Scenario::RateLimited {
+            // The rate limit rejects every request, history included.
+            return Err(ProviderError::RateLimited {
+                retry_after: RATE_LIMIT_RETRY,
+            });
+        }
+        if self.scenario() == Scenario::PartialAttestation {
+            // The first page attests completeness, the final page withdraws it:
+            // only the terminal attestation may publish.
+            return match cursor {
+                None => Ok(Some(HistoryPage {
+                    partition,
+                    facts: self.history_facts(request.as_of, 0, 1),
+                    next_cursor: Some("synthetic-partial-2".into()),
+                    complete: true,
+                })),
+                Some("synthetic-partial-2") => Ok(Some(HistoryPage {
+                    partition,
+                    facts: self.history_facts(request.as_of, 1, 1),
+                    next_cursor: None,
+                    complete: false,
+                })),
+                Some(_) => Err(ProviderError::InvalidResponse),
+            };
+        }
         if self.scenario() == Scenario::IncompleteHistory {
             // One fact per page with an endless chain of new cursors: the
             // stream can never attest completeness, so the coordinator's page
@@ -477,6 +514,37 @@ mod tests {
             cursor = page.next_cursor;
         }
         assert_eq!(cursor.as_deref(), Some("synthetic-page-5"));
+    }
+
+    #[tokio::test]
+    async fn no_history_reports_no_stream() {
+        let adapter = kimi();
+        adapter.set_scenario(Scenario::NoHistory);
+        assert!(adapter
+            .history_page(&request(), None)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn partial_attestation_withdraws_completeness_on_the_last_page() {
+        let adapter = kimi();
+        adapter.set_scenario(Scenario::PartialAttestation);
+        let first = adapter
+            .history_page(&request(), None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first.complete);
+        assert_eq!(first.next_cursor.as_deref(), Some("synthetic-partial-2"));
+        let last = adapter
+            .history_page(&request(), Some("synthetic-partial-2"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!last.complete);
+        assert!(last.next_cursor.is_none());
     }
 
     #[tokio::test]

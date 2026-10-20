@@ -6,7 +6,7 @@ use crate::sqlite::SqliteRepository;
 use chrono::{DateTime, Utc};
 use quotavista_core::{
     domain::{Lifecycle, Provenance, QueryHealth, Value},
-    journal::{DurableStore, JournalError},
+    journal::{DurableStore, JournalError, OperationKind, OperationPhase, OperationRecord},
     number::TokenTotal,
     provider::{Cooldowns, ProviderRequest, RefreshClock},
     storage::{Connection, Partition, Repository, Scope, WriteContext},
@@ -279,6 +279,11 @@ async fn manual_requests_coalesce_and_respect_persisted_cooldowns() {
         panic!("rate limit must end in cooldown: {outcome:?}");
     };
     assert_eq!(until, at(12) + chrono::Duration::minutes(30));
+    // Whole-call transport failures record health under the empty dataset key.
+    assert_eq!(
+        coordinator.health().get(&(CONN.to_owned(), String::new())),
+        Some(&QueryHealth::RateLimited)
+    );
 
     let persisted = harness
         .durable
@@ -496,4 +501,170 @@ async fn adapter_partition_shape_is_shared_with_storage() {
     assert_eq!(partition.metric, adapter.metric);
     assert_eq!(partition.interval, adapter.interval);
     assert_eq!(partition.authority, Provenance::Synthetic);
+}
+
+#[tokio::test]
+async fn a_second_coordinator_publishes_after_a_restart_on_the_same_database() {
+    let harness = fixture().await;
+
+    let mut first = harness.coordinator();
+    let job_one = admitted(&mut first, CONN).await;
+    let Outcome::Completed {
+        history: HistoryOutcome::Published {
+            revision: first_revision,
+        },
+    } = run_to_completion(&mut first, &job_one).await
+    else {
+        panic!("first coordinator must publish");
+    };
+
+    // A coordinator reopened on the same database and durable store issues
+    // fresh job ids and must still publish.
+    let mut second = harness.coordinator();
+    let job_two = admitted(&mut second, CONN).await;
+    assert_ne!(
+        job_one, job_two,
+        "job ids must never be reused across restarts"
+    );
+    let outcome = run_to_completion(&mut second, &job_two).await;
+    let Outcome::Completed {
+        history: HistoryOutcome::Published { revision },
+    } = outcome
+    else {
+        panic!("restart must publish, got {outcome:?}");
+    };
+    assert!(revision > first_revision);
+}
+
+#[tokio::test]
+async fn disabled_and_deletion_pending_connections_are_not_admitted() {
+    for lifecycle in [Lifecycle::Disabled, Lifecycle::DeletionPending] {
+        let harness = fixture().await;
+        harness
+            .repo
+            .set_lifecycle(&context(CONN, 0), lifecycle)
+            .await
+            .unwrap();
+        let mut coordinator = harness.coordinator();
+        let admissions = coordinator
+            .request_manual(&[(CONN, context(CONN, 0))])
+            .await;
+        assert_eq!(admissions[0], Admission::Refused, "{lifecycle:?}");
+        assert!(coordinator.job_ids().is_empty());
+        assert_eq!(coordinator.running(), 0);
+    }
+}
+
+#[tokio::test]
+async fn a_late_rate_limit_after_disable_is_fenced_without_a_cooldown() {
+    let harness = fixture().await;
+    let mut coordinator = harness.coordinator();
+
+    let job = admitted(&mut coordinator, CONN).await;
+    coordinator.pump().await; // QueryCurrent -> CommitCurrent
+    coordinator.pump().await; // CommitCurrent -> FetchPage
+
+    // The provider starts rate limiting only now and the connection is
+    // disabled: the late error fences without any durable side effect.
+    harness.set_scenario(Scenario::RateLimited);
+    harness
+        .repo
+        .set_lifecycle(&context(CONN, 0), Lifecycle::Disabled)
+        .await
+        .unwrap();
+
+    let outcome = run_to_completion(&mut coordinator, &job).await;
+    assert_eq!(outcome, Outcome::Fenced);
+    assert!(harness.durable.entry(COOLDOWNS_NAME).is_none());
+    assert!(
+        coordinator
+            .health()
+            .get(&(CONN.to_owned(), String::new()))
+            .is_none(),
+        "no health entry for a dead context"
+    );
+}
+
+#[tokio::test]
+async fn late_response_is_fenced_after_credential_rotation() {
+    let harness = fixture().await;
+    let mut coordinator = harness.coordinator();
+
+    let job = admitted(&mut coordinator, CONN).await;
+    coordinator.pump().await; // QueryCurrent -> CommitCurrent
+
+    // Credential rotation commits a new reference and bumps the generation
+    // while the connection stays Active.
+    let operation = OperationRecord {
+        operation_id: "synthetic-rotation".into(),
+        connection_id: CONN.into(),
+        kind: OperationKind::Setup,
+        phase: OperationPhase::Pending,
+        candidate_ref: Some("synthetic-ref-next".into()),
+        previous_ref: None,
+        generation: 0,
+    };
+    harness.repo.begin_operation(&operation).await.unwrap();
+    let bumped = harness
+        .repo
+        .activate_reference(
+            &context(CONN, 0),
+            "synthetic-rotation",
+            "synthetic-ref-next",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(bumped, 1);
+    let row = harness.repo.connection(CONN).await.unwrap().unwrap();
+    assert_eq!(row.lifecycle, Lifecycle::Active);
+
+    let outcome = run_to_completion(&mut coordinator, &job).await;
+    assert_eq!(outcome, Outcome::Fenced);
+}
+
+#[tokio::test]
+async fn no_history_completes_without_a_published_partition() {
+    let harness = fixture().await;
+    harness.set_scenario(Scenario::NoHistory);
+    let mut coordinator = harness.coordinator();
+
+    let job = admitted(&mut coordinator, CONN).await;
+    assert_eq!(
+        run_to_completion(&mut coordinator, &job).await,
+        Outcome::Completed {
+            history: HistoryOutcome::Skipped
+        }
+    );
+    // Current state still commits; nothing is published for history.
+    assert!(harness
+        .repo
+        .snapshot(SCOPE_ID, None, "tokens")
+        .await
+        .unwrap()
+        .is_some());
+    let partition = harness.storage_partition(at(12));
+    assert!(harness.repo.published(&partition).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_withdrawn_terminal_attestation_does_not_publish() {
+    let harness = fixture().await;
+    harness.set_scenario(Scenario::PartialAttestation);
+    let mut coordinator = harness.coordinator();
+
+    let job = admitted(&mut coordinator, CONN).await;
+    assert_eq!(
+        run_to_completion(&mut coordinator, &job).await,
+        Outcome::Completed {
+            history: HistoryOutcome::Incomplete
+        }
+    );
+    let partition = harness.storage_partition(at(12));
+    assert!(harness.repo.published(&partition).await.unwrap().is_none());
+    assert_eq!(
+        harness.repo.candidate_cursor(&job).await.unwrap(),
+        Some(END_CURSOR.into()),
+        "partial staging stays separate from published totals"
+    );
 }

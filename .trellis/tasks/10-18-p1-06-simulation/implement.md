@@ -8,7 +8,7 @@
 
 ## Work sequence
 
-- [x] Add fixture scenarios and a network-disabled simulated adapter. — `crates/providers/src/simulated.rs`: eight scenarios over the two capability fixtures; no network dependency anywhere in the crate.
+- [x] Add fixture scenarios and a network-disabled simulated adapter. — `crates/providers/src/simulated.rs`: ten scenarios over the two capability fixtures (the eight PRD states plus the review-round no-history and withdrawn-terminal-attestation fixtures); no network dependency anywhere in the crate.
 - [x] Implement a bounded coordinator through core ports and repository operations. — `crates/core/src/provider.rs` (port, errors, cooldowns) and `crates/infrastructure/src/refresh.rs` (stepping coordinator, concurrency two, page/time-bounded history).
 - [x] Run deterministic scheduling, freshness, cooldown, cancellation, and partial-history tests. — `crates/infrastructure/src/refresh/tests.rs` (8 tests: 7 coordinator fixtures plus the partition-shape guard), `crates/core/src/provider.rs` (2 port/cooldown tests), `crates/providers/src/simulated.rs` (7 scenario tests).
 ## Validation and review

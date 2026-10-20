@@ -9,7 +9,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use quotavista_core::{
-    domain::QueryHealth,
+    domain::{Lifecycle, QueryHealth},
     journal::{DurableStore, JournalError, COOLDOWNS_NAME},
     provider::{
         Cooldowns, DatasetCurrent, DatasetResult, HistoryPage, ProviderError, ProviderPort,
@@ -23,9 +23,15 @@ use std::collections::BTreeMap;
 pub const MAX_CONCURRENCY: usize = 2;
 /// History slice bounds from the architecture: page count and wall-clock time.
 pub const MAX_HISTORY_PAGES: u32 = 100;
+/// History slice wall-clock bound, measured on the injected [`RefreshClock`]
+/// (UTC). Production clocks advance in real time; a frozen or backward-stepping
+/// clock does not extend this bound beyond the page limit.
 const MAX_HISTORY_SECONDS: i64 = 30;
 /// Staging cursor synthesized for a provider's final page (no continuation).
 const END_CURSOR: &str = "history-end";
+/// Durable entry holding the next refresh job ordinal, so a reopened
+/// coordinator never reissues a job id (job ids are `sync_runs` keys).
+const COUNTER_NAME: &str = "refresh-counter.v1";
 
 /// What happened to one connection's refresh request.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,6 +123,8 @@ pub struct RefreshCoordinator<R, P, D, C> {
     durable: D,
     clock: C,
     jobs: Vec<Option<Job>>,
+    /// Terminal jobs pruned out of the slots; outcomes stay inspectable.
+    finished: BTreeMap<String, Outcome>,
     next_job: u64,
     cooldowns: Cooldowns,
     health: BTreeMap<(String, String), QueryHealth>,
@@ -132,16 +140,18 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
     /// state is a visible error, never silently ignored.
     pub fn open(repository: R, provider: P, durable: D, clock: C) -> Result<Self, JournalError> {
         let cooldowns = quotavista_core::provider::load_cooldowns(&durable)?;
+        let next_job = read_counter(&durable)?;
         Ok(Self {
             repository,
             provider,
             durable,
             clock,
             jobs: Vec::new(),
-            next_job: 0,
+            next_job,
             cooldowns,
             health: BTreeMap::new(),
             last_completion: BTreeMap::new(),
+            finished: BTreeMap::new(),
         })
     }
 
@@ -159,6 +169,9 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
 
     /// Terminal outcome of a job, or `None` while it still runs or waits.
     pub fn outcome(&self, job_id: &str) -> Option<Outcome> {
+        if let Some(outcome) = self.finished.get(job_id) {
+            return Some(outcome.clone());
+        }
         self.jobs
             .iter()
             .flatten()
@@ -166,12 +179,11 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
             .and_then(|job| job.outcome.clone())
     }
 
+    /// All job ids this coordinator knows, finished jobs included.
     pub fn job_ids(&self) -> Vec<String> {
-        self.jobs
-            .iter()
-            .flatten()
-            .map(|job| job.id.clone())
-            .collect()
+        let mut ids: Vec<String> = self.finished.keys().cloned().collect();
+        ids.extend(self.jobs.iter().flatten().map(|job| job.id.clone()));
+        ids
     }
 
     /// Jobs currently occupying a concurrency slot.
@@ -204,10 +216,7 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
         let now = self.clock.now();
         let mut admissions = Vec::with_capacity(requests.len());
         for (connection_id, context) in requests {
-            admissions.push(
-                self.admit(connection_id, context, now, /* automatic = */ false)
-                    .await,
-            );
+            admissions.push(self.admit(connection_id, context, now).await);
         }
         admissions
     }
@@ -230,8 +239,7 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
                         .get(*connection_id)
                         .is_none_or(|last| now >= *last + Duration::minutes(i64::from(minutes)));
                     if due {
-                        self.admit(connection_id, context, now, /* automatic = */ true)
-                            .await
+                        self.admit(connection_id, context, now).await
                     } else {
                         Admission::Refused
                     }
@@ -274,7 +282,13 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
             if job.outcome.is_none() && !matches!(job.phase, Phase::Pending) {
                 self.advance(&mut job).await;
             }
-            self.jobs[index] = Some(job);
+            if let Some(outcome) = job.outcome.clone() {
+                // Terminal jobs leave the slot list; the concurrency budget
+                // never counts finished work.
+                self.finished.insert(job.id.clone(), outcome);
+            } else {
+                self.jobs[index] = Some(job);
+            }
         }
     }
 
@@ -283,7 +297,6 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
         connection_id: &str,
         context: &WriteContext,
         now: DateTime<Utc>,
-        automatic: bool,
     ) -> Admission {
         if let Some(job) = self
             .jobs
@@ -298,26 +311,30 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
         if let Some(until) = self.cooldowns.blocked(connection_id, now) {
             return Admission::CooldownBlocked { until };
         }
-        // Automatic refresh silently skips blocked or unknown connections;
-        // manual requests report the refusal.
-        if self
-            .repository
-            .connection(connection_id)
-            .await
-            .ok()
-            .flatten()
-            .is_none()
-        {
-            return Admission::Refused;
+        // Suspended and deleted connections never occupy a slot: only an
+        // Active connection may start a refresh job.
+        match self.repository.connection(connection_id).await {
+            Ok(Some(row)) if row.lifecycle == Lifecycle::Active => {}
+            _ => return Admission::Refused,
         }
         let Ok(scopes) = self.repository.scope_ids(connection_id).await else {
             return Admission::Refused;
         };
+        // P1-06 fixtures model one scope per connection; multi-scope
+        // connections will admit one job per scope when they arrive.
         let Some(scope_id) = scopes.first().cloned() else {
             return Admission::Refused;
         };
-        let _ = automatic;
         let id = format!("job-{}", self.next_job);
+        // Persist the next ordinal before adopting this one, so a reopened
+        // coordinator never reissues a job id against existing `sync_runs`.
+        if self
+            .durable
+            .replace(COUNTER_NAME, &(self.next_job + 1).to_string())
+            .is_err()
+        {
+            return Admission::Refused;
+        }
         self.next_job += 1;
         let phase = if self.running() < MAX_CONCURRENCY {
             Phase::QueryCurrent
@@ -351,7 +368,7 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
                 };
                 match self.provider.current(&request).await {
                     Ok(datasets) => job.phase = Phase::CommitCurrent { datasets },
-                    Err(error) => self.fail_provider(job, error, as_of),
+                    Err(error) => self.fail_provider(job, error, as_of).await,
                 }
             }
             Phase::CommitCurrent { datasets } => {
@@ -376,21 +393,26 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
                     .history_page(&request, cursor.as_deref())
                     .await
                 {
-                    Err(error) => self.fail_provider(job, error, now),
+                    Err(error) => self.fail_provider(job, error, now).await,
                     Ok(None) => {
-                        job.phase = if job.saw_complete {
-                            Phase::CompleteHistory { pages: fetched }
+                        if job.saw_complete {
+                            job.phase = Phase::CompleteHistory { pages: fetched };
                         } else if fetched == 0 {
-                            unreachable!("provider ended the stream before any page")
+                            // The provider serves no history stream at all;
+                            // current state still commits.
+                            job.outcome = Some(Outcome::Completed {
+                                history: HistoryOutcome::Skipped,
+                            });
                         } else {
                             job.outcome = Some(Outcome::Completed {
                                 history: HistoryOutcome::Incomplete,
                             });
-                            Phase::Pending
-                        };
+                        }
                     }
                     Ok(Some(page)) => {
-                        job.saw_complete |= page.complete;
+                        // Only the terminal page's attestation may publish; a
+                        // later truncation withdraws an earlier attestation.
+                        job.saw_complete = page.complete;
                         if fetched == 0 {
                             job.phase = Phase::BeginCandidate { page };
                         } else {
@@ -419,7 +441,9 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
                     .await
                 {
                     Ok(()) => job.phase = Phase::StagePage { page, number: 1 },
-                    Err(StorageError::Conflict) => job.outcome = Some(Outcome::Fenced),
+                    Err(StorageError::Conflict) => {
+                        job.outcome = Some(self.classify_conflict(job).await);
+                    }
                     Err(_) => job.outcome = Some(Outcome::StorageFailed),
                 }
             }
@@ -551,7 +575,8 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
             }
         }
         if let Some(retry_after) = rate_limited {
-            self.fail_provider(job, ProviderError::RateLimited { retry_after }, as_of);
+            self.fail_provider(job, ProviderError::RateLimited { retry_after }, as_of)
+                .await;
             return;
         }
         job.phase = Phase::FetchPage {
@@ -560,9 +585,28 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
         };
     }
 
-    /// Terminate a job on a provider error, persisting any retry window
-    /// durably before it is honored in memory.
-    fn fail_provider(&mut self, job: &mut Job, error: ProviderError, now: DateTime<Utc>) {
+    /// Terminate a job on a provider error. A late error for a connection
+    /// that was disabled, rotated, or deleted is fenced without side effects:
+    /// neither a health entry nor a cooldown is recorded for a dead context.
+    async fn fail_provider(&mut self, job: &mut Job, error: ProviderError, now: DateTime<Utc>) {
+        let fenced = match self.repository.connection(&job.connection_id).await {
+            Ok(Some(row)) => {
+                row.generation != job.context.generation || row.lifecycle != Lifecycle::Active
+            }
+            Ok(None) => true,
+            Err(_) => {
+                job.outcome = Some(Outcome::StorageFailed);
+                return;
+            }
+        };
+        if fenced {
+            job.outcome = Some(Outcome::Fenced);
+            return;
+        }
+        // Whole-call transport failure: the empty dataset key denotes the
+        // connection itself rather than one dataset.
+        self.health
+            .insert((job.connection_id.clone(), String::new()), error.health());
         if let Some(retry_after) = error.cooldown() {
             let until = now + retry_after;
             let mut next = self.cooldowns.clone();
@@ -580,6 +624,34 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
         } else {
             job.outcome = Some(Outcome::Failed { error });
         }
+    }
+
+    /// A `Conflict` at candidate start is a lifecycle fence unless the
+    /// connection still matches the admission context exactly — then the run
+    /// id collided with an existing `sync_runs` row and must not be reported
+    /// as a fence.
+    async fn classify_conflict(&self, job: &Job) -> Outcome {
+        match self.repository.connection(&job.connection_id).await {
+            Ok(Some(row))
+                if row.generation == job.context.generation
+                    && row.lifecycle == Lifecycle::Active =>
+            {
+                Outcome::StorageFailed
+            }
+            Ok(_) => Outcome::Fenced,
+            Err(_) => Outcome::StorageFailed,
+        }
+    }
+}
+
+/// Read the persisted job ordinal; a corrupt counter fails visibly.
+fn read_counter(durable: &impl DurableStore) -> Result<u64, JournalError> {
+    match durable.read(COUNTER_NAME)? {
+        None => Ok(0),
+        Some(text) => text
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| JournalError::Corrupt),
     }
 }
 
