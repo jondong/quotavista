@@ -21,7 +21,7 @@
 | `npm ci && npm run lint && npm run i18n:check && npm test && npm run typecheck && npm run build` (apps/desktop) | pass (ESLint clean, catalog parity OK, 21/21 tests, tsc clean, vite build OK) |
 | `cargo test --locked -p quotavista-infrastructure macos_keychain_synthetic_roundtrip -- --ignored --nocapture` | pass (native smoke check, see evidence below) |
 | `git diff --check` | pass |
-| PR CI | pending (verified green before handoff) |
+| PR CI | pass (workspace-checks + macos-desktop, run 39387091597; first run 39386430090 caught a missing `crypto-rust` feature for the Linux adapter, fixed in 4f16e5b) |
 
 ### Native smoke-check evidence (macOS Keychain)
 
