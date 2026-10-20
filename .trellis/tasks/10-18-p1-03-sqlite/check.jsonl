@@ -3,3 +3,5 @@
 {"file": "docs/development-plan.md", "reason": "Phase boundaries and exit gates"}
 {"file": ".trellis/spec/backend/index.md", "reason": "Backend project constraints"}
 {"file": "docs/traceability.md", "reason": "Acceptance evidence and unverified gates"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Implemented SQLite invariants and explicitly deferred recovery boundaries"}
+{"file": ".trellis/tasks/10-18-p1-03-sqlite/validation.md", "reason": "Synthetic evidence, reproducible validation commands, and remaining gaps"}

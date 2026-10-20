@@ -4,7 +4,7 @@ Date: 2026-10-18
 
 Baselines: Requirements 0.9 and Architecture 0.4
 
-This mapping connects required outcomes to planned components and evidence. All release acceptance statuses remain Pending. P1-02 adds synthetic-tested numeric/calendar primitives and generated transport contracts (see the prototype evidence below); these do not close any full-release criterion. The P1-01 scaffold (Cargo workspace, minimal synthetic-data desktop window, reproducible checks) is a prototype contribution toward A11/A12/A24, not closure of any criterion. A document review is not a substitute for the evidence listed here.
+This mapping connects required outcomes to planned components and evidence. All release acceptance statuses remain Pending. P1-03 adds a synthetic-tested SQLite adapter and atomic candidate publication (see the prototype evidence below), without wiring desktop startup to a database. P1-02 adds synthetic-tested numeric/calendar primitives and generated transport contracts (see the prototype evidence below); these do not close any full-release criterion. The P1-01 scaffold (Cargo workspace, minimal synthetic-data desktop window, reproducible checks) is a prototype contribution toward A11/A12/A24, not closure of any criterion. A document review is not a substitute for the evidence listed here.
 
 Phases refer to the [development plan](development-plan.md). Requirements and design review findings are recorded in the [requirements review](reviews/requirements-review.md) and [architecture review](reviews/architecture-review.md).
 
@@ -38,7 +38,7 @@ Phases refer to the [development plan](development-plan.md). Requirements and de
 
 ## P1-02 prototype evidence
 
-Scope: the P1-02 task branch on macOS arm64, Rust 1.99.1, using only synthetic in-memory values and throwaway generator/boundary fixtures. No production, business, or personal database was opened. Reproducible commands and criterion-level evidence are recorded in [the task validation record](../.trellis/tasks/10-18-p1-02-contracts/validation.md).
+Scope: the P1-02 task branch on macOS arm64, Rust 1.99.1, using only synthetic in-memory values and throwaway generator/boundary fixtures. No production, business, or personal database was opened. Reproducible commands and criterion-level evidence are recorded in [the task validation record](../.trellis/tasks/archive/2026-10/10-18-p1-02-contracts/validation.md).
 
 - A05/A17: core and contract tests preserve zero versus null, unsupported versus missing, partial coverage, stale measurements, query failure, and original source timestamps independently. No UI or persistence behavior is claimed.
 - A13: fake-clock tests cover 23/25-hour DST days, Monday anchors, inclusive dates, half-open bounds, current-day clipping including empty effective time at midnight, 366-day limits, invalid/unknown/future/reversed ranges, and whole-source-bucket compatibility. Full statistics aggregation remains deferred.
@@ -52,6 +52,15 @@ Scope: the P1-08 task branch on macOS arm64, Node 24, using only bundled catalog
 - A25: `npm run i18n:check` enforces exact en/zh-CN key and `{placeholder}` parity (58 keys each; blank English values rejected); Vitest covers explicit-Simplified-Chinese first-launch selection (zh-CN/zh-SG/zh-Hans yes; plain zh, zh-TW/HK/MO/Hant no), stored-override precedence, English runtime fallback on a missing key, exact BigInt token grouping, decimal-string precision, and zone-independent instant formatting.
 - A25: renderer tests verify immediate switching (document language, labels), preservation of the active screen, statistics filter, and nonsecret alias draft across a switch, unknown rendered as "unknown" and never zero, localized error/empty/banner foundations, catalog mapping of the backend scaffold status sentence (asserted in zh-CN and re-translated after a switch), locale-store failure isolation (read falls back to detection; write failure still switches in memory), and the shell-level language-change live-region announcement. Persisted preference uses renderer-local storage pending P1-10 settings; notification templates and native-WebView runtime evidence remain pending.
 - A11/A24: accessible foundations (skip link, labeled controls, `aria-current` navigation, chart `role="img"` description, visible `:focus-visible` outline, responsive stacking) are implemented and asserted in jsdom; native macOS/Linux window evidence remains pending.
+
+## P1-03 prototype evidence
+
+Scope: the P1-03 task branch on macOS arm64, Rust 1.99.1, SQLx 0.9.0, bundled SQLite 3.51.3. All persistence and fault fixtures use synthetic values in throwaway `TempDir` databases. No application-data, production, business, or personal database was opened. Commands, per-criterion evidence, and remaining gaps are recorded in [the task validation record](../.trellis/tasks/10-18-p1-03-sqlite/validation.md).
+
+- A09/A07: fresh migration, validated reopen, settings CAS, original value/source/success timestamps, migration rollback, checksum mismatch, and fail-closed populated upgrades are tested. Native startup recovery, backups, lifecycle replay, and full migration recovery remain pending.
+- A14/A22: exact TEXT encodings round-trip `u64::MAX`, `u128::MAX`, exact decimals, money, ratios, percentage points, and native quantities. Duplicate/stale cursor CAS, repeated cursors, invalid foreign keys, scope mismatch, and stale generation fail without publication. Provider response/body limits and source revision ordering remain pending.
+- A16/A19/A17: event identity excludes mutable timestamps; timestamp corrections replace rather than duplicate facts. Distinct complete bucket keys, duplicate upserts, removed facts, empty authoritative intervals, partial-candidate rejection, restart/resume, and atomic facts/coverage/checkpoint/revision/watermark/success-time publication are tested. Injected cursor/publication/snapshot faults preserve prior committed state. Cross-partition event moves and overlapping authority/grain replacement fail closed rather than double-count. Provider settlement/completeness attestation and cross-grain reconciliation remain pending.
+- A23: a serialized writer and bounded readers are configured and tested individually for foreign keys, WAL, a 5,000 ms busy timeout, and FULL durability. A contended write returns a safe bounded failure; independently opened adapters cannot mix publication commits. Native disk-full tests, async desktop integration, statistics throughput, and the 100,000-fact benchmark remain pending.
 
 ## Release evidence rules
 

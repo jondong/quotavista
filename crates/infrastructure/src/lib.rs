@@ -1,12 +1,8 @@
-//! Infrastructure boundaries: persistence, secrets, and network.
-//!
-//! Phase 1 scaffold: no SQLite, secret store, or HTTP implementation yet.
-//! SQLx arrives in task P1-03; when it is added, pin a SQLite release with
-//! the upstream WAL fixes and verify the linked runtime version at setup
-//! (see CONTRIBUTING.md).
+//! Infrastructure adapters for backend-owned boundaries.
+pub mod sqlite;
 
-/// Kind of the only store available in this scaffold. Development defaults to
-/// synthetic in-memory state; nothing touches a real application data dir.
+/// The desktop scaffold remains in-memory until the composition task installs
+/// recovery fences and explicitly opens SQLite. P1-03 provides the adapter only.
 pub const STORE_KIND: &str = "synthetic-in-memory";
 
 #[cfg(test)]
