@@ -42,6 +42,8 @@ cargo fmt --all -- --check                                   # formatting
 cargo clippy --locked --workspace --all-targets -- -D warnings  # lints
 cargo test --locked --workspace                              # Rust tests
 (cd apps/desktop && npm run lint)                            # ESLint
+(cd apps/desktop && npm run i18n:check)                      # en/zh-CN catalog key parity
+(cd apps/desktop && npm test)                                # renderer unit/component tests (Vitest)
 (cd apps/desktop && npm run typecheck)                       # strict TypeScript
 (cd apps/desktop && npm run build)                           # production frontend build
 (cd apps/desktop && npm run tauri dev)                       # launch the prototype window (synthetic data)

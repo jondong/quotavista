@@ -52,6 +52,12 @@ jobs:
       - name: Frontend lint
         run: npm run lint
         working-directory: apps/desktop
+      - name: Catalog parity
+        run: npm run i18n:check
+        working-directory: apps/desktop
+      - name: Frontend renderer tests
+        run: npm test
+        working-directory: apps/desktop
       - name: Frontend type-check
         run: npm run typecheck
         working-directory: apps/desktop

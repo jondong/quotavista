@@ -20,10 +20,10 @@ Acceptance mapping: A11, A24, A25. These are prototype contributions, not closur
 
 ## Acceptance criteria
 
-- [ ] Both locales cover navigation, controls, error/status text, accessible labels, and chart descriptions; a parity check catches missing required keys.
-- [ ] Explicit Simplified Chinese system locales choose zh-CN; other locales choose en. A user override takes priority, with persistence completed through P1-10.
-- [ ] Switching language preserves current screen, filters, and nonsecret input, without changing reporting zone/currency or initiating provider calls.
-- [ ] Window resizing and keyboard navigation keep primary flows usable; all demo content is identifiable as synthetic.
+- [x] Both locales cover navigation, controls, error/status text, accessible labels, and chart descriptions; a parity check catches missing required keys. (Evidence: `npm run i18n:check` — 58-key parity en/zh-CN; Vitest asserts localized chart description, error, empty, and banner text.)
+- [x] Explicit Simplified Chinese system locales choose zh-CN; other locales choose en. A user override takes priority, with persistence completed through P1-10. (Evidence: Vitest locale-detection and stored-override tests; override currently persists via renderer-local storage, migration to the versioned setting lands in P1-10.)
+- [x] Switching language preserves current screen, filters, and nonsecret input, without changing reporting zone/currency or initiating provider calls. (Evidence: Vitest switching test keeps Statistics filter and Connections alias draft; reporting zone/currency are fixed constants; only the `synthetic_status` command is invoked.)
+- [x] Window resizing and keyboard navigation keep primary flows usable; all demo content is identifiable as synthetic. (Evidence: responsive layout rules and `:focus-visible` styling in `styles.css`; native focusable controls with labels and `aria-current` navigation; synthetic banner asserted in Vitest. Native-WebView keyboard evidence remains pending in docs/traceability.md.)
 
 ## Out of scope
 
@@ -31,4 +31,4 @@ No final branding, extra locales, website, independent frontend provider calls, 
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Implemented on the P1-08 branch with prototype-level evidence recorded above and in docs/traceability.md; runtime persistence moves to P1-10 and native-WebView interaction evidence remains pending.

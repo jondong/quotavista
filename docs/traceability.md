@@ -45,6 +45,14 @@ Scope: the P1-02 task branch on macOS arm64, Rust 1.99.1, using only synthetic i
 - A14: `u64` token facts, checked `u128` totals, non-double-counted detail subcounts, exact decimal precision and same-currency arithmetic are tested; serde strings preserve values above JavaScript's safe integer range through `u128::MAX`.
 - A18/A22/A25: eleven typed command request/result contracts, revision strings, operation states, safe errors, bounded input validation, and `en`/`zh-CN` preference are generated into TypeScript and checked for drift. Runtime lifecycle recovery, authorization, I/O bounds, and bilingual UI remain pending in their own tasks.
 
+## P1-08 prototype evidence
+
+Scope: the P1-08 task branch on macOS arm64, Node 24, using only bundled catalogs, synthetic demo values, and the mocked Tauri `synthetic_status` command. No provider call, credential, or production database was involved; checks ran in jsdom, not a native WebView.
+
+- A25: `npm run i18n:check` enforces exact en/zh-CN key and `{placeholder}` parity (58 keys each; blank English values rejected); Vitest covers explicit-Simplified-Chinese first-launch selection (zh-CN/zh-SG/zh-Hans yes; plain zh, zh-TW/HK/MO/Hant no), stored-override precedence, English runtime fallback on a missing key, exact BigInt token grouping, decimal-string precision, and zone-independent instant formatting.
+- A25: renderer tests verify immediate switching (document language, labels), preservation of the active screen, statistics filter, and nonsecret alias draft across a switch, unknown rendered as "unknown" and never zero, localized error/empty/banner foundations, catalog mapping of the backend scaffold status sentence (asserted in zh-CN and re-translated after a switch), locale-store failure isolation (read falls back to detection; write failure still switches in memory), and the shell-level language-change live-region announcement. Persisted preference uses renderer-local storage pending P1-10 settings; notification templates and native-WebView runtime evidence remain pending.
+- A11/A24: accessible foundations (skip link, labeled controls, `aria-current` navigation, chart `role="img"` description, visible `:focus-visible` outline, responsive stacking) are implemented and asserted in jsdom; native macOS/Linux window evidence remains pending.
+
 ## Release evidence rules
 
 - A01 and A03 require real-account reconciliation; fixtures alone cannot pass them.
