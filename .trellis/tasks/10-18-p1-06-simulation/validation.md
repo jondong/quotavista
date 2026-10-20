@@ -27,6 +27,8 @@ Commands run in this worktree, in order:
 - Desktop `npm` checks were not run locally: this change ships no frontend, contract, or generated file, so the desktop suite has no input that differs from `main`; CI runs it on the pull request regardless.
 - `git diff --check` - passed with no whitespace or conflict-marker findings.
 
+- PR CI: [PR #6](https://github.com/jondong/quotavista/pull/6) targets `main` from this task branch; implementation commit `ea0523c`. Both jobs passed on that commit — `workspace-checks` in 1m28s and `macos-desktop` in 5m36s — and the result is recorded on the pull request. A passing CI run is not native platform evidence. This task remains in review and is not archived.
+
 ## Synthetic acceptance evidence verified
 
 | PRD criterion | Fixture and required result |
