@@ -395,6 +395,23 @@ impl Repository for SqliteRepository {
             })
             .transpose()
     }
+    async fn connections(&self) -> Result<Vec<Connection>, StorageError> {
+        let rows = sqlx::query("SELECT * FROM connections ORDER BY id")
+            .fetch_all(&self.readers)
+            .await
+            .map_err(db_error)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(Connection {
+                    id: text(&r, "id")?.into(),
+                    provider: text(&r, "provider")?.into(),
+                    alias: text(&r, "alias")?.into(),
+                    generation: r.try_get("generation").map_err(db_error)?,
+                    lifecycle: decode_lifecycle(text(&r, "lifecycle")?)?,
+                })
+            })
+            .collect()
+    }
     async fn set_lifecycle(
         &self,
         context: &WriteContext,

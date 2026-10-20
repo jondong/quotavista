@@ -219,6 +219,30 @@ async fn failed_snapshot_rolls_back_value_success_time_and_revision() {
 }
 
 #[tokio::test]
+async fn connections_lists_persisted_rows_in_id_order() {
+    let (_dir, repo) = fixture().await;
+    // Fixture seeds one connection (`context().connection_id`).
+    let one = repo.connections().await.unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].id, connection().id);
+
+    // A second connection adds a row and ordering stays stable.
+    let mut second = connection();
+    second.id = "synthetic-connection-other".into();
+    second.alias = "other".into();
+    second.lifecycle = Lifecycle::Disabled;
+    let mut scope_other = scope();
+    scope_other.id = "synthetic-scope-other".into();
+    scope_other.connection_id = "synthetic-connection-other".into();
+    repo.create_connection(&second, &scope_other).await.unwrap();
+    let listed = repo.connections().await.unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].id, connection().id);
+    assert_eq!(listed[1].id, "synthetic-connection-other");
+    repo.close().await;
+}
+
+#[tokio::test]
 async fn candidate_page_cursor_rollback_restart_and_partial_replacement() {
     let (dir, repo) = fixture().await;
     let p = partition();
