@@ -6,7 +6,7 @@ Keep commands thin: validate, map into application use cases, map safe results. 
 
 ## Dependencies and contracts
 
-Use the baseline linked in [PRD](prd.md). Predecessors: [P1-05](../10-18-p1-05-secret-stores/prd.md), [P1-06](../10-18-p1-06-simulation/prd.md) Update affected DTO mappings, migrations, and consumers together; preserve core dependency direction and synthetic provenance.
+Use the baseline linked in [PRD](prd.md). Predecessors: [P1-05](../archive/2026-10/10-18-p1-05-secret-stores/prd.md), [P1-06](../archive/2026-10/10-18-p1-06-simulation/prd.md) Update affected DTO mappings, migrations, and consumers together; preserve core dependency direction and synthetic provenance.
 
 ## Compatibility and rollback
 

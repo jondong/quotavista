@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default permission set for the prototype window.","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Single restricted IPC capability for the main window. The renderer can only call the composite `dispatch_command` envelope; every command-level operation, validation, and safe-error mapping lives behind it.","local":true,"windows":["main"],"permissions":["core:default","allow-dispatch-command"]}}

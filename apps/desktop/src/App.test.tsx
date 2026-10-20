@@ -3,13 +3,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn().mockResolvedValue({
-    provenance: "synthetic",
-    providerCount: 2,
-    store: "synthetic-memory",
-    message: "Development scaffold running without provider credentials.",
-  }),
+  invoke: vi.fn(),
 }));
+
+const PROTOTYPE_ENVELOPE = {
+  status: "ok",
+  contract_version: 1,
+  request_id: "fixture-request",
+  data: {
+    command: "list_connections",
+    data: {
+      connections: [
+        { provider: "kimi" },
+        { provider: "openrouter" },
+      ],
+      data_revision: "synthetic-memory",
+    },
+  },
+} as const;
 
 function setNavigatorLanguages(languages: string[]) {
   Object.defineProperty(window.navigator, "languages", {
@@ -27,8 +38,11 @@ function headerLanguageSelect(): HTMLSelectElement {
   return document.getElementById("header-language") as HTMLSelectElement;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   window.localStorage.clear();
+  const { invoke } = await import("@tauri-apps/api/core");
+  vi.mocked(invoke).mockReset();
+  vi.mocked(invoke).mockResolvedValue(PROTOTYPE_ENVELOPE);
 });
 
 afterEach(() => {

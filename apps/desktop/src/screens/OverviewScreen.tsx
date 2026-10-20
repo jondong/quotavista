@@ -1,13 +1,7 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { ipc } from "../ipc";
 import { useI18n, type MessageKey } from "../i18n";
-
-interface SyntheticStatus {
-  provenance: string;
-  providerCount: number;
-  store: string;
-  message: string;
-}
+import type { ConnectionList } from "../generated/contracts";
 
 // Synthetic demo snapshot. Unknown stays unknown (never rendered as zero);
 // exact strings and the independent reporting zone flow through formatters.
@@ -27,21 +21,27 @@ const DEMO_SNAPSHOT = {
 
 export default function OverviewScreen() {
   const { t, formatTokens, formatDecimal, formatDateTime } = useI18n();
-  const [status, setStatus] = useState<SyntheticStatus | null>(null);
+  const [connections, setConnections] = useState<ConnectionList | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    invoke<SyntheticStatus>("synthetic_status")
-      .then(setStatus)
+    ipc
+      .listConnections()
+      .then(setConnections)
       .catch(() => setFailed(true));
   }, []);
 
   if (failed) {
     return <p role="alert" className="error">{t("overview.error.statusUnavailable")}</p>;
   }
-  if (!status) {
+  if (!connections) {
     return <p role="status">{t("common.loading")}</p>;
   }
+
+  const provenance = "synthetic";
+  const providerCount = connections.connections.length;
+  const dataRevision = connections.data_revision;
+  const message = "Development scaffold running without provider credentials.";
 
   return (
     <section aria-labelledby="overview-heading">
@@ -49,16 +49,16 @@ export default function OverviewScreen() {
 
       <dl>
         <dt>{t("overview.status.provenance")}</dt>
-        <dd>{status.provenance}</dd>
+        <dd>{provenance}</dd>
         <dt>{t("overview.status.providers")}</dt>
-        <dd>{status.providerCount}</dd>
+        <dd>{providerCount}</dd>
         <dt>{t("overview.status.store")}</dt>
-        <dd>{status.store}</dd>
+        <dd>{dataRevision}</dd>
         <dt>{t("overview.status.message")}</dt>
         <dd>
-          {STATUS_MESSAGES[status.message]
-            ? t(STATUS_MESSAGES[status.message])
-            : status.message}
+          {STATUS_MESSAGES[message]
+            ? t(STATUS_MESSAGES[message])
+            : message}
         </dd>
       </dl>
 

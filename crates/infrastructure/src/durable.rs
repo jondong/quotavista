@@ -18,6 +18,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::Arc;
 
 /// Injected failure points for recovery fixtures. Each maps to one bit so a test
 /// can arm several boundaries at once.
@@ -145,6 +146,25 @@ impl DurableStore for FileStore {
     }
 }
 
+/// Newtype wrapper that lets the lifecycle and refresh coordinators share a
+/// single rooted [`FileStore`] without violating Rust's orphan rules. The
+/// wrapper implements [`DurableStore`] by delegating to the inner store.
+pub struct SharedFileStore(pub Arc<FileStore>);
+
+impl Clone for SharedFileStore {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl DurableStore for SharedFileStore {
+    fn read(&self, name: &str) -> Result<Option<String>, JournalError> {
+        self.0.read(name)
+    }
+
+    fn replace(&self, name: &str, contents: &str) -> Result<(), JournalError> {
+        self.0.replace(name, contents)
+    }
+}
 /// Sync a directory so the rename itself is durable. Unsupported on some
 /// platforms, where the call is allowed to fail without failing the write.
 fn sync_directory(directory: &Path) {
