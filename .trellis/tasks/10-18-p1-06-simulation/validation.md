@@ -27,7 +27,7 @@ Commands run in this worktree, in order:
 - Desktop `npm` checks run locally in `apps/desktop` for the review round (this change still ships no frontend input, but the review asked for full local validation): `npm ci`, `npm run lint`, `npm run i18n:check`, and `npm test` all passed (vitest: 2 test files, 21 tests).
 - `git diff --check` - passed with no whitespace or conflict-marker findings.
 
-- PR CI: [PR #6](https://github.com/jondong/quotavista/pull/6) targets `main` from this task branch. Both jobs passed on the implementation commit `ea0523c` (`workspace-checks` 1m28s, `macos-desktop` 5m36s), on the documentation commit `911e193` (1m46s, 4m57s), and on the review-round-1 commit `1230e2f` (1m45s, 3m31s) — the latest recorded head at the time of this round. The result is recorded on the pull request. A passing CI run is not native platform evidence. This task remains in review and is not archived.
+- PR CI: [PR #6](https://github.com/jondong/quotavista/pull/6) targets `main` from this task branch. Both jobs passed on the implementation commit `ea0523c` (`workspace-checks` 1m28s, `macos-desktop` 5m36s), on the documentation commit `911e193` (1m46s, 4m57s), on the review-round-1 commit `1230e2f` (1m45s, 3m31s), and on the review-round-2 commit `661025a` (1m16s, 4m35s). The result is recorded on the pull request. A passing CI run is not native platform evidence. This task remains in review and is not archived.
 
 ## Synthetic acceptance evidence verified
 
