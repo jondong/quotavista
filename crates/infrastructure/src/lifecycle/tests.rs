@@ -1446,3 +1446,249 @@ async fn recovery_converges_whichever_order_the_ledger_entries_sort_in() {
     assert!(!coordinator.ledger().has_pending_cleanup());
     assert!(coordinator.admit_restore(&manifest(&[])).is_ok());
 }
+
+#[tokio::test]
+async fn a_refused_deletion_transition_leaves_the_ledger_pending_and_the_secret_alive() {
+    let harness = fixture().await;
+    let mut coordinator = harness.recovered().await;
+    setup(&mut coordinator, PREVIOUS).await;
+    // The activation moved the row to generation 1, so this deletion carries a stale
+    // captured generation: the ledger write is durable and the transition is refused.
+    assert_eq!(
+        coordinator
+            .begin_deletion("synthetic-operation-2", &context(0))
+            .await
+            .unwrap_err(),
+        JournalError::Conflict
+    );
+
+    let connection = harness.repo.connection(CONNECTION).await.unwrap().unwrap();
+    assert_eq!(connection.lifecycle, Lifecycle::Active);
+    assert_eq!(connection.generation, 1);
+    assert!(coordinator.ledger().has_pending_cleanup());
+    assert!(coordinator.ledger().blocks(CONNECTION));
+    assert!(coordinator.ledger().blocks(SCOPE));
+    assert!(coordinator.journal().is_empty());
+    assert!(harness.repo.operations(None).await.unwrap().is_empty());
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS]);
+    assert!(harness.secrets.deleted().is_empty());
+    assert_eq!(
+        coordinator.schedule_context(CONNECTION).await.unwrap_err(),
+        JournalError::Conflict
+    );
+    drop(coordinator);
+
+    // A refused compare-and-swap is not an owed deletion. Recovery keeps the row's
+    // credential and leaves the entry pending so the deletion stays retryable.
+    let mut coordinator = harness.coordinator();
+    let report = coordinator.recover().await.unwrap();
+    assert!(report.finished.is_empty());
+    assert_eq!(report.pending.len(), 2);
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS]);
+    assert!(harness.secrets.deleted().is_empty());
+    assert_eq!(
+        harness
+            .repo
+            .credential_ref(CONNECTION)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(PREVIOUS)
+    );
+    assert_eq!(
+        harness
+            .repo
+            .connection(CONNECTION)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        Lifecycle::Active
+    );
+    assert!(coordinator.ledger().has_pending_cleanup());
+    assert_eq!(
+        coordinator.admit_restore(&manifest(&[])).unwrap_err(),
+        JournalError::RecoveryRequired
+    );
+
+    // Retrying with the generation the row actually holds completes the deletion.
+    let generation = coordinator
+        .begin_deletion("synthetic-operation-3", &context(1))
+        .await
+        .unwrap();
+    assert_eq!(generation, 2);
+    coordinator
+        .finish_deletion("synthetic-operation-3")
+        .await
+        .unwrap();
+    assert!(harness.secrets.present().is_empty());
+    assert_eq!(harness.secrets.deleted(), vec![PREVIOUS]);
+    assert!(!coordinator.ledger().has_pending_cleanup());
+    assert!(coordinator.journal().is_empty());
+    assert!(harness.repo.operations(None).await.unwrap().is_empty());
+    assert!(coordinator.admit_restore(&manifest(&[])).is_ok());
+    assert_eq!(
+        coordinator
+            .admit_restore(&manifest(&[CONNECTION]))
+            .unwrap_err(),
+        JournalError::Conflict
+    );
+}
+
+#[tokio::test]
+async fn an_incomplete_projection_refuses_the_deletion_transition_without_owing_the_secret() {
+    let harness = fixture().await;
+    let mut coordinator = harness.recovered().await;
+    setup(&mut coordinator, PREVIOUS).await;
+    // A projection this coordinator never wrote. The in-transaction fence refuses the
+    // transition, so the durable ledger entry must not become an owed deletion.
+    let pending = record(
+        "synthetic-operation-2",
+        OperationKind::Setup,
+        OperationPhase::Pending,
+        Some(CANDIDATE),
+    );
+    harness.repo.begin_operation(&pending).await.unwrap();
+
+    assert_eq!(
+        coordinator
+            .begin_deletion("synthetic-operation-3", &context(1))
+            .await
+            .unwrap_err(),
+        JournalError::Conflict
+    );
+    assert_eq!(
+        harness
+            .repo
+            .connection(CONNECTION)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        Lifecycle::Active
+    );
+    assert!(coordinator.ledger().has_pending_cleanup());
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS]);
+    assert!(harness.secrets.deleted().is_empty());
+    drop(coordinator);
+
+    // Recovery cleans up the orphan projection but leaves the live reference and the
+    // unacknowledged deletion alone: the row is not deletion_pending.
+    let mut coordinator = harness.coordinator();
+    let report = coordinator.recover().await.unwrap();
+    assert_eq!(report.finished.len(), 2);
+    assert_eq!(report.pending.len(), 2);
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS]);
+    assert_eq!(harness.secrets.deleted(), vec![CANDIDATE]);
+    assert_eq!(
+        harness
+            .repo
+            .credential_ref(CONNECTION)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(PREVIOUS)
+    );
+    assert!(coordinator.ledger().has_pending_cleanup());
+    assert!(harness.repo.operations(None).await.unwrap().is_empty());
+
+    // With the projection gone the retried deletion passes the fence and completes.
+    let generation = coordinator
+        .begin_deletion("synthetic-operation-4", &context(1))
+        .await
+        .unwrap();
+    assert_eq!(generation, 2);
+    coordinator
+        .finish_deletion("synthetic-operation-4")
+        .await
+        .unwrap();
+    assert!(harness.secrets.present().is_empty());
+    assert_eq!(harness.secrets.deleted(), vec![CANDIDATE, PREVIOUS]);
+    assert!(!coordinator.ledger().has_pending_cleanup());
+    assert!(coordinator.admit_restore(&manifest(&[])).is_ok());
+}
+
+#[tokio::test]
+async fn a_crash_between_the_ledger_write_and_the_transition_is_retried_not_resumed() {
+    let harness = fixture().await;
+    let mut coordinator = harness.recovered().await;
+    setup(&mut coordinator, PREVIOUS).await;
+    // A transition that never commits is what a crash between the durable ledger
+    // replace and the write transaction leaves behind.
+    harness
+        .repo
+        .execute_raw("CREATE TRIGGER refuse_deletion_transition BEFORE UPDATE ON connections WHEN NEW.lifecycle = 'deletion_pending' BEGIN SELECT RAISE(ABORT, 'synthetic fault'); END")
+        .await
+        .unwrap();
+    assert_eq!(
+        coordinator
+            .begin_deletion("synthetic-operation-2", &context(1))
+            .await
+            .unwrap_err(),
+        JournalError::Unavailable
+    );
+    assert_eq!(
+        harness
+            .repo
+            .connection(CONNECTION)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        Lifecycle::Active
+    );
+    assert!(coordinator.ledger().has_pending_cleanup());
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS]);
+    drop(coordinator);
+    harness
+        .repo
+        .execute_raw("DROP TRIGGER refuse_deletion_transition")
+        .await
+        .unwrap();
+
+    // The restart finds the entry and leaves it pending: the deletion was refused,
+    // so nothing is owed and the active connection keeps its credential.
+    let mut coordinator = harness.coordinator();
+    let report = coordinator.recover().await.unwrap();
+    assert!(report.finished.is_empty());
+    assert_eq!(report.pending.len(), 2);
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS]);
+    assert!(harness.secrets.deleted().is_empty());
+    assert_eq!(
+        harness
+            .repo
+            .credential_ref(CONNECTION)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(PREVIOUS)
+    );
+    assert!(coordinator.ledger().has_pending_cleanup());
+    assert_eq!(
+        coordinator.schedule_context(CONNECTION).await.unwrap_err(),
+        JournalError::Conflict
+    );
+
+    // The retried deletion is the only way out, and it completes normally.
+    let generation = coordinator
+        .begin_deletion("synthetic-operation-3", &context(1))
+        .await
+        .unwrap();
+    assert_eq!(generation, 2);
+    coordinator
+        .finish_deletion("synthetic-operation-3")
+        .await
+        .unwrap();
+    assert!(harness.secrets.present().is_empty());
+    assert_eq!(harness.secrets.deleted(), vec![PREVIOUS]);
+    assert!(!coordinator.ledger().has_pending_cleanup());
+    assert!(coordinator.journal().is_empty());
+    assert!(harness.repo.operations(None).await.unwrap().is_empty());
+    assert!(coordinator.admit_restore(&manifest(&[])).is_ok());
+    assert_eq!(
+        coordinator
+            .admit_restore(&manifest(&[CONNECTION]))
+            .unwrap_err(),
+        JournalError::Conflict
+    );
+}

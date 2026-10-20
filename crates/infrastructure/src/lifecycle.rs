@@ -446,11 +446,11 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
     }
 
     /// Resume a deletion the ledger fenced but no operation recorded. An
-    /// interruption between the durable ledger write and the journal write leaves
-    /// the connection `deletion_pending` with nothing to finish, so the ledger
-    /// supplies the connection and the database the reference it owes. Anything
-    /// that blocks the cleanup leaves the entry pending: visible and retryable,
-    /// never reported clean.
+    /// interruption after the committed `deletion_pending` transition and before
+    /// the journal write leaves nothing to finish, so the ledger supplies the
+    /// connection and the database the reference it owes. Anything that blocks the
+    /// cleanup, including a transition that never committed, leaves the entry
+    /// pending: visible and retryable, never reported clean.
     async fn resume_deletion(&mut self, opaque_id: &str) -> Result<(), JournalError> {
         // A scope entry is acknowledged with the connection that owns it, so resume
         // through the owner: recovery then converges in one pass whichever order the
@@ -488,19 +488,33 @@ impl<R: Repository, D: DurableStore, S: SecretReferenceStore> Coordinator<R, D, 
 
     /// Whether a pending ledger entry belongs to a deletion no operation recorded.
     /// Scope entries resume through the connection that owns them; a deletion the
-    /// journal or a projection still carries resumes through its own actions.
+    /// journal or a projection still carries resumes through its own actions. Only a
+    /// committed `deletion_pending` transition owes the reference, so a refused
+    /// compare-and-swap leaves the entry pending for `begin_deletion` to retry.
     async fn resumable_deletion(&self, opaque_id: &str) -> Result<bool, JournalError> {
         if self.ledger.state(opaque_id) != Some(LedgerState::PendingCleanup)
             || self.journal.fences(opaque_id)
         {
             return Ok(false);
         }
-        Ok(self
+        if !self
             .repository
             .operations(Some(opaque_id))
             .await
             .map_err(JournalError::from)?
-            .is_empty())
+            .is_empty()
+        {
+            return Ok(false);
+        }
+        // The ledger is written before the transition, so a pending entry alone does
+        // not prove the deletion was accepted. Removing the reference a row still
+        // points at would strand an active connection without its credential.
+        Ok(self
+            .repository
+            .connection(opaque_id)
+            .await
+            .map_err(JournalError::from)?
+            .is_some_and(|connection| connection.lifecycle == Lifecycle::DeletionPending))
     }
 
     /// Connection a ledger entry belongs to, when it fences a scope rather than the
