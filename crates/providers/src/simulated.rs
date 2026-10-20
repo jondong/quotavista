@@ -48,7 +48,6 @@ pub enum Scenario {
     /// Whole-call rate limit, the retry window becomes a persisted cooldown.
     RateLimited,
     /// History never attests completeness; current state stays healthy.
-    /// History never attests completeness; current state stays healthy.
     IncompleteHistory,
     /// The source serves current state but reports no history stream at all.
     NoHistory,

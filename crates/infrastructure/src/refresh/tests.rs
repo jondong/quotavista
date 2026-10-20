@@ -5,11 +5,14 @@ use super::*;
 use crate::sqlite::SqliteRepository;
 use chrono::{DateTime, Utc};
 use quotavista_core::{
-    domain::{Lifecycle, Provenance, QueryHealth, Value},
+    domain::{Availability, Lifecycle, Provenance, QueryHealth, QueryKind, Value},
     journal::{DurableStore, JournalError, OperationKind, OperationPhase, OperationRecord},
     number::TokenTotal,
-    provider::{Cooldowns, ProviderRequest, RefreshClock},
-    storage::{Connection, Partition, Repository, Scope, WriteContext},
+    provider::{
+        Cooldowns, CurrentMetric, DatasetCurrent, DatasetResult, ProviderError, ProviderPort,
+        ProviderRequest, RefreshClock,
+    },
+    storage::{Connection, Partition, Repository, Scope, StorageError, WriteContext},
 };
 use quotavista_providers::{
     simulated::{Scenario, SimulatedAdapter, TERMINAL_CURSOR},
@@ -183,7 +186,10 @@ fn context(connection_id: &str, generation: i64) -> WriteContext {
 }
 
 /// Run a job to its terminal outcome.
-async fn run_to_completion(coordinator: &mut TestCoordinator, job: &str) -> Outcome {
+async fn run_to_completion<P: ProviderPort>(
+    coordinator: &mut RefreshCoordinator<SqliteRepository, P, FakeDurable, ManualClock>,
+    job: &str,
+) -> Outcome {
     loop {
         if let Some(outcome) = coordinator.outcome(job) {
             return outcome;
@@ -192,7 +198,10 @@ async fn run_to_completion(coordinator: &mut TestCoordinator, job: &str) -> Outc
     }
 }
 
-async fn admitted(coordinator: &mut TestCoordinator, conn: &str) -> String {
+async fn admitted<P: ProviderPort>(
+    coordinator: &mut RefreshCoordinator<SqliteRepository, P, FakeDurable, ManualClock>,
+    conn: &str,
+) -> String {
     let admissions = coordinator
         .request_manual(&[(conn, context(conn, 0))])
         .await;
@@ -667,4 +676,143 @@ async fn a_withdrawn_terminal_attestation_does_not_publish() {
         Some(END_CURSOR.into()),
         "partial staging stays separate from published totals"
     );
+}
+
+/// Provider stub whose current-state metrics fail validation, to exercise the
+/// commit fence without relying on an adapter scenario.
+struct InvalidMetricsAdapter(SimulatedAdapter);
+
+impl ProviderPort for InvalidMetricsAdapter {
+    async fn current(
+        &self,
+        request: &ProviderRequest,
+    ) -> Result<Vec<DatasetCurrent>, ProviderError> {
+        let inconsistent = CurrentMetric {
+            dataset: "shared-pool".into(),
+            metric: "tokens".into(),
+            product_key: None,
+            // A present value without Available availability cannot validate.
+            value: Some(Value::Tokens(TokenTotal(1))),
+            availability: Availability::Missing,
+            reason: None,
+            query_kind: QueryKind::Unvalidated,
+            provenance: Provenance::Synthetic,
+            observed_at: request.as_of,
+            source_as_of: Some(request.as_of),
+        };
+        Ok(vec![DatasetCurrent {
+            dataset: "shared-pool".into(),
+            result: DatasetResult::Metrics(vec![inconsistent]),
+        }])
+    }
+
+    async fn history_page(
+        &self,
+        request: &ProviderRequest,
+        cursor: Option<&str>,
+    ) -> Result<Option<HistoryPage>, ProviderError> {
+        self.0.history_page(request, cursor).await
+    }
+}
+
+/// Kill the admission context between the current fetch and the commit:
+/// rotation bumps the generation while staying Active, disable changes the
+/// lifecycle instead.
+async fn kill_context(harness: &Harness, rotate: bool) {
+    if rotate {
+        let operation = OperationRecord {
+            operation_id: "synthetic-rotation".into(),
+            connection_id: CONN.into(),
+            kind: OperationKind::Setup,
+            phase: OperationPhase::Pending,
+            candidate_ref: Some("synthetic-ref-next".into()),
+            previous_ref: None,
+            generation: 0,
+        };
+        harness.repo.begin_operation(&operation).await.unwrap();
+        harness
+            .repo
+            .activate_reference(
+                &context(CONN, 0),
+                "synthetic-rotation",
+                "synthetic-ref-next",
+                None,
+            )
+            .await
+            .unwrap();
+    } else {
+        harness
+            .repo
+            .set_lifecycle(&context(CONN, 0), Lifecycle::Disabled)
+            .await
+            .unwrap();
+    }
+}
+
+/// The dead-context contract: no health entry anywhere for the connection
+/// and no history run ever begun.
+async fn assert_dead_context<P: ProviderPort>(
+    coordinator: &RefreshCoordinator<SqliteRepository, P, FakeDurable, ManualClock>,
+    harness: &Harness,
+    job: &str,
+) {
+    let health = coordinator.health();
+    assert!(
+        !health.contains_key(&(CONN.into(), "shared-pool".into())),
+        "token dataset health must not be recorded: {health:?}"
+    );
+    assert!(
+        !health.contains_key(&(CONN.into(), "topups".into())),
+        "money dataset health must not be recorded: {health:?}"
+    );
+    assert!(
+        !health.contains_key(&(CONN.into(), String::new())),
+        "whole-call health must not be recorded: {health:?}"
+    );
+    assert!(
+        matches!(
+            harness.repo.candidate_cursor(job).await,
+            Err(StorageError::Conflict)
+        ),
+        "history must never begin for a dead context"
+    );
+}
+
+#[tokio::test]
+async fn a_partial_permission_commit_for_a_dead_context_is_fenced() {
+    for rotate in [false, true] {
+        let harness = fixture().await;
+        harness.set_scenario(Scenario::PartialPermission);
+        let mut coordinator = harness.coordinator();
+
+        let job = admitted(&mut coordinator, CONN).await;
+        coordinator.pump().await; // QueryCurrent -> CommitCurrent
+        kill_context(&harness, rotate).await;
+
+        let outcome = run_to_completion(&mut coordinator, &job).await;
+        assert!(matches!(outcome, Outcome::Fenced), "{outcome:?}");
+        assert_dead_context(&coordinator, &harness, &job).await;
+    }
+}
+
+#[tokio::test]
+async fn an_invalid_metric_commit_for_a_dead_context_is_fenced() {
+    for rotate in [false, true] {
+        let harness = fixture().await;
+        let mut coordinator = RefreshCoordinator::open(
+            harness.repo.clone(),
+            InvalidMetricsAdapter(harness.adapter.clone()),
+            harness.durable.clone(),
+            harness.clock.clone(),
+        )
+        .unwrap();
+
+        let job = admitted(&mut coordinator, CONN).await;
+        coordinator.pump().await; // QueryCurrent -> CommitCurrent
+        kill_context(&harness, rotate).await;
+
+        let outcome = run_to_completion(&mut coordinator, &job).await;
+        assert!(matches!(outcome, Outcome::Fenced), "{outcome:?}");
+        assert_dead_context(&coordinator, &harness, &job).await;
+    }
 }

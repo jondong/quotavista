@@ -15,9 +15,13 @@ use quotavista_core::{
         Cooldowns, DatasetCurrent, DatasetResult, HistoryPage, ProviderError, ProviderPort,
         ProviderRequest, RefreshClock,
     },
-    storage::{Partition, Repository, Snapshot, StorageError, WriteContext},
+    storage::{Connection, Partition, Repository, Snapshot, StorageError, WriteContext},
 };
 use std::collections::BTreeMap;
+
+/// One buffered health record: ((connection id, dataset), health). The empty
+/// dataset key denotes the connection itself.
+type HealthEntry = ((String, String), QueryHealth);
 
 /// At most two sync jobs run at once, however many are admitted.
 pub const MAX_CONCURRENCY: usize = 2;
@@ -368,7 +372,7 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
                 };
                 match self.provider.current(&request).await {
                     Ok(datasets) => job.phase = Phase::CommitCurrent { datasets },
-                    Err(error) => self.fail_provider(job, error, as_of).await,
+                    Err(error) => self.fail_provider(job, error, as_of, Vec::new()).await,
                 }
             }
             Phase::CommitCurrent { datasets } => {
@@ -393,7 +397,7 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
                     .history_page(&request, cursor.as_deref())
                     .await
                 {
-                    Err(error) => self.fail_provider(job, error, now).await,
+                    Err(error) => self.fail_provider(job, error, now, Vec::new()).await,
                     Ok(None) => {
                         if job.saw_complete {
                             job.phase = Phase::CompleteHistory { pages: fetched };
@@ -525,14 +529,30 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
     /// dataset keeps its committed values and its own error; healthy datasets
     /// still commit.
     async fn commit_current(&mut self, job: &mut Job, datasets: Vec<DatasetCurrent>) {
+        // A late response for a dead context records no health at all and
+        // never reaches the history stream.
+        match self.repository.connection(&job.connection_id).await {
+            Ok(Some(row)) if !Self::row_fenced(&row, job) => {}
+            Ok(_) => {
+                job.outcome = Some(Outcome::Fenced);
+                return;
+            }
+            Err(_) => {
+                job.outcome = Some(Outcome::StorageFailed);
+                return;
+            }
+        }
         let as_of = job.as_of.unwrap_or_else(|| self.clock.now());
         let mut rate_limited: Option<Duration> = None;
+        // Dataset health is buffered until the job is known to survive this
+        // commit: a fence or storage failure discards it.
+        let mut recorded: Vec<HealthEntry> = Vec::new();
         for dataset in datasets {
             let key = (job.connection_id.clone(), dataset.dataset.clone());
             match dataset.result {
                 DatasetResult::Metrics(metrics) => {
                     if !metrics.iter().all(|metric| metric.validate().is_ok()) {
-                        self.health.insert(key, QueryHealth::InvalidResponse);
+                        recorded.push((key, QueryHealth::InvalidResponse));
                         continue;
                     }
                     for metric in &metrics {
@@ -564,10 +584,10 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
                             }
                         }
                     }
-                    self.health.insert(key, QueryHealth::Success);
+                    recorded.push((key, QueryHealth::Success));
                 }
                 DatasetResult::Failed(error) => {
-                    self.health.insert(key, error.health());
+                    recorded.push((key, error.health()));
                     if let Some(retry_after) = error.cooldown() {
                         rate_limited = Some(retry_after);
                     }
@@ -575,9 +595,17 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
             }
         }
         if let Some(retry_after) = rate_limited {
-            self.fail_provider(job, ProviderError::RateLimited { retry_after }, as_of)
-                .await;
+            self.fail_provider(
+                job,
+                ProviderError::RateLimited { retry_after },
+                as_of,
+                recorded,
+            )
+            .await;
             return;
+        }
+        for (key, health) in recorded {
+            self.health.insert(key, health);
         }
         job.phase = Phase::FetchPage {
             cursor: None,
@@ -585,14 +613,25 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
         };
     }
 
+    /// True when the live connection row no longer matches the admission
+    /// context: rotated, no longer active, or otherwise fenced.
+    fn row_fenced(row: &Connection, job: &Job) -> bool {
+        row.generation != job.context.generation || row.lifecycle != Lifecycle::Active
+    }
+
     /// Terminate a job on a provider error. A late error for a connection
     /// that was disabled, rotated, or deleted is fenced without side effects:
-    /// neither a health entry nor a cooldown is recorded for a dead context.
-    async fn fail_provider(&mut self, job: &mut Job, error: ProviderError, now: DateTime<Utc>) {
+    /// no buffered dataset health, no health entry, and no cooldown are
+    /// recorded for a dead context.
+    async fn fail_provider(
+        &mut self,
+        job: &mut Job,
+        error: ProviderError,
+        now: DateTime<Utc>,
+        recorded: Vec<HealthEntry>,
+    ) {
         let fenced = match self.repository.connection(&job.connection_id).await {
-            Ok(Some(row)) => {
-                row.generation != job.context.generation || row.lifecycle != Lifecycle::Active
-            }
+            Ok(Some(row)) => Self::row_fenced(&row, job),
             Ok(None) => true,
             Err(_) => {
                 job.outcome = Some(Outcome::StorageFailed);
@@ -602,6 +641,9 @@ impl<R: Repository, P: ProviderPort, D: DurableStore, C: RefreshClock>
         if fenced {
             job.outcome = Some(Outcome::Fenced);
             return;
+        }
+        for (key, health) in recorded {
+            self.health.insert(key, health);
         }
         // Whole-call transport failure: the empty dataset key denotes the
         // connection itself rather than one dataset.
