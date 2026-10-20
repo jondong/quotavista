@@ -15,7 +15,7 @@
   "branch": "jondong/p1-04-recovery-fences",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": "5f7fadc",
+  "commit": "6597af7",
   "pr_url": "https://github.com/jondong/quotavista/pull/5",
   "subtasks": [],
   "children": [],
@@ -30,7 +30,7 @@
     "docs/traceability.md",
     ".trellis/spec/backend/database-guidelines.md"
   ],
-  "notes": "P1-03 merged and archived dependency verified. Backend recovery fences implemented: nonsecret lifecycle journal, external deletion ledger, durable atomic file store, per-connection mutation fence with in-transaction generation checks, recovery-before-scheduling, and restore admission, all covered by synthetic TempDir fault fixtures. No contracts, frontend, migration, or desktop composition change. All four task acceptance criteria and all local CI commands pass; release/native/backup/provider gaps remain explicit in validation.md. PR #5 is open against `main`; latest-commit CI status is recorded on the PR. Do not merge or archive in this worker.",
+  "notes": "P1-03 merged and archived dependency verified. Backend recovery fences implemented: nonsecret lifecycle journal, external deletion ledger, durable atomic file store, per-connection mutation fence with in-transaction generation checks, recovery-before-scheduling, and restore admission, all covered by synthetic TempDir fault fixtures. No contracts, frontend, migration, or desktop composition change. All four task acceptance criteria and all local CI commands pass; release/native/backup/provider gaps remain explicit in validation.md. Review round 1 findings (interrupted-deletion retry and recovery, a candidate equal to the live reference, the lifecycle and dispatch projection fence, and a reused operation identifier) are fixed with regression fixtures and recorded in validation.md. PR #5 is open against `main`; latest-commit CI status is recorded on the PR. Do not merge or archive in this worker.",
   "meta": {
     "phase": 1,
     "plan_id": "P1-04",
