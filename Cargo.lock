@@ -2856,6 +2856,7 @@ dependencies = [
  "keyring-core",
  "libsqlite3-sys",
  "quotavista-core",
+ "quotavista-providers",
  "sqlx",
  "tempfile",
  "tokio",
@@ -2865,7 +2866,9 @@ dependencies = [
 name = "quotavista-providers"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "quotavista-core",
+ "tokio",
 ]
 
 [[package]]
