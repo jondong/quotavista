@@ -1,6 +1,7 @@
 //! Provider adapters. Phase 1 ships deterministic synthetic adapters only;
 //! real Kimi and OpenRouter adapters are Phase 2 work.
 
+pub mod simulated;
 use quotavista_core::Provenance;
 
 /// Nonsecret description of a demo provider account.

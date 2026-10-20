@@ -41,3 +41,16 @@ Phase 1 establishes and fault-tests these boundaries with synthetic data. Full p
 - `admit_restore` validates the manifest, refuses while cleanup is owed, and refuses a manifest whose included opaque ids are ledger-blocked. Restore execution, backup creation, and backup purge are later-phase work.
 
 Run `cargo test --locked -p quotavista-infrastructure` for temporary-file migration/reopen, exact-number, rollback, publication, stale-generation, pool-setting, external-lock, durable-write, and lifecycle recovery fixtures. These tests never resolve or read an application data directory, a native secret store, or a keychain.
+
+## P1-06 simulated provider and refresh contract
+
+`quotavista_core::provider` owns the refresh port (request/response models, typed `ProviderError`, `Cooldowns`, injectable `RefreshClock`); `quotavista_providers::simulated` owns deterministic fixtures; `quotavista_infrastructure::refresh::RefreshCoordinator` owns scheduling, admission, and repository writes. None is composed into desktop startup yet, so use them only with throwaway synthetic stores.
+
+- The providers crate has no network dependency: adapters are constructed from in-memory capability fixtures, every dataset carries `Provenance::Synthetic`, and a `RateLimited` scenario returns a typed error instead of contacting an endpoint. An adapter returns structured data or a `ProviderError`; it never polls, retries, or schedules on its own.
+- The coordinator admits at most one job per connection and two running jobs overall; extra admissions queue as pending. A manual request for a connection with a live job coalesces into it. Cancellation is observed between steps and immediately frees the concurrency slot.
+- Admission captures the caller's `WriteContext`; every repository write re-checks generation, lifecycle, and scope inside the transaction. A late synthetic response after disable or deletion fails that check and the job ends `Fenced` — committed values are never overwritten by stale writes.
+- A rate-limited response aborts the job and skips history. The cooldown boundary is written to the durable store (`cooldowns.v1`) before it is adopted in memory, so a durability failure never yields a cooldown the next run does not observe. Manual and automatic admissions both respect persisted boundaries, which only move later, never earlier.
+- Automatic refresh runs only when `settings.refresh_minutes` is `Some`; with `None` a tick admits nothing and issues no provider query. With `Some(m)` a connection is due only after `m` minutes since its last completion.
+- History is bounded per job (100 pages / 30 seconds). Hitting the bound ends the job `Completed { history: Incomplete }`: the partial candidate stays in staging under the run id, the published partition is untouched, and nothing claims completeness. Only a provider stream that attests `complete` and a matching cursor CAS may publish.
+
+Run `cargo test --locked -p quotavista-infrastructure -p quotavista-providers -p quotavista-core` for fake-clock scheduling, coalescing, cooldown, cancellation, fencing, per-dataset isolation, and partial-history fixtures. These tests never resolve or read an application data directory, a native secret store, or a keychain.

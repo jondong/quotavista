@@ -23,6 +23,8 @@ const LEDGER_FIELDS: usize = 3;
 
 const JOURNAL_HEADER: &str = "quotavista lifecycle journal v1";
 const LEDGER_HEADER: &str = "quotavista deletion ledger v1";
+/// Durable entry holding persisted provider cooldown boundaries.
+pub const COOLDOWNS_NAME: &str = "cooldowns.v1";
 
 /// Why durable lifecycle state could not be established, read, or used.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

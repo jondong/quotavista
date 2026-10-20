@@ -8,3 +8,7 @@ version.workspace = true
 
 [dependencies]
 quotavista-core = { path = "../core" }
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
