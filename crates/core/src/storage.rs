@@ -2,6 +2,7 @@
 use crate::{
     calendar::Interval,
     domain::{Lifecycle, Provenance, Value},
+    journal::OperationRecord,
     number::Currency,
 };
 use chrono::{DateTime, Utc};
@@ -121,6 +122,37 @@ pub trait Repository {
         &self,
         context: &WriteContext,
         lifecycle: Lifecycle,
+    ) -> Result<i64, StorageError>;
+
+    /// Opaque scope identifiers of one connection, ordered. The deletion ledger
+    /// fences every one of them because a managed backup manifest lists scopes.
+    async fn scope_ids(&self, connection_id: &str) -> Result<Vec<String>, StorageError>;
+    /// Opaque credential reference of a connection, so deletion cleanup can
+    /// remove it. `None` means the connection holds no reference; a missing
+    /// connection is a conflict. This is a reference, never a secret value.
+    async fn credential_ref(&self, connection_id: &str) -> Result<Option<String>, StorageError>;
+    /// Insert or refresh the database projection of a journaled lifecycle
+    /// operation. An incomplete projection fences result writes for the
+    /// connection; the projection never replaces the external journal.
+    async fn begin_operation(&self, record: &OperationRecord) -> Result<(), StorageError>;
+    /// Advance an existing projection, releasing the fence when the phase is
+    /// complete. Refuses to reopen a completed operation.
+    async fn advance_operation(&self, record: &OperationRecord) -> Result<(), StorageError>;
+    /// Journaled operation projections. `None` returns every incomplete
+    /// projection across all connections, for recovery reconciliation.
+    async fn operations(
+        &self,
+        connection_id: Option<&str>,
+    ) -> Result<Vec<OperationRecord>, StorageError>;
+    /// Activate a candidate secret reference and advance the operation projection
+    /// in one write transaction that re-checks the generation, the lifecycle, and
+    /// the mutation fence. Returns the new generation.
+    async fn activate_reference(
+        &self,
+        context: &WriteContext,
+        operation_id: &str,
+        candidate_ref: &str,
+        previous_ref: Option<&str>,
     ) -> Result<i64, StorageError>;
     async fn save_snapshot(
         &self,

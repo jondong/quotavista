@@ -1,6 +1,6 @@
 # Backend guidelines
 
-Status: Design constraints for the first prototype. A Cargo workspace now exists: `crates/core` (serialization-independent domain crate with calendar dependencies, boundary enforced by `scripts/check-core-boundaries.sh`), `crates/providers` (synthetic adapters only), `crates/infrastructure` (synthetic scaffold plus the P1-03 explicit-path SQLite adapter and throwaway fault fixtures; desktop startup remains synthetic), and `apps/desktop/src-tauri` (composition root). Requirements 0.9 and Architecture 0.4 remain authoritative; extend these examples as implementation lands.
+Status: Design constraints for the first prototype. A Cargo workspace now exists: `crates/core` (serialization-independent domain crate with calendar dependencies, boundary enforced by `scripts/check-core-boundaries.sh`), `crates/providers` (synthetic adapters only), `crates/infrastructure` (synthetic scaffold, the P1-03 explicit-path SQLite adapter, the P1-04 durable external journals and lifecycle recovery coordinator, and throwaway fault fixtures; desktop startup remains synthetic), and `apps/desktop/src-tauri` (composition root). Requirements 0.9 and Architecture 0.4 remain authoritative; extend these examples as implementation lands.
 
 - [Boundaries and contracts](directory-structure.md)
 - [Persistence and recovery](database-guidelines.md)

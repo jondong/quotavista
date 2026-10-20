@@ -1,8 +1,11 @@
 //! Infrastructure adapters for backend-owned boundaries.
+pub mod durable;
+pub mod lifecycle;
 pub mod sqlite;
 
-/// The desktop scaffold remains in-memory until the composition task installs
-/// recovery fences and explicitly opens SQLite. P1-03 provides the adapter only.
+/// The desktop scaffold remains in-memory until the composition task wires the
+/// P1-04 lifecycle coordinator to an explicitly opened SQLite store. P1-03
+/// provides the adapter and P1-04 the recovery fences; neither is composed yet.
 pub const STORE_KIND: &str = "synthetic-in-memory";
 
 #[cfg(test)]
