@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use quotavista_contracts::{
-    Alias, ChangeEvent, Command, CommandResult, ConnectionDto, ConnectionList, Envelope, ErrorCode,
-    LocalId, OperationDto, OperationList, OverviewDto, Provider, RangeInput, Request, Revision,
-    SafeError, SecretInput, SettingsPatch, StatisticsDto,
+    ChangeEvent, Command, CommandResult, ConnectionDto, ConnectionList, Envelope, ErrorCode,
+    LocalId, OperationDto, OperationList, OverviewDto, RangeInput, Request, Revision, SafeError,
+    StatisticsDto,
 };
 
 use quotavista_core::journal::SecretReferenceStore;
@@ -98,6 +98,13 @@ impl RecordingChangeSink {
 
     pub async fn snapshot(&self) -> Vec<ChangeEvent> {
         self.events.lock().await.clone()
+    }
+}
+
+#[cfg(test)]
+impl Default for RecordingChangeSink {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -211,17 +218,16 @@ fn safe(code: ErrorCode) -> SafeError {
 /// scalar validators, so an unwrap is appropriate in tests that have already
 /// confirmed the invariants at compile time.
 #[cfg(test)]
-fn local_id(value: &str) -> LocalId {
-    LocalId::try_from(value.to_owned()).expect("valid LocalId literal")
-}
-fn instant(value: &str) -> quotavista_contracts::Instant {
-    quotavista_contracts::Instant::try_from(value.to_owned()).expect("valid Instant literal")
-}
-fn zone(value: &str) -> quotavista_contracts::Zone {
-    quotavista_contracts::Zone::try_from(value.to_owned()).expect("valid Zone literal")
-}
-fn revision(value: u64) -> Revision {
-    Revision::try_from(value.to_string()).expect("valid Revision literal")
+mod test_helpers {
+    use quotavista_contracts::{LocalId, Revision};
+
+    pub fn local_id(value: &str) -> LocalId {
+        LocalId::try_from(value.to_owned()).expect("valid LocalId literal")
+    }
+
+    pub fn revision(value: u64) -> Revision {
+        Revision::try_from(value.to_string()).expect("valid Revision literal")
+    }
 }
 
 /// The single dispatch surface the renderer may call. Every other entrypoint
@@ -326,7 +332,8 @@ async fn list_connections(state: &tauri::State<'_, AppState>) -> Result<Connecti
         .collect();
     Ok(ConnectionList {
         connections: dtos,
-        data_revision: revision(state_data_revision(state).await?),
+        data_revision: Revision::try_from(state_data_revision(state).await?.to_string())
+            .map_err(|_| safe(ErrorCode::InternalError))?,
     })
 }
 
@@ -432,9 +439,9 @@ async fn refresh_connections(
     drop(refresh);
 
     if !affected_connections.is_empty() {
-        let data_revision = state_data_revision(state).await?;
         state.changes.emit(ChangeEvent {
-            data_revision: revision(data_revision),
+            data_revision: Revision::try_from(state_data_revision(state).await?.to_string())
+                .map_err(|_| safe(ErrorCode::InternalError))?,
             affected_connection_ids: affected_connections,
             affected_scope_ids: affected_scopes,
         });
@@ -507,22 +514,26 @@ async fn state_data_revision(state: &tauri::State<'_, AppState>) -> Result<u64, 
 }
 
 fn stub_summary() -> StatisticsDto {
+    use quotavista_contracts::{Grain, Instant, IntervalDto, Revision, Zone};
     StatisticsDto {
-        requested_interval: quotavista_contracts::IntervalDto {
-            start: instant("1970-01-01T00:00:00Z"),
-            end: instant("1970-01-02T00:00:00Z"),
+        requested_interval: IntervalDto {
+            start: Instant::try_from("1970-01-01T00:00:00Z".to_owned())
+                .expect("static Instant literal"),
+            end: Instant::try_from("1970-01-02T00:00:00Z".to_owned())
+                .expect("static Instant literal"),
         },
         effective_intervals: Vec::new(),
-        reporting_zone: zone("UTC"),
-        grain: quotavista_contracts::Grain::Day,
-        as_of: instant("1970-01-01T00:00:00Z"),
+        reporting_zone: Zone::try_from("UTC".to_owned()).expect("static Zone literal"),
+        grain: Grain::Day,
+        as_of: Instant::try_from("1970-01-01T00:00:00Z".to_owned())
+            .expect("static Instant literal"),
         provisional: false,
         coverage: Vec::new(),
         excluded_scopes: Vec::new(),
         totals: Vec::new(),
         series: Vec::new(),
         plans: Vec::new(),
-        data_revision: revision(0),
+        data_revision: Revision::try_from("0".to_owned()).expect("static Revision literal"),
     }
 }
 
@@ -563,7 +574,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quotavista_contracts::RefreshTarget;
+    use crate::test_helpers::*;
+    use quotavista_contracts::{Alias, Provider, RefreshTarget, SecretInput, SettingsPatch};
     use tempfile::TempDir;
 
     async fn fixture() -> (TempDir, AppState) {
@@ -969,7 +981,7 @@ mod tests {
         ];
         for command in cases {
             let result = run(&state, fixture_request(command)).await;
-            let error = result.err().expect("later-phase command must fail");
+            let error = result.expect_err("later-phase command must fail");
             assert_eq!(
                 error.code(),
                 ErrorCode::UnsupportedInPhaseOne,
