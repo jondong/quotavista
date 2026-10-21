@@ -144,3 +144,116 @@ impl From<n::TokenFact> for TokenFactDto {
         }
     }
 }
+
+// The wire enum is closed; map the journaled kinds exactly.
+impl From<quotavista_core::journal::OperationKind> for OperationKind {
+    fn from(value: quotavista_core::journal::OperationKind) -> Self {
+        match value {
+            quotavista_core::journal::OperationKind::Setup => Self::Setup,
+            quotavista_core::journal::OperationKind::ReplaceCredentials => Self::ReplaceCredentials,
+            quotavista_core::journal::OperationKind::Delete => Self::Delete,
+        }
+    }
+}
+
+// Helpers for the desktop composition layer; not part of the wire schema.
+// Pure mapping: no storage lookup, no provider call, no I/O.
+impl ConnectionDto {
+    pub fn from_domain(
+        connection: &quotavista_core::storage::Connection,
+        datasets: Vec<DatasetDto>,
+        capabilities: Vec<CapabilityDto>,
+    ) -> Self {
+        Self {
+            connection_id: LocalId(connection.id.clone()),
+            provider: provider_dto(&connection.provider),
+            alias: Alias(connection.alias.clone()),
+            lifecycle: connection.lifecycle.into(),
+            config_revision: Revision(connection.generation.max(0).to_string()),
+            generation: Revision(connection.generation.max(0).to_string()),
+            datasets,
+            capabilities,
+        }
+    }
+}
+
+impl SettingsDto {
+    pub fn from_domain(settings: &quotavista_core::storage::Settings) -> Result<Self, SafeError> {
+        Ok(Self {
+            settings_revision: Revision(settings.revision.max(0).to_string()),
+            ui_locale: parse_locale(&settings.locale)?,
+            reporting_zone: Zone(settings.reporting_zone.to_string()),
+            display_currency: CurrencyDto(settings.currency.to_string()),
+            polling: polling_dto(settings.refresh_minutes),
+        })
+    }
+}
+
+impl OperationDto {
+    pub fn from_record(record: &quotavista_core::journal::OperationRecord) -> Self {
+        let (state, next_action, retry_at, error) = operation_outcome(record);
+        Self {
+            operation_id: LocalId(record.operation_id.clone()),
+            connection_id: Some(LocalId(record.connection_id.clone())),
+            kind: record.kind.into(),
+            state,
+            next_action,
+            retryable: matches!(state, OperationState::Failed),
+            retry_at,
+            error,
+        }
+    }
+}
+
+fn operation_outcome(
+    record: &quotavista_core::journal::OperationRecord,
+) -> (
+    OperationState,
+    NextAction,
+    Option<Instant>,
+    Option<SafeError>,
+) {
+    use quotavista_core::journal::OperationPhase;
+    let (state, next_action) = match record.phase {
+        OperationPhase::Pending
+        | OperationPhase::CandidateWritten
+        | OperationPhase::CompensationPending => (OperationState::Running, NextAction::None),
+        OperationPhase::Committed | OperationPhase::Complete => {
+            (OperationState::Succeeded, NextAction::None)
+        }
+    };
+    // The journal record carries neither error code nor retry timestamp;
+    // those are projected by the composition layer and stay None here.
+    (state, next_action, None, None)
+}
+
+fn provider_dto(id: &str) -> Provider {
+    match id {
+        "kimi" | "synthetic-kimi" => Provider::Kimi,
+        "openrouter" | "synthetic-openrouter" => Provider::Openrouter,
+        // Unknown providers still need a wire representation: pick Kimi as the
+        // sentinel because the wire enum is closed and the caller is choosing
+        // between the two declared providers.
+        _ => Provider::Kimi,
+    }
+}
+
+fn polling_dto(minutes: Option<u8>) -> Polling {
+    match minutes {
+        None => Polling::Disabled,
+        Some(1) => Polling::OneMinute,
+        Some(5) => Polling::FiveMinutes,
+        Some(15) => Polling::FifteenMinutes,
+        // Anything else (including corrupted values) collapses to Disabled so
+        // a malformed settings row can never enable an unstated interval.
+        _ => Polling::Disabled,
+    }
+}
+
+fn parse_locale(value: &str) -> Result<Locale, SafeError> {
+    match value {
+        "en" => Ok(Locale::En),
+        "zh-CN" => Ok(Locale::ZhCn),
+        _ => Err(SafeError::new(ErrorCode::InternalError, None)),
+    }
+}

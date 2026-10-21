@@ -2838,12 +2838,17 @@ dependencies = [
 name = "quotavista-desktop"
 version = "0.0.0"
 dependencies = [
+ "chrono",
+ "quotavista-contracts",
  "quotavista-core",
  "quotavista-infrastructure",
  "quotavista-providers",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

@@ -118,6 +118,13 @@ pub trait Repository {
         scope: &Scope,
     ) -> Result<(), StorageError>;
     async fn connection(&self, id: &str) -> Result<Option<Connection>, StorageError>;
+    /// Every persisted connection, ordered by id. Used by the dispatcher
+    /// to reopen state and feed the refresh coordinator with the live set.
+    async fn connections(&self) -> Result<Vec<Connection>, StorageError>;
+    /// The store-wide data revision. Every committed snapshot or published
+    /// partition advances it, so it is the monotonic revision carried by the
+    /// change events.
+    async fn data_revision(&self) -> Result<i64, StorageError>;
     async fn set_lifecycle(
         &self,
         context: &WriteContext,

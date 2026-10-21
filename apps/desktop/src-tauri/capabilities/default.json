@@ -1,7 +1,10 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permission set for the prototype window.",
+  "description": "Main-window capability for the prototype renderer. Only the dispatch_command and the minimal event-listener set are exposed; every core plugin permission is intentionally omitted so the renderer cannot reach the framework surface beyond what P1-07 owns.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "allow-dispatch-command",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
 }

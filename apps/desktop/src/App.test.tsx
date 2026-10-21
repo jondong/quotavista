@@ -3,14 +3,48 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn().mockResolvedValue({
-    provenance: "synthetic",
-    providerCount: 2,
-    store: "synthetic-memory",
-    message: "Development scaffold running without provider credentials.",
-  }),
+  invoke: vi.fn(),
 }));
 
+// The overview screen subscribes to `qv://change`; jsdom has no Tauri event
+// bridge, so the listener is stubbed out.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
+const PROTOTYPE_ENVELOPE = {
+  status: "ok",
+  contract_version: 1,
+  request_id: "fixture-request",
+  data: {
+    command: "list_connections",
+    data: {
+      connections: [
+        {
+          connection_id: "demo-kimi",
+          provider: "kimi",
+          alias: "Demo Kimi",
+          lifecycle: "active",
+          config_revision: "1",
+          generation: "1",
+          datasets: [],
+          capabilities: [],
+        },
+        {
+          connection_id: "demo-openrouter",
+          provider: "openrouter",
+          alias: "Demo OpenRouter",
+          lifecycle: "active",
+          config_revision: "1",
+          generation: "1",
+          datasets: [],
+          capabilities: [],
+        },
+      ],
+      data_revision: "1",
+    },
+  },
+} as const;
 function setNavigatorLanguages(languages: string[]) {
   Object.defineProperty(window.navigator, "languages", {
     value: languages,
@@ -27,8 +61,11 @@ function headerLanguageSelect(): HTMLSelectElement {
   return document.getElementById("header-language") as HTMLSelectElement;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   window.localStorage.clear();
+  const { invoke } = await import("@tauri-apps/api/core");
+  vi.mocked(invoke).mockReset();
+  vi.mocked(invoke).mockResolvedValue(PROTOTYPE_ENVELOPE);
 });
 
 afterEach(() => {

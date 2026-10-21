@@ -1,13 +1,12 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState } from "react";
+import {
+  ipc,
+  isObsoleteResponse,
+  revisionTracker,
+  subscribeToChanges,
+} from "../ipc";
 import { useI18n, type MessageKey } from "../i18n";
-
-interface SyntheticStatus {
-  provenance: string;
-  providerCount: number;
-  store: string;
-  message: string;
-}
+import type { ConnectionList } from "../generated/contracts";
 
 // Synthetic demo snapshot. Unknown stays unknown (never rendered as zero);
 // exact strings and the independent reporting zone flow through formatters.
@@ -27,21 +26,79 @@ const DEMO_SNAPSHOT = {
 
 export default function OverviewScreen() {
   const { t, formatTokens, formatDecimal, formatDateTime } = useI18n();
-  const [status, setStatus] = useState<SyntheticStatus | null>(null);
+  const [connections, setConnections] = useState<ConnectionList | null>(null);
   const [failed, setFailed] = useState(false);
+  // Generation of the newest read. A response or an error that belongs to an
+  // older read is obsolete and must not replace the newer view.
+  const generation = useRef(0);
 
   useEffect(() => {
-    invoke<SyntheticStatus>("synthetic_status")
-      .then(setStatus)
-      .catch(() => setFailed(true));
+    let disposed = false;
+    let unsubscribe: (() => Promise<void>) | undefined;
+
+    // A response older than the observed revision is obsolete: rendering it
+    // would overwrite newer data, so it is discarded.
+    const load = async (): Promise<void> => {
+      const request = generation.current + 1;
+      generation.current = request;
+      try {
+        const list = await ipc.listConnections();
+        if (disposed) return;
+        // A response from an older read is obsolete: rendering it would
+        // overwrite newer data.
+        if (request !== generation.current) return;
+        if (isObsoleteResponse(list.data_revision, revisionTracker.observed())) return;
+        revisionTracker.observe(list.data_revision);
+        setConnections(list);
+        setFailed(false);
+      } catch {
+        // An error from an older read is obsolete as well: it must not replace
+        // the newer view with the error state.
+        if (disposed || request !== generation.current) return;
+        setFailed(true);
+      }
+    };
+
+    // The listener is installed before the first read. A commit that lands
+    // between the read and the registration would otherwise be missed.
+    const start = async (): Promise<void> => {
+      try {
+        const dispose = await subscribeToChanges(revisionTracker, (_event, update) => {
+          // A gap means a revision was skipped, so the local view cannot be
+          // patched and is reloaded instead. A stale event carries nothing
+          // newer than the rendered revision, so it is ignored.
+          if (update.kind === "apply" || update.kind === "gap") void load();
+        });
+        if (disposed) {
+          void dispose();
+          return;
+        }
+        unsubscribe = dispose;
+      } catch {
+        // A live channel that cannot be installed leaves the screen on its
+        // last known state instead of an empty view.
+      }
+      await load();
+    };
+    void start();
+
+    return () => {
+      disposed = true;
+      void unsubscribe?.();
+    };
   }, []);
 
   if (failed) {
     return <p role="alert" className="error">{t("overview.error.statusUnavailable")}</p>;
   }
-  if (!status) {
+  if (!connections) {
     return <p role="status">{t("common.loading")}</p>;
   }
+
+  const provenance = "synthetic";
+  const providerCount = connections.connections.length;
+  const dataRevision = connections.data_revision;
+  const message = "Development scaffold running without provider credentials.";
 
   return (
     <section aria-labelledby="overview-heading">
@@ -49,16 +106,16 @@ export default function OverviewScreen() {
 
       <dl>
         <dt>{t("overview.status.provenance")}</dt>
-        <dd>{status.provenance}</dd>
+        <dd>{provenance}</dd>
         <dt>{t("overview.status.providers")}</dt>
-        <dd>{status.providerCount}</dd>
-        <dt>{t("overview.status.store")}</dt>
-        <dd>{status.store}</dd>
+        <dd>{providerCount}</dd>
+        <dt>{t("overview.status.dataRevision")}</dt>
+        <dd>{dataRevision}</dd>
         <dt>{t("overview.status.message")}</dt>
         <dd>
-          {STATUS_MESSAGES[status.message]
-            ? t(STATUS_MESSAGES[status.message])
-            : status.message}
+          {STATUS_MESSAGES[message]
+            ? t(STATUS_MESSAGES[message])
+            : message}
         </dd>
       </dl>
 

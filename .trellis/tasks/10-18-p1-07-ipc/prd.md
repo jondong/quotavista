@@ -8,7 +8,7 @@ Connect the prototype frontend to local services through explicit validated comm
 
 [Requirements 0.9](../../../docs/requirements.md), [Architecture 0.4](../../../docs/architecture.md), [development plan](../../../docs/development-plan.md), and [traceability](../../../docs/traceability.md).
 
-Dependencies: [P1-05](../10-18-p1-05-secret-stores/prd.md), [P1-06](../10-18-p1-06-simulation/prd.md)
+Dependencies: [P1-05](../archive/2026-10/10-18-p1-05-secret-stores/prd.md), [P1-06](../archive/2026-10/10-18-p1-06-simulation/prd.md)
 
 Acceptance mapping: A05, A09, A18, A21, A22, A23. These are prototype contributions, not closure of full-release acceptance.
 
@@ -20,15 +20,14 @@ Acceptance mapping: A05, A09, A18, A21, A22, A23. These are prototype contributi
 
 ## Acceptance criteria
 
-- [ ] Malformed/unknown fields, providers, IDs, revisions, dates, and oversized credentials fail before side effects. Only connect_provider and replace_credentials accept secret input; no response echoes it.
-- [ ] The renderer cannot invoke a generic URL/SQL/shell/filesystem proxy, access native secrets directly, or gain privileges through remote content.
-- [ ] Revision events contain opaque IDs and revisions only. Reopening reads local state; skipped revisions trigger reload. Obsolete display responses are discarded.
-- [ ] Storage/secret/coordinator errors remain typed, useful cached data survives, and failed commits never report synchronization success.
-
+- [x] Malformed/unknown fields, providers, IDs, revisions, dates, and oversized credentials fail before side effects. Only connect_provider and replace_credentials accept secret input; no response echoes it.
+- [x] The renderer cannot invoke a generic URL/SQL/shell/filesystem proxy, access native secrets directly, or gain privileges through remote content.
+- [x] Revision events contain opaque IDs and revisions only. Reopening reads local state; skipped revisions trigger reload. Obsolete display responses are discarded.
+- [x] Storage/secret/coordinator errors remain typed, useful cached data survives, and failed commits never report synchronization success.
 ## Out of scope
 
 No arbitrary diagnostic endpoints, remote login window, cloud API, or complete real-provider operations.
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Acceptance criteria satisfied. Implementation recorded in `validation.md`. Review boundaries and deferred work for P1-09, P1-10, and P1-11 are recorded in `validation.md`.
