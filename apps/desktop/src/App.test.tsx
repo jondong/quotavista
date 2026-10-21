@@ -340,7 +340,11 @@ describe("bilingual shell", () => {
     setNavigatorLanguages(["en-US"]);
     render(<App />);
     expect(await screen.findByRole("heading", { name: "概览" })).not.toBeNull();
-    expect(document.documentElement.lang).toBe("zh-CN");
+    await waitFor(() => {
+      // The heading proves the locale; the document attribute follows in a
+      // passive effect and may lag a frame under slow runners.
+      expect(document.documentElement.lang).toBe("zh-CN");
+    });
   });
 
 
