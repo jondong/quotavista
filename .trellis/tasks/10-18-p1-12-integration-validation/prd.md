@@ -8,7 +8,7 @@ Review the integrated prototype against the design without equating synthetic ev
 
 [Requirements 0.9](../../../docs/requirements.md), [Architecture 0.4](../../../docs/architecture.md), [development plan](../../../docs/development-plan.md), and [traceability](../../../docs/traceability.md).
 
-Dependencies: [P1-09](../10-18-p1-09-overview-statistics/prd.md), [P1-10](../10-18-p1-10-connections-settings/prd.md), [P1-11](../10-18-p1-11-desktop-lifecycle/prd.md)
+Dependencies: [P1-09](../archive/2026-10/10-18-p1-09-overview-statistics/prd.md), [P1-10](../archive/2026-10/10-18-p1-10-connections-settings/prd.md), [P1-11](../archive/2026-10/10-18-p1-11-desktop-lifecycle/prd.md)
 
 Acceptance mapping: A05, A09, A10, A13-A25 (prototype evidence only). These are prototype contributions, not closure of full-release acceptance.
 

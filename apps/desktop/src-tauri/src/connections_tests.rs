@@ -1044,3 +1044,73 @@ async fn empty_patch_reads_current_settings_without_bumping_the_revision() {
     assert_eq!(first.settings_revision, second.settings_revision);
     assert_eq!(second.polling, Polling::Disabled);
 }
+
+/// The full refresh-interval cycle Off -> 1 min -> 5 min -> 15 min -> Off
+/// persists across restarts: after every save the composition is closed and
+/// rebuilt over the same directory, the stored interval and the settings
+/// revision survive, and wakes stay blocked whenever the interval is Off.
+#[tokio::test]
+async fn refresh_interval_cycle_survives_restart_and_blocks_wakes_when_off() {
+    let (dir, mut state, _sink) = fixture().await;
+    let mut revision: u64 = read_settings(&state)
+        .await
+        .settings_revision
+        .as_str()
+        .parse()
+        .expect("settings revision is numeric");
+    assert_eq!(read_settings(&state).await.polling, Polling::Disabled);
+    assert_wake_blocked_when_off(&state).await;
+
+    for polling in [
+        Polling::OneMinute,
+        Polling::FiveMinutes,
+        Polling::FifteenMinutes,
+        Polling::Disabled,
+    ] {
+        let saved = match run_ok(
+            &state,
+            settings_patch_request(
+                revision,
+                serde_json::json!({
+                    "ui_locale": null,
+                    "reporting_zone": null,
+                    "display_currency": null,
+                    "polling": polling,
+                    "quota_threshold": null,
+                    "balance_threshold": null,
+                }),
+            ),
+        )
+        .await
+        {
+            CommandResult::UpdateSettings(settings) => settings,
+            other => panic!("expected UpdateSettings, got {other:?}"),
+        };
+        revision += 1;
+        assert_eq!(saved.polling, polling);
+        assert_eq!(saved.settings_revision.as_str(), revision.to_string());
+
+        // Close SQLite (drop the whole composition) and rebuild over the
+        // same directory, as a restart does.
+        drop(state);
+        let (reopened, _reopened_sink) = restart(&dir).await;
+        let settings = read_settings(&reopened).await;
+        assert_eq!(settings.polling, polling);
+        assert_eq!(settings.settings_revision.as_str(), revision.to_string());
+        if polling == Polling::Disabled {
+            assert_wake_blocked_when_off(&reopened).await;
+        }
+        state = reopened;
+    }
+}
+
+/// With the interval Off a wake must return before the coordinator is
+/// touched: not permitted, nothing launched, nothing refused.
+async fn assert_wake_blocked_when_off(state: &AppState) {
+    let report = crate::lifecycle::handle_wake(state, crate::lifecycle::WakeSource::WindowFocused)
+        .await
+        .expect("wake report");
+    assert!(!report.permitted, "wakes stay blocked while refresh is Off");
+    assert!(report.launched.is_empty());
+    assert_eq!(report.refused, 0);
+}

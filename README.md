@@ -16,7 +16,7 @@ Providers expose different metrics and levels of detail. Token availability, his
 
 ## Project status
 
-QuotaVista has reviewed requirements and architecture and a Trellis-managed Phase 1 prototype backlog. A minimal desktop scaffold exists under `apps/desktop/` and `crates/`: it opens a local window showing clearly labeled synthetic data, with reproducible Rust and frontend checks. Core numeric/calendar primitives and a generated Rust/TypeScript IPC contract are implemented and tested with synthetic fixtures; command registration is not implemented. A backend-only SQLite adapter and versioned schema provide synthetic-tested settings/snapshot persistence and candidate publication; it is not wired into desktop startup. Provider integration, runtime storage/recovery coordination, and complete screens are not implemented.
+QuotaVista has reviewed requirements and architecture and a Trellis-managed Phase 1 prototype backlog. The integrated Phase 1 prototype exists under `apps/desktop/` and `crates/`: a four-screen Tauri 2 desktop app (overview, statistics, connections, settings) over a versioned SQLite backend, with a generated Rust/TypeScript IPC contract, bilingual en/zh-CN catalogs, session-only or platform credential storage, lifecycle-aware refresh, and local statistics bounded to 366 days and 100,000 facts per query. All data comes from synthetic providers and fixtures. Real provider integration, native-store smoke evidence on both platforms, and release acceptance are not implemented; [traceability](docs/traceability.md) records exactly what the prototype evidence covers.
 
 The proposed stack is Tauri 2, React, TypeScript, Rust, and SQLite. Platform compatibility and provider capabilities will be validated during prototyping and integration.
 
