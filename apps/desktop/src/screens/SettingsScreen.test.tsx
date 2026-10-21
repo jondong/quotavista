@@ -285,8 +285,12 @@ describe("settings screen", () => {
       }).request.command;
       if (args.command !== "update_settings") throw new Error("unexpected");
       if (args.args.changes && Object.values(args.args.changes).some((value) => value !== null)) {
-        // A save applies its non-null fields and advances the revision.
-        stored = { ...stored, ...args.args.changes } as typeof stored;
+        const applied = Object.fromEntries(
+          Object.entries(args.args.changes).filter(([, value]) => value !== null),
+        );
+        // A real backend applies only the non-null fields; null means leave
+        // unchanged, and the stored row keeps valid values for every field.
+        stored = { ...stored, ...applied };
         revision += 1;
         return settingsEnvelope({ settings_revision: String(revision), ...stored });
       }
