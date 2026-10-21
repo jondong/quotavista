@@ -74,6 +74,12 @@ scalar!(
 scalar!(SourceLabel, |s: &str| !s.is_empty()
     && s.chars().count() <= 128
     && !s.chars().any(char::is_control));
+// Bounded, already-rendered notification text. The backend renders the whole
+// template catalog, so this scalar only rejects empties, control characters,
+// and anything longer than a platform notification body should be.
+scalar!(NotificationTextDto, |s: &str| !s.is_empty()
+    && s.chars().count() <= 200
+    && !s.chars().any(char::is_control));
 
 macro_rules! wire_enum {
     ($name:ident { $($variant:ident),+ $(,)? }) => {
@@ -195,6 +201,39 @@ wire_enum!(Polling {
 });
 wire_enum!(DeletionIntent {
     CredentialsHistoryAndManagedBackups
+});
+// Tray presence is a detected capability of the running composition, never an
+// assumption about a particular desktop environment.
+wire_enum!(TrayAvailabilityDto {
+    Available,
+    Unavailable
+});
+// Why a system notification could not be delivered. Kept separate from the
+// query failure taxonomy: an unusable channel is a capability, not an error.
+// `Unconfirmed` is its own answer rather than a polite `Available`: the pinned
+// notification plugin always reports "granted" on desktop and hands delivery to
+// an asynchronous task whose result it never reads, so a running adapter cannot
+// prove that the operating system would accept anything. Answering `Available`
+// there would turn an unprobed platform into a promise it cannot keep.
+wire_enum!(NotificationCapabilityDto {
+    Available,
+    Unconfirmed,
+    PermissionDenied,
+    Unsupported
+});
+// Closed set of notification templates. Deliberately separate from future
+// persistent alert episodes so a synthetic probe can never be mistaken for a
+// real alert, and so changing a locale re-renders text without creating one.
+wire_enum!(NotificationTemplateKey { SyntheticProbe });
+// How far one notification actually got. `Delivered` means the platform
+// confirmed it; `Queued` means the adapter handed it over and cannot see the
+// result, which is all the pinned desktop plugin reports. Keeping the two apart
+// is what stops "the platform accepted the notification" from being read as
+// "the user saw a banner".
+wire_enum!(NotificationDeliveryDto {
+    Delivered,
+    Queued,
+    Refused
 });
 wire_enum!(ErrorCode {
     Validation,
@@ -582,6 +621,25 @@ pub enum RefreshTarget {
 }
 dto!(OverviewRangeInput { start_date: Date, end_date: Date, reporting_zone: Zone, scope_ids: Option<Vec<LocalId>> });
 dto!(RangeInput { start_date: Date, end_date: Date, reporting_zone: Zone, grain: Grain, scope_ids: Option<Vec<LocalId>> });
+// Detected desktop integration capabilities of this running composition. The
+// renderer uses them to explain what the platform offers and what it does not,
+// instead of guessing from the operating system name.
+dto!(PlatformCapabilitiesDto {
+    tray: TrayAvailabilityDto,
+    notification: NotificationCapabilityDto
+});
+// Result of one explicitly user-triggered synthetic notification. The rendered
+// text comes back so the interface can show exactly what was sent (or what
+// could not be sent); it never names an account or a credential. `delivery`
+// says how far it got, and `capability` says what the platform could confirm.
+dto!(NotificationPreviewDto {
+    template_key: NotificationTemplateKey,
+    locale: Locale,
+    capability: NotificationCapabilityDto,
+    delivery: NotificationDeliveryDto,
+    title: NotificationTextDto,
+    body: NotificationTextDto
+});
 #[derive(Deserialize, TS)]
 #[serde(
     tag = "command",
@@ -636,6 +694,11 @@ pub enum Command {
     GetOperation {
         operation_id: LocalId,
     },
+    GetPlatformCapabilities,
+    PreviewSystemNotification {
+        template_key: NotificationTemplateKey,
+        locale: Locale,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
@@ -656,6 +719,8 @@ pub enum CommandResult {
     QueryStatistics(StatisticsDto),
     UpdateSettings(SettingsDto),
     GetOperation(OperationDto),
+    GetPlatformCapabilities(PlatformCapabilitiesDto),
+    PreviewSystemNotification(NotificationPreviewDto),
 }
 #[derive(Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -789,6 +854,13 @@ pub fn typescript() -> String {
         RefreshTarget,
         OverviewRangeInput,
         RangeInput,
+        TrayAvailabilityDto,
+        NotificationCapabilityDto,
+        NotificationDeliveryDto,
+        NotificationTemplateKey,
+        NotificationTextDto,
+        PlatformCapabilitiesDto,
+        NotificationPreviewDto,
         Command,
         CommandResult,
         Request,

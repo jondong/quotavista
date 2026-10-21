@@ -25,7 +25,11 @@ use quotavista_providers::simulated::{SimulatedAdapter, SimulatedRouter};
 use quotavista_providers::synthetic_providers;
 use tauri::{Emitter, Manager};
 
+mod lifecycle;
+mod platform;
 mod statistics;
+
+use platform::PlatformState;
 
 /// UTC clock used by the coordinator and by [`Request::validate`].
 #[derive(Clone, Copy, Debug)]
@@ -164,6 +168,14 @@ pub struct AppState {
     /// Counter behind the synthetic operation ids of admissions without a job.
     pub admission_counter: std::sync::atomic::AtomicU64,
     pub changes: Arc<dyn ChangeSink>,
+    /// Detected desktop integration capabilities: the tray and the platform
+    /// notification channel. Every test composition starts headless and the
+    /// desktop entry point replaces this once it has probed the real platform.
+    pub platform: PlatformState,
+    /// Raised once by quit. Lifecycle paths that could still start or continue
+    /// work read it, so a wake in flight releases the refresh lock instead of
+    /// making the user's Quit action wait for it.
+    pub shutdown_signal: lifecycle::ShutdownSignal,
 }
 impl AppState {
     /// Synthetic operation id for an admission that has no coordinator job.
@@ -284,6 +296,8 @@ async fn build_inner(
         admissions: tokio::sync::Mutex::new(BTreeMap::new()),
         admission_counter: std::sync::atomic::AtomicU64::new(0),
         changes,
+        platform: PlatformState::headless(),
+        shutdown_signal: lifecycle::ShutdownSignal::new(),
     })
 }
 
@@ -394,6 +408,16 @@ pub async fn dispatch(state: &AppState, request: Request) -> Result<CommandResul
         Command::GetOperation { operation_id } => get_operation(state, operation_id)
             .await
             .map(CommandResult::GetOperation),
+        Command::GetPlatformCapabilities => Ok(CommandResult::GetPlatformCapabilities(
+            state.platform.capabilities(),
+        )),
+        Command::PreviewSystemNotification {
+            template_key,
+            locale,
+        } => state
+            .platform
+            .preview(template_key, locale)
+            .map(CommandResult::PreviewSystemNotification),
     }
 }
 
@@ -839,22 +863,209 @@ async fn seed_demo_connections(state: &AppState) -> Result<(), SafeError> {
     Ok(())
 }
 
+/// The label of the only window the prototype opens. It matches
+/// `app.windows[0].label` in `tauri.conf.json`.
+const MAIN_WINDOW: &str = "main";
+
+/// Bring the main window back: unminimise, show, focus. Failures are ignored on
+/// purpose - a window that is already visible simply stays visible.
+fn show_main_window(handle: &tauri::AppHandle) {
+    let Some(window) = handle.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// The wake gate, shared by every callback that can wake the application.
+type SharedWakeGate = Arc<std::sync::Mutex<lifecycle::WakeGate>>;
+
+/// Merge the refresh work one wake permits.
+///
+/// The event-loop thread only clones a handle and spawns: the settings read, the
+/// admission writes and the coordinator pump all run on a runtime worker, so a
+/// slow provider or a contended database cannot freeze window interaction - or
+/// the user's Quit action. The architecture forbids blocking the UI thread on
+/// database work, and `block_on` here did exactly that.
+///
+/// The gate holds a burst of focus, reopen, resume and handover signals down to
+/// one wake, and the report is printed as a count-only diagnostic so a native
+/// run can show the signal arrived without naming any connection.
+fn wake<R: tauri::Runtime>(
+    handle: &tauri::AppHandle<R>,
+    gate: &SharedWakeGate,
+    source: lifecycle::WakeSource,
+    runtime: &tokio::runtime::Handle,
+) {
+    let target = handle.clone();
+    let gate = Arc::clone(gate);
+    runtime.spawn(async move {
+        let Some(state) = target.try_state::<AppState>() else {
+            return;
+        };
+        match lifecycle::handle_gated_wake(state.inner(), &gate, source).await {
+            Ok(Some(report)) => eprintln!("quotavista: {}", report.diagnostic()),
+            Ok(None) => {}
+            Err(error) => eprintln!("quotavista: wake skipped: {}", error.message()),
+        }
+    });
+}
+
+/// Cancel in-flight work, close the pools, and exit.
+///
+/// This is the only path out of the application. Cancellation and the pool close
+/// run on a runtime worker rather than on the event-loop thread, so a refresh
+/// that is mid-pump cannot make Quit hang: `shutdown` raises its signal first,
+/// and that is what lets the pump stop and release the lock.
+///
+/// The process exits from inside the task, after the work is finished, so "commit
+/// or roll back active writes" still holds at the process boundary. `handle.exit`
+/// re-enters the event loop with a coded exit request, which the loop below
+/// leaves alone, so the shutdown step cannot run twice.
+fn quit<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, runtime: &tokio::runtime::Handle) {
+    let target = handle.clone();
+    runtime.spawn(async move {
+        if let Some(state) = target.try_state::<AppState>() {
+            let report = lifecycle::shutdown(state.inner()).await;
+            eprintln!(
+                "quotavista: quit cancelled {} in-flight job(s)",
+                report.cancelled.len()
+            );
+        }
+        target.exit(0);
+    });
+}
+
+/// Tray menu item ids.
+#[cfg(desktop)]
+const TRAY_REOPEN: &str = "reopen-main-window";
+#[cfg(desktop)]
+const TRAY_QUIT: &str = "quit";
+
+/// Register the tray entry point and report whether the platform accepted it.
+///
+/// Reopen and quit are menu items, not tray mouse events: Tauri documents that
+/// Linux emits no tray mouse event at all, so an entry point built on clicks
+/// would work on macOS and silently do nothing on Linux.
+///
+/// The labels stay English. The tray is registered once at start-up while locale
+/// switching lives in the renderer, so bilingual tray labels would need a
+/// settings-driven re-registration; that is recorded as an open item instead of
+/// being faked here. The notification text this prototype sends *is* localized,
+/// because it is rendered per request.
+#[cfg(desktop)]
+fn register_tray(app: &tauri::App, runtime: &tokio::runtime::Handle) -> bool {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+
+    let runtime = runtime.clone();
+    let registered = (|| -> tauri::Result<()> {
+        let reopen = MenuItem::with_id(app, TRAY_REOPEN, "Show QuotaVista", true, None::<&str>)?;
+        let quit_item = MenuItem::with_id(app, TRAY_QUIT, "Quit", true, None::<&str>)?;
+        let menu = Menu::with_items(app, &[&reopen, &quit_item])?;
+        let mut builder = TrayIconBuilder::new()
+            // A Linux tray icon is sometimes invisible until a menu is
+            // attached, so the menu is always set.
+            .menu(&menu)
+            .show_menu_on_left_click(true)
+            .on_menu_event(move |app, event| match event.id.as_ref() {
+                TRAY_REOPEN => show_main_window(app),
+                TRAY_QUIT => quit(app, &runtime),
+                _ => {}
+            });
+        if let Some(icon) = app.default_window_icon() {
+            builder = builder.icon(icon.clone());
+        }
+        builder.build(app)?;
+        Ok(())
+    })();
+
+    if let Err(error) = &registered {
+        eprintln!("quotavista: system tray unavailable: {error}");
+    }
+    registered.is_ok()
+}
+
+/// A non-desktop target has no tray surface at all.
+#[cfg(not(desktop))]
+fn register_tray(_app: &tauri::App, _runtime: &tokio::runtime::Handle) -> bool {
+    false
+}
+
 /// Build, persist, and run the desktop application.
+///
+/// The desktop integration assembled here is deliberately thin: capability
+/// detection lives in [`platform`], the close, wake, and quit decisions live in
+/// [`lifecycle`], and this function only translates platform signals into those
+/// calls.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("desktop runtime must start");
+    // The runtime itself is moved into the event callback at the end: a
+    // `Handle` does not keep the scheduler alive, and every callback below needs
+    // one that still works when the application exits.
+    let setup_runtime = runtime.handle().clone();
     let root = std::env::temp_dir().join("quotavista-prototype");
-    let app = tauri::Builder::default()
+    // Reactivation signals arrive in bursts; the gate turns one user action into
+    // one wake.
+    let wake_gate = Arc::new(std::sync::Mutex::new(lifecycle::WakeGate::new(
+        lifecycle::WAKE_GATE_INTERVAL,
+    )));
+    // Cloned up front: the `setup` closure moves this one, and the event loop
+    // below still needs `wake_gate` afterwards.
+    let monitor_gate = Arc::clone(&wake_gate);
+
+    let mut builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    {
+        let gate = Arc::clone(&wake_gate);
+        let instance_runtime = runtime.handle().clone();
+        // Registered first, as the plugin documentation requires: it has to see
+        // a second launch attempt before anything else can react to it.
+        builder = builder.plugin(tauri_plugin_single_instance::init(
+            move |app, _argv, _cwd| {
+                // The plugin invokes this callback from inside its own
+                // `tauri::async_runtime` task (its macOS implementation spawns a
+                // listener and calls the handler there), so blocking on the
+                // composition runtime here would try to start a runtime from
+                // within a runtime. Marshal onto the main thread instead, where
+                // the event loop already runs and where every other lifecycle
+                // callback is dispatched.
+                let handle = app.clone();
+                let target = app.clone();
+                let gate = Arc::clone(&gate);
+                let runtime = instance_runtime.clone();
+                let _ = target.run_on_main_thread(move || {
+                    show_main_window(&handle);
+                    wake(
+                        &handle,
+                        &gate,
+                        lifecycle::WakeSource::SingleInstanceActivation,
+                        &runtime,
+                    );
+                });
+            },
+        ));
+    }
+    // Notification delivery stays in Rust and no capability permission exposes
+    // the plugin, so the renderer still reaches the composition exclusively
+    // through `dispatch_command`.
+    builder = builder.plugin(tauri_plugin_notification::init());
+
+    let app = builder
         .invoke_handler(tauri::generate_handler![dispatch_command])
         .setup(move |app| {
             let handle = app.handle().clone();
-            let state = runtime
-                .block_on(build_for_tauri(root.clone(), handle))
+            let mut state = setup_runtime
+                .block_on(build_for_tauri(root.clone(), handle.clone()))
                 .expect("desktop composition must initialise");
-            if let Err(error) = runtime.block_on(seed_demo_connections(&state)) {
+            // `setup_runtime` is a handle to the same runtime; using it here
+            // keeps `runtime` itself free for the event-loop closure below.
+            if let Err(error) = setup_runtime.block_on(seed_demo_connections(&state)) {
                 // Seeding is best-effort: the shell still opens and shows the
                 // explicit no-data states.
                 eprintln!("quotavista: demo seeding failed: {}", error.message());
@@ -867,12 +1078,107 @@ pub fn run() {
                     error.message()
                 );
             }
+            // Capabilities are detected here, once. Every later decision reads
+            // the detection instead of assuming a desktop environment.
+            let tray = platform::detect_tray(
+                // Short-circuit: when the operator asked for the no-tray
+                // behaviour the icon is never registered at all, so what the
+                // application reports and what the shell shows stay consistent.
+                // The override can only remove a capability, never add one.
+                !platform::tray_disabled_from_env() && register_tray(app, &setup_runtime),
+            );
+            state.platform = platform::PlatformState {
+                tray,
+                notifications: Arc::new(platform::TauriNotifications::detect(handle)),
+            };
+            // Recorded on stderr so a native run has machine-readable evidence of
+            // what was detected, not only what a screenshot happened to show.
+            let detected = state.platform.capabilities();
+            eprintln!(
+                "quotavista: capabilities tray={:?} notification={:?}",
+                detected.tray, detected.notification
+            );
             app.manage(state);
+            // The resume monitor is the sleep/wake adapter. It compares the
+            // monotonic and wall clocks on a runtime worker, so a resume is
+            // detected even while the main window stays hidden in the tray and
+            // no window event fires at all. Reactivation alone would miss that.
+            let monitor_target = app.handle().clone();
+            setup_runtime.spawn(async move {
+                let Some(state) = monitor_target.try_state::<AppState>() else {
+                    return;
+                };
+                lifecycle::drive_resume_monitor(
+                    state.inner(),
+                    &monitor_gate,
+                    lifecycle::ResumeMonitor::new(
+                        lifecycle::RESUME_TICK,
+                        lifecycle::RESUME_THRESHOLD,
+                    ),
+                )
+                .await;
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building QuotaVista prototype");
-    app.run(|_handle, _event| {});
+
+    let gate = Arc::clone(&wake_gate);
+    app.run(move |handle, event| match event {
+        tauri::RunEvent::WindowEvent { label, event, .. } if label == MAIN_WINDOW => match event {
+            // With a usable tray the window hides and the collector stays
+            // reachable through it. Without one, closing the window exits
+            // instead of leaving a process the user can no longer reach.
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                if let Some(state) = handle.try_state::<AppState>() {
+                    let decision = lifecycle::close_decision(state.platform.tray);
+                    if decision == lifecycle::CloseDecision::HideToTray {
+                        api.prevent_close();
+                        if let Some(window) = handle.get_webview_window(MAIN_WINDOW) {
+                            let _ = window.hide();
+                        }
+                    }
+                }
+            }
+            // A focus transition is one wake source, not the only one. Tauri
+            // emits no desktop suspend or resume event, so `setup` also spawns
+            // `ResumeMonitor`, which is what notices a resume while the window
+            // stays hidden and no event fires at all.
+            tauri::WindowEvent::Focused(true) => {
+                wake(
+                    handle,
+                    &gate,
+                    lifecycle::WakeSource::WindowFocused,
+                    runtime.handle(),
+                );
+            }
+            _ => {}
+        },
+        // macOS: the dock icon was activated while no window was visible.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            show_main_window(handle);
+            if !has_visible_windows {
+                wake(
+                    handle,
+                    &gate,
+                    lifecycle::WakeSource::ReopenWithoutVisibleWindow,
+                    runtime.handle(),
+                );
+            }
+        }
+        // Quitting is explicit. A user-initiated exit is intercepted once so
+        // in-flight work is cancelled and the pools are closed; the coded
+        // re-entry from `quit` is left alone, so this cannot loop.
+        tauri::RunEvent::ExitRequested { code, api, .. } if code.is_none() => {
+            api.prevent_exit();
+            quit(handle, runtime.handle());
+        }
+        _ => {}
+    });
 }
 
 #[cfg(test)]
@@ -884,16 +1190,16 @@ mod tests {
     use quotavista_providers::simulated::Scenario;
     use tempfile::TempDir;
 
-    const CONNECTION_ID: &str = "synthetic-connection-0";
+    pub(crate) const CONNECTION_ID: &str = "synthetic-connection-0";
 
     /// Hermetic fixture: a throwaway directory, the in-memory session store
     /// chosen explicitly, and the recording change sink. No keychain, Secret
     /// Service, or application directory is touched.
-    async fn fixture() -> (TempDir, AppState, Arc<RecordingChangeSink>) {
+    pub(crate) async fn fixture() -> (TempDir, AppState, Arc<RecordingChangeSink>) {
         fixture_with_provider(SimulatedAdapter::new(synthetic_providers()[0])).await
     }
 
-    async fn fixture_with_provider(
+    pub(crate) async fn fixture_with_provider(
         provider: SimulatedAdapter,
     ) -> (TempDir, AppState, Arc<RecordingChangeSink>) {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -912,11 +1218,11 @@ mod tests {
 
     /// Add a connection with one scope so the coordinator can admit a job for
     /// it.
-    async fn seed_connection(state: &AppState, lifecycle: Lifecycle) {
+    pub(crate) async fn seed_connection(state: &AppState, lifecycle: Lifecycle) {
         seed_connection_with_id(state, CONNECTION_ID, lifecycle).await;
     }
 
-    async fn seed_connection_with_id(state: &AppState, id: &str, lifecycle: Lifecycle) {
+    pub(crate) async fn seed_connection_with_id(state: &AppState, id: &str, lifecycle: Lifecycle) {
         state
             .repository
             .create_connection(
@@ -1602,6 +1908,91 @@ mod tests {
             }
             other => panic!("expected a JSON body, got {other:?}"),
         }
+    }
+
+    /// The event-loop callback must not wait for the refresh pipeline. A slow
+    /// provider or a contended database would otherwise freeze window
+    /// interaction - including the user's Quit action - for as long as the
+    /// bounded pump loop takes, and a step count bounds the number of awaits,
+    /// not the duration of each one.
+    #[test]
+    fn the_wake_callback_returns_while_the_refresh_pipeline_is_still_busy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sink = Arc::new(RecordingChangeSink::new());
+        let changes: Arc<dyn ChangeSink> = sink.clone();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = runtime
+            .block_on(build_with_provider(
+                dir.path().to_path_buf(),
+                changes,
+                SecretChoice::SessionOnly,
+                SimulatedAdapter::new(synthetic_providers()[0]),
+            ))
+            .expect("composition must initialise");
+        runtime.block_on(seed_connection(&state, Lifecycle::Active));
+
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let handle = app.handle().clone();
+
+        // Synthetic slow work standing in for a provider that has not answered
+        // yet or a database that is contended: it holds the refresh lock the
+        // wake needs for 400ms.
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let holder = handle.clone();
+        let released_flag = Arc::clone(&released);
+        runtime.spawn(async move {
+            let state = holder.try_state::<AppState>().expect("managed state");
+            // Holding this guard across the sleep below is the fixture, not an
+            // oversight: the test exists to prove the callback and Quit do not
+            // wait on work that owns the refresh lock.
+            let _guard = state.refresh.lock().await;
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            released_flag.store(true, Ordering::SeqCst);
+        });
+        // Let the holder take the lock before the callback runs.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let gate: SharedWakeGate = Arc::new(std::sync::Mutex::new(lifecycle::WakeGate::new(
+            lifecycle::WAKE_GATE_INTERVAL,
+        )));
+        let started = std::time::Instant::now();
+        wake(
+            &handle,
+            &gate,
+            lifecycle::WakeSource::WindowFocused,
+            runtime.handle(),
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "the callback blocked for {elapsed:?}; it must only clone and spawn"
+        );
+
+        // Quit stays reachable while that work runs. Shutdown raises its signal
+        // before it waits for the lock, so the wake queued behind the holder
+        // finds the signal raised and stops instead of running its pump loop
+        // first: nothing commits and nothing is announced.
+        let quitting = handle.clone();
+        let quit = runtime.block_on(async move {
+            let state = quitting.try_state::<AppState>().expect("managed state");
+            lifecycle::shutdown(state.inner()).await
+        });
+        assert_eq!(quit.running_after, 0);
+        assert_eq!(quit.pending_after, 0);
+        assert!(
+            sink.events().is_empty(),
+            "quit must win over a queued refresh"
+        );
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the slow work really did hold the lock until after quit ran"
+        );
     }
 
     /// A credential-store failure keeps its own code: a locked store and an

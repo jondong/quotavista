@@ -21,7 +21,15 @@ quotavista-providers = { path = "../../../crates/providers" }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = [] }
+# `tray-icon` gates `tauri::tray`; the desktop crate is only compiled on
+# macOS/Windows/Linux hosts that provide it, and CI excludes it from the
+# Linux job, so no Linux system library is added to the build here.
+tauri = { version = "2", features = ["tray-icon"] }
+# Both plugins are registered from Rust only. No capability permission is added,
+# so the renderer still reaches the composition exclusively through
+# `dispatch_command` and cannot call a plugin command directly.
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
