@@ -94,6 +94,15 @@ impl RoutingSecrets {
         self.fail_reference_deletes.store(on, Ordering::SeqCst);
     }
 
+    /// Test-only: how many staged candidates the session store still holds.
+    /// Pre-journal refusals must leave no staged copy of a submitted secret
+    /// behind. Native staged material is not inspectable; tests that assert
+    /// this run in the session-only composition.
+    #[cfg(test)]
+    pub fn session_staged_count(&self) -> usize {
+        self.session.staged_count()
+    }
+
     fn check_injected_failure(&self) -> Result<(), SecretStoreError> {
         if self.fail_reference_ops.load(Ordering::SeqCst) {
             Err(SecretStoreError::Unavailable)
@@ -251,6 +260,38 @@ fn local_id(value: &str) -> Result<LocalId, SafeError> {
     LocalId::try_from(value.to_owned()).map_err(|_| safe(ErrorCode::InternalError))
 }
 
+/// What the repository proves about a staged candidate after an activation
+/// error. The decision boundary for cleanup ownership:
+///
+/// - `Live`: the candidate IS the connection's credential reference. The
+///   activation committed and the journal owes the superseded-reference
+///   cleanup (across restarts). The caller must never touch it.
+/// - `NotLive`: the repository answered and the candidate is provably not
+///   the live reference. Either the coordinator's abort already deleted its
+///   uncommitted candidate (journal-owned), or the activation was refused
+///   before any journal intent existed — the staged copy is the caller's to
+///   remove. Deleting an already-aborted candidate is idempotent.
+/// - `Unknown`: the repository could not answer. Deleting could destroy a
+///   committed credential, so the caller leaves everything alone; the
+///   bounded lifetime of a staged copy is accepted over that risk.
+enum CandidateLiveness {
+    Live,
+    NotLive,
+    Unknown,
+}
+
+async fn candidate_liveness(
+    state: &AppState,
+    connection_id: &str,
+    reference: &str,
+) -> CandidateLiveness {
+    match state.repository.credential_ref(connection_id).await {
+        Ok(Some(current)) if current == reference => CandidateLiveness::Live,
+        Ok(_) => CandidateLiveness::NotLive,
+        Err(_) => CandidateLiveness::Unknown,
+    }
+}
+
 /// Advance the store's commit counter and publish the change event for one
 /// connection the mutation committed for.
 async fn commit_and_publish(state: &AppState, connection_id: &str) -> Result<(), SafeError> {
@@ -359,26 +400,26 @@ pub async fn connect_provider(
         )
         .await
     {
-        // The journal owns candidate compensation on activation failure:
-        // `activate_credentials` aborts an uncommitted attempt by deleting
-        // the candidate itself, and a *committed* attempt keeps that
-        // reference as the live credential while its superseded-reference
-        // cleanup is pending. Touching the store here could delete the
-        // credential that was just activated, so the caller never does.
-        // What is ours to clean are the rows this request created: when the
-        // candidate never activated, the PendingSetup row and its scope are
-        // a ghost of a refused setup (including the one-active-per-provider
-        // race) and are removed here.
-        let candidate_live = matches!(
-            state.repository.credential_ref(connection_id.as_str()).await,
-            Ok(Some(current)) if current == reference
-        );
-        if !candidate_live {
-            let _ = state
-                .repository
-                .delete_connection(connection_id.as_str())
-                .await;
-            let _ = commit_and_publish(state, &connection_id).await;
+        // Cleanup ownership after an activation failure has three cases.
+        // Committed: the candidate is the live credential reference and the
+        // journal owes the superseded-reference cleanup (across restarts) —
+        // never touched here. Aborted: the coordinator already deleted its
+        // uncommitted candidate. Refused before any journal intent: the
+        // staged copy never left this request's ownership and is removed
+        // here, so a rejected setup retains no secret copy until process
+        // exit. When the repository cannot prove which case applies, nothing
+        // is touched — a bounded staged copy is safer than deleting a
+        // credential that may have committed.
+        match candidate_liveness(state, connection_id.as_str(), &reference).await {
+            CandidateLiveness::Live | CandidateLiveness::Unknown => {}
+            CandidateLiveness::NotLive => {
+                let _ = store.delete_reference(&reference);
+                let _ = state
+                    .repository
+                    .delete_connection(connection_id.as_str())
+                    .await;
+                let _ = commit_and_publish(state, &connection_id).await;
+            }
         }
         return Err(journal_error(&error));
     }
@@ -480,11 +521,22 @@ pub async fn replace_credentials(
         )
         .await
     {
-        // Never touch the store on an activation failure: an aborted attempt
-        // already had its uncommitted candidate deleted by the coordinator,
-        // and a committed attempt (whose superseded-reference cleanup failed
-        // and is pending) holds the candidate as the live credential. The
-        // journal owns both compensations, across restarts.
+        // Cleanup ownership after an activation failure: a committed attempt
+        // keeps the candidate as the live credential (journal-owned
+        // superseded cleanup, survives restarts) and an aborted attempt had
+        // its uncommitted candidate deleted by the coordinator. The third
+        // case is a refusal before any journal intent — for example the
+        // operation fence held while an earlier cleanup is pending — where
+        // the staged copy never left this request's ownership; it is
+        // deleted here so a rejected rotation retains no secret copy until
+        // process exit. When the repository cannot prove which case applies,
+        // nothing is touched.
+        if matches!(
+            candidate_liveness(state, connection_id.as_str(), &reference).await,
+            CandidateLiveness::NotLive
+        ) {
+            let _ = store.delete_reference(&reference);
+        }
         return Err(journal_error(&error));
     }
     drop(coordinator);

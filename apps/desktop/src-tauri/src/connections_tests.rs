@@ -641,6 +641,103 @@ async fn rotation_cleanup_failure_keeps_the_activated_credential() {
     assert_eq!(connection_of(disabled).lifecycle, LifecycleDto::Disabled);
 }
 
+/// Re-review round 2: a rotation refused *before any journal intent* — here
+/// the operation fence is still held by the pending superseded-reference
+/// cleanup — must remove its staged candidate. A rejected request may not
+/// retain a copy of the submitted secret until process exit. The committed
+/// candidate is never touched on that path; that case is covered by
+/// `rotation_cleanup_failure_keeps_the_activated_credential` above.
+#[tokio::test]
+async fn pre_journal_rejection_cleans_the_staged_candidate() {
+    let (_dir, state, _sink) = fixture().await;
+    let store = state.secrets.as_ref().expect("store present");
+    let operation = connect(&state, SECRET_A).await;
+    let id = operation.connection_id.expect("setup names the connection");
+
+    // A committed rotation whose superseded-reference cleanup fails: the
+    // candidate is live, the cleanup stays pending behind the fence.
+    store.set_fail_reference_deletes(true);
+    let generation = generation_of(&state, id.as_str()).await;
+    let failed = run(&state, rotate_request(id.as_str(), generation, SECRET_A)).await;
+    assert!(
+        matches!(
+            &failed,
+            Envelope::Error { ref error, .. } if error.code() == ErrorCode::StorageError
+        ),
+        "the pending cleanup reports a retryable storage failure, got {failed:?}"
+    );
+    assert_eq!(
+        store.session_staged_count(),
+        0,
+        "the committed rotation left nothing staged"
+    );
+
+    // While the fence is held (it outlives the injected store failure),
+    // another rotation with the CURRENT revision is refused before any
+    // journal intent. Store availability is restored first: the refusal
+    // itself must remove the staged copy while the store is healthy.
+    store.set_fail_reference_deletes(false);
+    let refused = run(&state, rotate_request(id.as_str(), generation, SECRET_A)).await;
+    assert!(
+        matches!(
+            &refused,
+            Envelope::Error { ref error, .. } if error.code() == ErrorCode::Conflict
+        ),
+        "the fenced rotation is refused with a conflict, got {refused:?}"
+    );
+    assert_eq!(
+        store.session_staged_count(),
+        0,
+        "the refused rotation leaves no staged copy of the secret"
+    );
+    let records = state
+        .repository
+        .operations(Some(id.as_str()))
+        .await
+        .expect("operations readable");
+    assert_eq!(
+        records
+            .iter()
+            .filter(
+                |record| record.kind == quotavista_core::journal::OperationKind::ReplaceCredentials
+            )
+            .count(),
+        1,
+        "the refusal journaled no second rotation"
+    );
+
+    // The live credential is untouched by the refusal, and recovery still
+    // completes the owed cleanup.
+    let current = state
+        .repository
+        .credential_ref(id.as_str())
+        .await
+        .expect("credential ref readable")
+        .expect("the live reference is present");
+    assert_eq!(
+        store
+            .read(&current)
+            .expect("the live credential stays readable"),
+        SECRET_A
+    );
+    store.set_fail_reference_deletes(false);
+    state
+        .coordinator
+        .as_ref()
+        .expect("coordinator present")
+        .lock()
+        .await
+        .recover()
+        .await
+        .expect("recovery completes the pending cleanup");
+    assert_eq!(
+        store
+            .read(&current)
+            .expect("the live credential survives recovery"),
+        SECRET_A
+    );
+}
+
 /// PRD criterion 2: a different (and in this prototype unverifiable)
 /// identity never merges into the existing scope.
 #[tokio::test]

@@ -165,6 +165,15 @@ impl SessionSecrets {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// How many staged candidates the store still holds. Staged candidates
+    /// exist only between `stage_candidate` and
+    /// `write_candidate`/`delete_reference`; a refused flow that never
+    /// transfers ownership to the journal must leave none behind. Test
+    /// inspection hook.
+    pub fn staged_count(&self) -> usize {
+        self.state.lock().unwrap().staged.len()
+    }
 }
 
 impl SecretStore for SessionSecrets {
