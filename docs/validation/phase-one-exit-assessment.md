@@ -4,7 +4,7 @@
 
 Assessed 2026-10-21 (UTC) by Trellis task P1-13 on branch
 `jondong/p1-13-native-validation`. Prototype revision under test: `1761be7`
-(the merged P1-12 head). P1-13 changes no application source file — it adds
+(the merged P1-12 head), re-confirmed by a full 25-step battery at this task's own commit `1afa2a8`. P1-13 changes no application source file — it adds
 `scripts/native-launch-probe.sh`, this assessment, and
 [native-target-procedure.md](native-target-procedure.md) — so every observation
 below describes the same prototype that P1-12 validated.
@@ -44,11 +44,11 @@ Linux cell below is `UNVERIFIED` rather than "expected to pass".
 
 | Check | macOS 27.0.1 (26A434), arm64 | Ubuntu 26.04, GNOME, x86_64 |
 | --- | --- | --- |
-| Cold launch: binary starts, composition initialises | **PASS** — 1,170 ms from `exec` to `quotavista: capabilities tray=Available notification=Unconfirmed` | **UNVERIFIED** |
+| Cold launch: binary starts, composition initialises | **PASS** — 1,174 ms from `exec` to `quotavista: capabilities tray=Available notification=Unconfirmed` | **UNVERIFIED** |
 | Cold launch: window opens, four screens reachable | **PENDING** — interactive step 1 | **UNVERIFIED** |
-| Warm launch on the same state directory | **PASS** — 442 ms, no reseed | **UNVERIFIED** |
+| Warm launch on the same state directory | **PASS** — 454 ms, no reseed | **UNVERIFIED** |
 | Local recovery runs before scheduling | **PARTIAL** — automated (`a_corrupt_lifecycle_journal_blocks_the_composition_before_scheduling`); no native corrupt-journal launch was performed | **UNVERIFIED** |
-| Single instance: second launch hands over | **PASS** — second process exited 0 after 118 ms; first logged `quotavista: wake SingleInstanceActivation mode Off permitted false merged 0 not-due 0` | **UNVERIFIED** |
+| Single instance: second launch hands over | **PASS** — second process (pid 33369) exited 0 after 132 ms; first logged `quotavista: wake SingleInstanceActivation mode Off permitted false merged 0 not-due 0` | **UNVERIFIED** |
 | Single instance: first window shown and focused | **PENDING** — interactive step 9 | **UNVERIFIED** |
 | Tray present and visible | **PARTIAL** — detection reports `tray=Available`; visibility, menu, and reopen are interactive steps 5–7 | **UNVERIFIED** — the adapter reports `Unavailable` on Linux by design, so there is no tray to observe until a validated host probe exists |
 | Tray absent (`QUOTAVISTA_TRAY=off`) | **PASS** — detection reports `tray=Unavailable` | **UNVERIFIED** — this is the Linux default path |
@@ -57,18 +57,18 @@ Linux cell below is `UNVERIFIED` rather than "expected to pass".
 | Explicit quit from the tray | **PENDING** — interactive step 7. The probe's `SIGTERM` exit (status 143) is *not* the tray Quit path and is not evidence for it | **UNVERIFIED** |
 | Quit cancels in-flight work | **PENDING** — interactive step 12 | **UNVERIFIED** |
 | Wake merges refresh work (automatic mode) | **PENDING** — interactive step 10 | **UNVERIFIED** |
-| Wake starts nothing when refresh is Off | **PASS** — observed on a real single-instance handover: `mode Off permitted false merged 0 not-due 0`. This is Off gating, not a sleep cycle | **UNVERIFIED** |
+| Wake starts nothing when refresh is Off | **PARTIAL** — observed on a real single-instance handover: `mode Off permitted false merged 0 not-due 0`. That is Off gating on a handover wake, not a deliberate Off-mode wake and not a sleep cycle; interactive step 11 remains **PENDING** | **UNVERIFIED** |
 | Real suspend/resume, automatic refresh on | **PENDING** — interactive step 14 (must exceed the two-minute `RESUME_THRESHOLD`) | **UNVERIFIED** |
 | Real suspend/resume, refresh Off | **PENDING** — interactive step 15 | **UNVERIFIED** |
 | Window stays responsive during a slow refresh | **PENDING** — interactive step 16 | **UNVERIFIED** |
 | Secret store: explicit session-only | **PASS** — every scripted launch set `QUOTAVISTA_SECRET_STORE=session-only` | **UNVERIFIED** |
-| Secret store: native backend round-trip | **PASS** — `macos_keychain_synthetic_roundtrip` against the real Keychain with disposable service `quotavista-test-p1-05-95769`; cleanup independently verified (`security dump-keychain \| grep -c 'quotavista-test'` → 0) | **UNVERIFIED** — `linux_secret_service_synthetic_roundtrip` has never run |
+| Secret store: native backend round-trip | **PASS** — `macos_keychain_synthetic_roundtrip` against the real Keychain with disposable service `quotavista-test-p1-05-35988`; cleanup independently verified (`security dump-keychain \| grep -c 'quotavista-test'` → 0) | **UNVERIFIED** — `linux_secret_service_synthetic_roundtrip` has never run |
 | Secret store: locked and unavailable stay distinct | **PARTIAL** — automated only (`secret_errors_keep_locked_and_unavailable_distinct`, `a_degraded_composition_reports_the_credential_store_error`). Native observation was deliberately not attempted: it would mean locking the operator's own login keychain | **UNVERIFIED** |
 | No plaintext credential persistence | **PASS** — `0001_persistence.sql` declares no credential column ("No credential values or raw provider payloads"), demo seeding writes only `connections` and `provider_scopes`, and the read-back store row `8\|2\|2\|6\|2\|2\|en/UTC/USD` carries counters and settings only | **UNVERIFIED** |
 | Persistence: committed data survives a restart | **PARTIAL** — the store row is byte-identical across the cold and warm launches (same `data_revision` 8, same settings); the renderer's own view of it is interactive step 13 | **UNVERIFIED** |
 | Both UI locales at runtime | **PARTIAL** — en/zh-CN catalog parity (217 keys, placeholders matching) and the jsdom locale suites pass, and the seeded settings row reads `en`. Native language switching and the zh-CN notification banner are interactive steps 3–4 | **UNVERIFIED** |
-| Local statistics budget (A23) | **PASS** — 100,000 facts, 5 warmups, 30 measured queries; overall p50 849.2 ms, **p95 870.6 ms** against the 1,000 ms target, max 875.6 ms, 0 failures, all four correctness gates asserted | **UNVERIFIED** |
-| Query-work cancellation bound | **UNVERIFIED** — no cooperative cancellation token exists inside aggregation; consumer-facing abort resolved in ≤2.34 ms under the enforced 5,000 ms deadline, which measures responsiveness, not stopped work | **UNVERIFIED** |
+| Local statistics budget (A23) | **PASS** — 100,000 facts, 5 warmups, 30 measured queries; overall p50 847.7 ms, **p95 870.6 ms** against the 1,000 ms target, max 873.2 ms, 0 failures, all four correctness gates asserted | **UNVERIFIED** |
+| Query-work cancellation bound | **UNVERIFIED** — no cooperative cancellation token exists inside aggregation; consumer-facing abort resolved in ≤0.74 ms under the enforced 5,000 ms deadline, which measures responsiveness, not stopped work | **UNVERIFIED** |
 | Workspace and frontend suites | **PASS** — `cargo fmt`/`clippy -D warnings`/`test`, both boundary scripts, catalog parity, contract drift, `npm ci`/`lint`/`i18n:check`/`test`/`typecheck`/`build`, `git diff --check`, all exit 0 | **UNVERIFIED** — never run on Linux; CI's Linux job excludes the desktop crate because the system WebView libraries are absent |
 | Desktop debug build | **PASS** — `cargo build --locked -p quotavista-desktop`, 51.2 MB binary | **UNVERIFIED** |
 

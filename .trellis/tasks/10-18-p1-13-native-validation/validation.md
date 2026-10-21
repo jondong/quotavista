@@ -4,6 +4,8 @@
 
 Branch `jondong/p1-13-native-validation`, 2026-10-21, based on `main` at
 `1761be7`. Prototype revision under test: **`1761be7`** — the merged P1-12 head.
+The complete check battery was re-run at this task's own commit **`1afa2a8`** and
+is recorded under `### Confirming battery at the committed revision` below.
 P1-13 changes no file under `apps/` or `crates/`; it adds
 `scripts/native-launch-probe.sh`, `docs/validation/native-target-procedure.md`,
 `docs/validation/phase-one-exit-assessment.md`, and documentation-status edits.
@@ -46,7 +48,7 @@ Safety boundary actually observed:
   overrides `TMPDIR` with a throwaway `mktemp -d` directory that the probe
   deletes on exit.
 - Real macOS Keychain access was limited to the disposable service
-  `quotavista-test-p1-05-95769` used by the `#[ignore]`d smoke test, and cleanup
+  `quotavista-test-p1-05-35988` used by the `#[ignore]`d smoke test, and cleanup
   was verified independently of the test (output below). The production service
   name is `quotavista` (`crates/infrastructure/src/secrets.rs:37`), which does
   not satisfy the `quotavista-test-` rule, so the prototype was never launched
@@ -99,26 +101,29 @@ Safety boundary actually observed:
 **NOT MET — one of two targets carries observations.** Left unchecked in the PRD.
 
 macOS actual observations, from `scripts/native-launch-probe.sh` (exit 0,
-`PROBE: PASS`) at `1761be7`, each launch in its own throwaway `TMPDIR` with
-`QUOTAVISTA_SECRET_STORE=session-only`:
+`PROBE: PASS`) inside the confirming battery at the committed revision
+`1afa2a8`, each launch in its own throwaway `TMPDIR` under
+`QUOTAVISTA_SECRET_STORE=session-only`. An identical run at the pre-commit base
+`1761be7` produced the same capability lines and the same store row, which is
+what "this task changes no application source" predicts.
 
-- Cold launch (pid 92109): **1,170 ms** from `exec` to
+- Cold launch (pid 33180): **1,174 ms** from `exec` to
   `quotavista: capabilities tray=Available notification=Unconfirmed`; resident
-  set 122,784 KiB; state directory contained `journal/`,
+  set 123,424 KiB; state directory contained `journal/`,
   `journal/refresh-counter.v1`, `quotavista.sqlite`, `-shm`, `-wal`; the
   capabilities line was the only `quotavista:` diagnostic, so no seeding
   failure, no degraded credential store, and no tray registration error.
-- Single instance: a second launch (pid 92298) **exited 0 after 118 ms** while
+- Single instance: a second launch (pid 33369) **exited 0 after 132 ms** while
   the first kept running and logged
   `quotavista: wake SingleInstanceActivation mode Off permitted false merged 0 not-due 0`.
   This is real evidence for both the handover and for Off-mode wake gating.
-- Warm launch (pid 92438) on the same state directory: **442 ms**, same
+- Warm launch (pid 33518) on the same state directory: **454 ms**, same
   capabilities line, no reseed.
 - Store inspection, read-only, cold and warm both
   `data_revision 8 | connections 2 | provider_scopes 2 | usage_facts 6 |
   published_partitions 2 | sync_runs 2 | settings en/UTC/USD` — identical, so
   committed data survived the restart and seeding did not repeat.
-- No-tray mode (pid 92568, `QUOTAVISTA_TRAY=off`): **445 ms**,
+- No-tray mode (pid 33738, `QUOTAVISTA_TRAY=off`): **445 ms**,
   `quotavista: capabilities tray=Unavailable notification=Unconfirmed`.
 - Native Keychain round-trip on the real host store (see criterion 2).
 
@@ -249,7 +254,12 @@ lines of evidence.
 
 ## Validation commands
 
-Run 2026-10-21 on this branch against prototype revision `1761be7`, all exit 0:
+Run 2026-10-21 on this branch. Every command below was executed twice: once
+during development against the pre-commit base `1761be7`, and once as a
+confirming battery against the committed revision `1afa2a8`
+(`1afa2a88bf18bd6326ae6edc005e2e5477b21dd4`, recorded at the end of this
+section). Both runs exit 0 on every command and agree on every count; the
+numbers cited in this record come from the confirming run.
 
 ```text
 cargo fmt --all -- --check                                                    rc=0
@@ -292,39 +302,41 @@ and `toolchain` fields are `null`, so the host above is the record):
 ```text
 100,000 facts over 90 settled days (2026-07-01..2026-09-28 UTC), 5 warmups,
 30 measured queries through run_request.
-overall  p50 849.2 ms   p95 870.6 ms   max 875.6 ms   failures 0
+overall  p50 847.7 ms   p95 870.6 ms   max 873.2 ms   failures 0
          within_p95_target: true (target 1000 ms)
-per mix  A-statistics-90d-day  n=10  p50 851.8  p95 870.6  max 870.6
-         B-statistics-90d-week n= 8  p50 785.7  p95 802.1  max 802.1
-         C-statistics-30d-day  n= 6  p50 319.4  p95 328.0  max 328.0
-         D-overview-90d        n= 6  p50 857.9  p95 875.6  max 875.6
+per mix  A-statistics-90d-day  n=10  p50 851.9  p95 873.2  max 873.2
+         B-statistics-90d-week n= 8  p50 783.3  p95 809.9  max 809.9
+         C-statistics-30d-day  n= 6  p50 319.3  p95 324.9  max 324.9
+         D-overview-90d        n= 6  p50 857.9  p95 870.4  max 870.4
 correctness  all four gates asserted (399,570 tokens over 90 days and over
              14 weekly points; 133,170 over 30 days)
-cancellation deadline_enforced true at 5000 ms; max abort-to-join 2.34 ms;
+cancellation deadline_enforced true at 5000 ms; max abort-to-join 0.74 ms;
              store consistency reproduced after the aborts;
              query_work_cancellation_bound.status = "unverified"
 ```
 
 P1-12 measured p50 845.7 / p95 866.6 / max 868.6 ms on this host; this run is
-p50 849.2 / p95 870.6 / max 875.6 ms. Same machine, same seed, still inside the
-1,000 ms target. These are single-host numbers, not a matrix guarantee.
+p50 847.7 / p95 870.6 / max 873.2 ms. Same machine, same seed, still inside the
+1,000 ms target. The development run at `1761be7` measured p50 849.2 / p95
+870.6 / max 875.6 ms, so two runs of the same seed differ by a few
+milliseconds. These are single-host numbers, not a matrix guarantee.
 
 macOS Keychain smoke check — real host Keychain, disposable service:
 
 ```text
-service: quotavista-test-p1-05-95769
+service: quotavista-test-p1-05-35988
 test secrets::tests::macos_keychain_synthetic_roundtrip ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 66 filtered out
 cleanup evidence (printed by the test): qv1:macos-keychain:synthetic-entry-a and
   qv1:macos-keychain:synthetic-entry-b removed from service
-  quotavista-test-p1-05-95769; both read back as NeedsCredentials
+  quotavista-test-p1-05-35988; both read back as NeedsCredentials
 ```
 
 Cleanup verified independently of the test:
 
 ```text
 security dump-keychain | grep -c 'quotavista-test'                            -> 0
-security find-generic-password -s quotavista-test-p1-05-95769 \
+security find-generic-password -s quotavista-test-p1-05-35988 \
   -a 'qv1:macos-keychain:synthetic-entry-a'
   -> security: SecKeychainSearchCopyNext: The specified item could not be found
      in the keychain.
@@ -337,6 +349,42 @@ ls "${TMPDIR:-/tmp}/quotavista-prototype"   (before and after the probe)
 
 The last line is the evidence that no real application data directory was
 created, read, modified, or deleted at any point.
+
+### Confirming battery at the committed revision
+
+A 25-step script re-ran every command above plus the two manually gated ones at
+`1afa2a8`, capturing `git status --porcelain` and `git diff --check` both before
+and after so that a check which dirties the tree cannot pass unnoticed. All 25
+steps exit 0 (`nonzero steps: 0`); all four git captures are empty.
+
+```text
+started   2026-10-21 13:12:50 UTC      finished 2026-10-21 13:13:50 UTC
+commit    1afa2a88bf18bd6326ae6edc005e2e5477b21dd4
+branch    jondong/p1-13-native-validation
+host      Mac18,5  Apple M6  34359738368 bytes
+os        macOS 27.0.1 (26A434) arm64
+steps     00 git-status-clean      01 git-diff-check        02 fmt
+          03 clippy                04 test                  05 core-boundaries
+          06 core-boundaries-tests 07 catalog-parity        08 contracts-check
+          09 desktop-build         10 native-environment    11 native-automated
+          12 native-launch-probe   13 native-interactive    14 npm-ci
+          15 npm-lint              16 npm-i18n              17 npm-test
+          18 npm-typecheck         19 npm-build             20 benchmark
+          21 keychain-smoke        22 keychain-cleanup      23 git-status-after
+          24 git-diff-check-after
+verdict   every step rc=0; tree clean before and after
+```
+
+The probe in step 12 is the run whose observations criterion 1 cites (cold pid
+33180, second instance pid 33369, warm pid 33518, no-tray pid 33738), and the
+Keychain smoke check in step 21 minted the disposable service
+`quotavista-test-p1-05-35988` whose cleanup step 22 verifies. Step 20 rewrote
+the benchmark artifact, so the numbers above are this run's, not the
+development run's.
+
+This battery re-runs the same checks; it adds no new kind of evidence. It still
+contains **zero** interactive observations and **zero** Linux observations, and
+step 13 still reports `OBSERVED: PENDING` sixteen times with no passes.
 
 ## Pending and not claimed
 
@@ -368,7 +416,7 @@ created, read, modified, or deleted at any point.
 - **Query-work cancellation bound — owned follow-up, carried from P1-12.** The
   statistics path has no cooperative cancellation token, so `JoinHandle::abort`
   stops work only at the next await point and a query already inside the
-  synchronous aggregation runs to completion. The ≤2.34 ms abort-to-join figure
+  synchronous aggregation runs to completion. The ≤0.74 ms abort-to-join figure
   measures consumer-facing responsiveness, not stopped work. Owner: Phase 2
   bounded-work hardening (a cooperative token through `query_statistics` into
   `statistics::aggregate`). Not a phase-exit blocker: the 5,000 ms deadline is
