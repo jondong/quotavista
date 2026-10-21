@@ -38,3 +38,25 @@ Initialized pinned Trellis 0.6.17 for Codex inline execution, populated design-b
 ### Next Steps
 
 - Review P1-01 artifacts and scaffold the reproducible Tauri/React/Rust workspace.
+
+
+## Session 2: P1-09 overview and statistics implementation
+<!-- trellis-session: v=2 fp=b26d573409bd7836 -->
+
+**Date**: 2026-10-21
+**Task**: P1-09 overview and statistics implementation
+**Branch**: `jondong/p1-09-overview-statistics`
+
+### Summary
+
+Implemented get_overview/query_statistics aggregation over published synthetic facts; bounded read ports; UTC lanes; bilingual screens; all validation green; PR #10 opened.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `063dc81` | feat(desktop): implement simulated overview and statistics views (P1-09) |
+
+### Status
+
+[OK] **Completed**
