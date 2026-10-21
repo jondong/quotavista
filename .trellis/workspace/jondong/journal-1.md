@@ -38,3 +38,47 @@ Initialized pinned Trellis 0.6.17 for Codex inline execution, populated design-b
 ### Next Steps
 
 - Review P1-01 artifacts and scaffold the reproducible Tauri/React/Rust workspace.
+
+
+## Session 2: P1-09 overview and statistics implementation
+<!-- trellis-session: v=2 fp=b26d573409bd7836 -->
+
+**Date**: 2026-10-21
+**Task**: P1-09 overview and statistics implementation
+**Branch**: `jondong/p1-09-overview-statistics`
+
+### Summary
+
+Implemented get_overview/query_statistics aggregation over published synthetic facts; bounded read ports; UTC lanes; bilingual screens; all validation green; PR #10 opened.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `063dc81` | feat(desktop): implement simulated overview and statistics views (P1-09) |
+
+### Status
+
+[OK] **Completed**
+
+
+## Session 3: P1-09 review round 1: UTC lane clipping, coverage rendering, exclusion semantics
+<!-- trellis-session: v=2 fp=c637420086aa953b -->
+
+**Date**: 2026-10-21
+**Task**: P1-09 review round 1: UTC lane clipping, coverage rendering, exclusion semantics
+**Branch**: `jondong/p1-09-overview-statistics`
+
+### Summary
+
+Addressed the grok-4.7 review on PR #10: UTC lane now clips to the effective interval (blocking), statistics screen renders per-point partial coverage, scopes are excluded only when they contribute no compatible facts, JournalError keeps the ResourceLimit category, plus PRD/unit/label/traceability nits. Full validation battery re-run green (166 Rust tests, 49 frontend tests, 103-key catalog parity).
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5e868af` | fix(statistics): clip UTC lane to the selection and surface partial coverage (P1-09 round 1) |
+
+### Status
+
+[OK] **Completed**

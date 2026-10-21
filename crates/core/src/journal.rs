@@ -43,6 +43,10 @@ pub enum JournalError {
     RecoveryRequired,
     /// A fence, generation, revision, or admission check rejected the request.
     Conflict,
+    /// A bounded read or write refused to exceed its resource limit. Kept
+    /// distinct from validation so the sealed `ResourceLimit` error category
+    /// survives the journal boundary.
+    ResourceLimit,
     /// The secret store is locked. The operation stays visibly pending and must
     /// never be reported as successful.
     Locked,
@@ -643,6 +647,7 @@ impl From<StorageError> for JournalError {
             StorageError::Validation
             | StorageError::Migration
             | StorageError::IncompatibleVersion => Self::Validation,
+            StorageError::ResourceLimit => Self::ResourceLimit,
         }
     }
 }

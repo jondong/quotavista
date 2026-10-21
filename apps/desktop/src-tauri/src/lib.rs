@@ -13,16 +13,19 @@ use quotavista_contracts::{
     Instant, LocalId, NextAction, OperationDto, OperationKind, OperationList, OperationState,
     RefreshTarget, Request, Revision, SafeError, CONTRACT_VERSION,
 };
+use quotavista_core::domain::Lifecycle;
 use quotavista_core::journal::SecretReferenceStore;
 use quotavista_core::provider::{ProviderError, RefreshClock};
 use quotavista_core::secrets::{SecretError, SecretStore};
-use quotavista_core::storage::{Repository, StorageError, WriteContext};
+use quotavista_core::storage::{Connection, Repository, Scope, StorageError, WriteContext};
 use quotavista_infrastructure::durable::{FileStore, SharedFileStore};
 use quotavista_infrastructure::refresh::{Admission, HistoryOutcome, Outcome, RefreshCoordinator};
 use quotavista_infrastructure::sqlite::SqliteRepository;
-use quotavista_providers::simulated::SimulatedAdapter;
+use quotavista_providers::simulated::{SimulatedAdapter, SimulatedRouter};
 use quotavista_providers::synthetic_providers;
 use tauri::{Emitter, Manager};
+
+mod statistics;
 
 /// UTC clock used by the coordinator and by [`Request::validate`].
 #[derive(Clone, Copy, Debug)]
@@ -189,7 +192,7 @@ type LifecycleCoordinator = quotavista_infrastructure::lifecycle::Coordinator<
 
 /// The refresh coordinator wired to the synthetic provider adapter.
 type RefreshState =
-    RefreshCoordinator<SqliteRepository, SimulatedAdapter, SharedFileStore, UtcClock>;
+    RefreshCoordinator<SqliteRepository, SimulatedRouter, SharedFileStore, UtcClock>;
 
 /// Initialise the desktop composition in a caller-supplied root directory.
 /// The desktop binary uses `std::env::temp_dir()`; tests pass a
@@ -199,13 +202,7 @@ pub async fn build(
     changes: Arc<dyn ChangeSink>,
     secrets: SecretChoice,
 ) -> Result<AppState, SafeError> {
-    build_with_provider(
-        root,
-        changes,
-        secrets,
-        SimulatedAdapter::new(synthetic_providers()[0]),
-    )
-    .await
+    build_inner(root, changes, open_choice(secrets), SimulatedRouter::new()).await
 }
 
 /// Initialise the desktop composition with an explicit provider adapter.
@@ -216,7 +213,13 @@ pub async fn build_with_provider(
     secrets: SecretChoice,
     provider: SimulatedAdapter,
 ) -> Result<AppState, SafeError> {
-    build_inner(root, changes, open_choice(secrets), provider).await
+    build_inner(
+        root,
+        changes,
+        open_choice(secrets),
+        SimulatedRouter::single(provider),
+    )
+    .await
 }
 
 /// Open the chosen credential store. The in-memory session store is only
@@ -232,7 +235,7 @@ async fn build_inner(
     root: PathBuf,
     changes: Arc<dyn ChangeSink>,
     opened: Result<Arc<dyn SecretStore>, SecretError>,
-    provider: SimulatedAdapter,
+    provider: SimulatedRouter,
 ) -> Result<AppState, SafeError> {
     std::fs::create_dir_all(&root).map_err(|_| safe(ErrorCode::InternalError))?;
     let database = SqliteRepository::open(&root.join("quotavista.sqlite"))
@@ -381,10 +384,12 @@ pub async fn dispatch(state: &AppState, request: Request) -> Result<CommandResul
         Command::RefreshConnections { target } => refresh_connections(state, target)
             .await
             .map(CommandResult::RefreshConnections),
-        // The overview and statistics queries belong to the later analytics
-        // phase. They report that state instead of an invented success.
-        Command::GetOverview { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-        Command::QueryStatistics { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
+        Command::GetOverview { range } => statistics::get_overview(state, range)
+            .await
+            .map(CommandResult::GetOverview),
+        Command::QueryStatistics { range } => statistics::query_statistics(state, range)
+            .await
+            .map(CommandResult::QueryStatistics),
         Command::UpdateSettings { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
         Command::GetOperation { operation_id } => get_operation(state, operation_id)
             .await
@@ -792,7 +797,46 @@ fn storage_error(error: StorageError) -> SafeError {
             SafeError::new(ErrorCode::InternalError, None)
         }
         StorageError::Unavailable => SafeError::new(ErrorCode::StorageError, None),
+        StorageError::ResourceLimit => SafeError::new(ErrorCode::ResourceLimit, None),
     }
+}
+
+/// Seed the two synthetic demo connections on first launch and run one
+/// refresh, so the prototype opens with committed synthetic data. A store
+/// that already holds connections is left untouched.
+async fn seed_demo_connections(state: &AppState) -> Result<(), SafeError> {
+    let existing = state
+        .repository
+        .connections()
+        .await
+        .map_err(storage_error)?;
+    if !existing.is_empty() {
+        return Ok(());
+    }
+    for provider in synthetic_providers() {
+        let connection_id = format!("{}-demo", provider.id);
+        state
+            .repository
+            .create_connection(
+                &Connection {
+                    id: connection_id.clone(),
+                    provider: provider.id.to_owned(),
+                    alias: provider.display_name.to_owned(),
+                    generation: 0,
+                    lifecycle: Lifecycle::Active,
+                },
+                &Scope {
+                    id: format!("{connection_id}-account"),
+                    connection_id,
+                    key: "synthetic-account".to_owned(),
+                    kind: "account".to_owned(),
+                },
+            )
+            .await
+            .map_err(storage_error)?;
+    }
+    refresh_connections(state, RefreshTarget::All).await?;
+    Ok(())
 }
 
 /// Build, persist, and run the desktop application.
@@ -810,6 +854,11 @@ pub fn run() {
             let state = runtime
                 .block_on(build_for_tauri(root.clone(), handle))
                 .expect("desktop composition must initialise");
+            if let Err(error) = runtime.block_on(seed_demo_connections(&state)) {
+                // Seeding is best-effort: the shell still opens and shows the
+                // explicit no-data states.
+                eprintln!("quotavista: demo seeding failed: {}", error.message());
+            }
             if let Some(error) = &state.degraded {
                 // The credential store is unavailable: report the typed error
                 // instead of quietly using a weaker store.
@@ -1382,31 +1431,8 @@ mod tests {
                     "changes": {},
                 },
             }),
-            serde_json::json!({
-                "command": "get_overview",
-                "args": {
-                    "range": {
-                        "start_date": "2024-01-01",
-                        "end_date": "2024-01-07",
-                        "reporting_zone": "UTC",
-                        "scope_ids": null,
-                    },
-                },
-            }),
-            serde_json::json!({
-                "command": "query_statistics",
-                "args": {
-                    "range": {
-                        "start_date": "2024-01-01",
-                        "end_date": "2024-01-07",
-                        "reporting_zone": "UTC",
-                        "grain": "day",
-                        "scope_ids": null,
-                    },
-                },
-            }),
         ];
-        assert_eq!(commands.len(), 8, "every later-phase command is covered");
+        assert_eq!(commands.len(), 6, "every later-phase command is covered");
         for command in commands {
             let envelope = run_request(&state, Some(canonical(command))).await;
             expect_error(&envelope, ErrorCode::UnsupportedInPhaseOne);
@@ -1424,7 +1450,7 @@ mod tests {
             dir.path().to_path_buf(),
             changes,
             Err(SecretError::Unavailable),
-            SimulatedAdapter::new(synthetic_providers()[0]),
+            SimulatedRouter::single(SimulatedAdapter::new(synthetic_providers()[0])),
         )
         .await
         .expect("composition must initialise");
@@ -1769,5 +1795,400 @@ mod tests {
             announced,
             "a refused commit must not announce a revision"
         );
+    }
+
+    // ---- P1-09: overview and statistics queries over committed fixtures ----
+
+    /// Composition routed by connection so a Kimi and an OpenRouter demo
+    /// connection keep independent scenarios.
+    async fn fixture_with_router() -> (TempDir, AppState, SimulatedRouter) {
+        let router = SimulatedRouter::new();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sink = Arc::new(RecordingChangeSink::new());
+        let changes: Arc<dyn ChangeSink> = sink.clone();
+        let state = build_inner(
+            dir.path().to_path_buf(),
+            changes,
+            open_choice(SecretChoice::SessionOnly),
+            router.clone(),
+        )
+        .await
+        .expect("composition must initialise");
+        (dir, state, router)
+    }
+
+    /// Seed both synthetic demo connections and drive one refresh to
+    /// completion, so snapshots and published history exist.
+    async fn seed_demo_pair(state: &AppState) {
+        seed_connection_with_id(state, "synthetic-kimi-demo", Lifecycle::Active).await;
+        seed_connection_with_id(state, "synthetic-openrouter-demo", Lifecycle::Active).await;
+        let envelope = run_request(state, Some(refresh_all_request())).await;
+        match envelope {
+            Envelope::Ok { data, .. } => match *data {
+                CommandResult::RefreshConnections(list) => {
+                    assert_eq!(list.operations.len(), 2);
+                    for operation in &list.operations {
+                        assert_eq!(operation.state, OperationState::Succeeded);
+                    }
+                }
+                other => panic!("expected RefreshConnections, got {other:?}"),
+            },
+            other => panic!("expected Envelope::Ok, got {other:?}"),
+        }
+    }
+
+    fn statistics_request(start: &str, end: &str, zone: &str, grain: &str) -> serde_json::Value {
+        canonical(serde_json::json!({
+            "command": "query_statistics",
+            "args": {
+                "range": {
+                    "start_date": start,
+                    "end_date": end,
+                    "reporting_zone": zone,
+                    "grain": grain,
+                    "scope_ids": null,
+                },
+            },
+        }))
+    }
+
+    fn overview_request(start: &str, end: &str, zone: &str) -> serde_json::Value {
+        canonical(serde_json::json!({
+            "command": "get_overview",
+            "args": {
+                "range": {
+                    "start_date": start,
+                    "end_date": end,
+                    "reporting_zone": zone,
+                    "scope_ids": null,
+                },
+            },
+        }))
+    }
+
+    fn statistics_of(envelope: Envelope) -> quotavista_contracts::StatisticsDto {
+        match envelope {
+            Envelope::Ok { data, .. } => match *data {
+                CommandResult::QueryStatistics(stats) => stats,
+                other => panic!("expected QueryStatistics, got {other:?}"),
+            },
+            other => panic!("expected Envelope::Ok, got {other:?}"),
+        }
+    }
+
+    fn overview_of(envelope: Envelope) -> quotavista_contracts::OverviewDto {
+        match envelope {
+            Envelope::Ok { data, .. } => match *data {
+                CommandResult::GetOverview(overview) => overview,
+                other => panic!("expected GetOverview, got {other:?}"),
+            },
+            other => panic!("expected Envelope::Ok, got {other:?}"),
+        }
+    }
+
+    /// Per-scope metric lookup inside an overview response.
+    fn metric<'a>(
+        overview: &'a quotavista_contracts::OverviewDto,
+        scope: &str,
+        metric_id: &str,
+    ) -> &'a quotavista_contracts::MetricDto {
+        overview
+            .metrics
+            .iter()
+            .find(|m| m.scope_id.as_str() == scope && m.metric_id.as_str() == metric_id)
+            .unwrap_or_else(|| panic!("metric {metric_id} for scope {scope}"))
+    }
+
+    #[tokio::test]
+    async fn statistics_sums_the_known_fixture_totals_without_double_counting() {
+        let (_dir, state, _router) = fixture_with_router().await;
+        seed_demo_pair(&state).await;
+
+        // The fixtures publish three UTC-day buckets per connection with
+        // value token_total + day index (crates/providers/src/simulated.rs).
+        const KIMI: u128 = 1_234_567_890_123;
+        const OPENROUTER: u128 = 9_876_543_210_987;
+        let today = Utc::now().date_naive();
+        let start = today - chrono::Duration::days(3);
+        let stats = statistics_of(
+            run_request(
+                &state,
+                Some(statistics_request(
+                    &start.to_string(),
+                    &today.to_string(),
+                    "UTC",
+                    "day",
+                )),
+            )
+            .await,
+        );
+
+        // Exact range total: both connections, three buckets each. The
+        // (much larger) cumulative snapshots never enter the range total.
+        let expected: u128 =
+            (0..3).map(|d| KIMI + d).sum::<u128>() + (0..3).map(|d| OPENROUTER + d).sum::<u128>();
+        assert_eq!(stats.totals.len(), 1);
+        assert_eq!(stats.totals[0].value(), Some(expected.to_string().as_str()));
+
+        // Three settled days plus the provisional current day clipped at as-of.
+        assert!(stats.provisional);
+        assert_eq!(stats.series.len(), 4);
+        for (index, point) in stats.series[..3].iter().enumerate() {
+            assert_eq!(point.zone.as_str(), "UTC");
+            assert_eq!(
+                point.coverage[0].status,
+                quotavista_contracts::CoverageStatusDto::Complete
+            );
+            let day_total = KIMI + OPENROUTER + 2 * index as u128;
+            assert_eq!(
+                point.metrics[0].value(),
+                Some(day_total.to_string().as_str())
+            );
+        }
+        let current_day = &stats.series[3];
+        assert_eq!(
+            current_day.coverage[0].reason,
+            Some(quotavista_contracts::ReasonDto::NotYetSettled)
+        );
+        assert_eq!(current_day.metrics[0].value(), None);
+        assert!(stats.excluded_scopes.is_empty());
+
+        // Per-plan rows carry the exact per-scope totals and the current
+        // metrics in native units.
+        assert_eq!(stats.plans.len(), 2);
+        let kimi = stats
+            .plans
+            .iter()
+            .find(|row| row.scope_id.as_str() == "synthetic-scope-synthetic-kimi-demo")
+            .expect("kimi plan row");
+        let kimi_total: u128 = (0..3).map(|d| KIMI + d).sum();
+        let kimi_tokens = kimi
+            .metrics
+            .iter()
+            .find(|m| m.metric_id.as_str() == "recorded_tokens")
+            .expect("kimi recorded tokens");
+        assert_eq!(kimi_tokens.value(), Some(kimi_total.to_string().as_str()));
+        let quota = kimi
+            .metrics
+            .iter()
+            .find(|m| m.metric_id.as_str() == "quota_remaining")
+            .expect("kimi quota");
+        assert_eq!(
+            quota.value(),
+            Some(
+                "0.70"
+                    .parse::<quotavista_core::number::Decimal>()
+                    .unwrap()
+                    .to_string()
+                    .as_str()
+            )
+        );
+        let consumed = kimi
+            .metrics
+            .iter()
+            .find(|m| m.metric_id.as_str() == "quota_consumed")
+            .expect("kimi quota consumption");
+        assert_eq!(consumed.value(), Some("30"));
+
+        let openrouter = stats
+            .plans
+            .iter()
+            .find(|row| row.scope_id.as_str() == "synthetic-scope-synthetic-openrouter-demo")
+            .expect("openrouter plan row");
+        // OpenRouter publishes no shared quota: the markers are explicit, not zero.
+        for marker in ["quota_remaining", "quota_consumed"] {
+            let metric = openrouter
+                .metrics
+                .iter()
+                .find(|m| m.metric_id.as_str() == marker)
+                .expect("openrouter quota marker");
+            assert_eq!(
+                metric.availability(),
+                quotavista_contracts::AvailabilityDto::Unsupported
+            );
+            assert_eq!(metric.value(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn statistics_rejects_future_reversed_and_overlong_ranges() {
+        let (_dir, state, _router) = fixture_with_router().await;
+        let today = Utc::now().date_naive();
+        let tomorrow = today + chrono::Duration::days(1);
+        for (start, end) in [
+            // An end date after today in the reporting zone is rejected.
+            (today.to_string(), tomorrow.to_string()),
+            // A reversed range is rejected.
+            ("2024-01-07".to_owned(), "2024-01-01".to_owned()),
+            // More than 366 calendar days is rejected.
+            ("2023-01-01".to_owned(), "2024-12-31".to_owned()),
+        ] {
+            let envelope =
+                run_request(&state, Some(statistics_request(&start, &end, "UTC", "day"))).await;
+            expect_error(&envelope, ErrorCode::Validation);
+        }
+        // An unknown zone is rejected.
+        let envelope = run_request(
+            &state,
+            Some(statistics_request(
+                "2024-01-01",
+                "2024-01-07",
+                "Mars/Olympus",
+                "day",
+            )),
+        )
+        .await;
+        expect_error(&envelope, ErrorCode::Validation);
+    }
+
+    #[tokio::test]
+    async fn missing_kimi_tokens_keep_the_native_quota_visible_in_the_overview() {
+        let (_dir, state, router) = fixture_with_router().await;
+        router.kimi().set_scenario(Scenario::MissingTokens);
+        seed_demo_pair(&state).await;
+
+        let today = Utc::now().date_naive();
+        let start = (today - chrono::Duration::days(3)).to_string();
+        let today = today.to_string();
+        let overview =
+            overview_of(run_request(&state, Some(overview_request(&start, &today, "UTC"))).await);
+        let kimi = "synthetic-scope-synthetic-kimi-demo";
+        // The token value is missing, not zero.
+        let tokens = metric(&overview, kimi, "tokens");
+        assert_eq!(
+            tokens.availability(),
+            quotavista_contracts::AvailabilityDto::Missing
+        );
+        assert_eq!(tokens.value(), None);
+        // The native shared-quota metrics stay visible with source timestamps.
+        let quota = metric(&overview, kimi, "quota_remaining");
+        assert_eq!(
+            quota.availability(),
+            quotavista_contracts::AvailabilityDto::Available
+        );
+        assert!(quota.value().is_some());
+        assert!(quota.source_as_of().is_some());
+        let consumed = metric(&overview, kimi, "quota_consumed");
+        assert_eq!(
+            consumed.availability(),
+            quotavista_contracts::AvailabilityDto::Available
+        );
+        // The summary still reports the published history of both
+        // connections: the missing value affects only the current token
+        // metric, not the recorded buckets.
+        let expected: u128 = (0..3).map(|d| 1_234_567_890_123u128 + d).sum::<u128>()
+            + (0..3).map(|d| 9_876_543_210_987u128 + d).sum::<u128>();
+        assert_eq!(
+            overview.summary.totals[0].value(),
+            Some(expected.to_string().as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_kimi_history_excludes_the_scope_from_recorded_tokens() {
+        let (_dir, state, router) = fixture_with_router().await;
+        router.kimi().set_scenario(Scenario::NoHistory);
+        seed_demo_pair(&state).await;
+
+        let today = Utc::now().date_naive();
+        let start = today - chrono::Duration::days(3);
+        let stats = statistics_of(
+            run_request(
+                &state,
+                Some(statistics_request(
+                    &start.to_string(),
+                    &today.to_string(),
+                    "UTC",
+                    "day",
+                )),
+            )
+            .await,
+        );
+        // Kimi published no token history: it is excluded with a reason, and
+        // the range total is exactly the OpenRouter buckets.
+        let exclusion = stats
+            .excluded_scopes
+            .iter()
+            .find(|e| e.scope_id.as_str() == "synthetic-scope-synthetic-kimi-demo")
+            .expect("kimi exclusion");
+        assert_eq!(exclusion.reason, quotavista_contracts::ReasonDto::NoData);
+        let expected: u128 = (0..3).map(|d| 9_876_543_210_987u128 + d).sum();
+        assert_eq!(stats.totals[0].value(), Some(expected.to_string().as_str()));
+        // The plan row is still present; only its range total is missing.
+        let kimi = stats
+            .plans
+            .iter()
+            .find(|row| row.scope_id.as_str() == "synthetic-scope-synthetic-kimi-demo")
+            .expect("kimi plan row");
+        let recorded = kimi
+            .metrics
+            .iter()
+            .find(|m| m.metric_id.as_str() == "recorded_tokens")
+            .expect("kimi recorded tokens");
+        assert_eq!(recorded.value(), None);
+        assert_eq!(
+            recorded.availability(),
+            quotavista_contracts::AvailabilityDto::Missing
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_utc_zone_keeps_utc_buckets_in_their_own_lane() {
+        let (_dir, state, _router) = fixture_with_router().await;
+        seed_demo_pair(&state).await;
+
+        // Range dates chosen so the UTC-day fixture buckets always intersect
+        // and no date is in the future in New York (behind UTC).
+        let today = Utc::now().date_naive();
+        let start = today - chrono::Duration::days(5);
+        let end = today - chrono::Duration::days(1);
+        let stats = statistics_of(
+            run_request(
+                &state,
+                Some(statistics_request(
+                    &start.to_string(),
+                    &end.to_string(),
+                    "America/New_York",
+                    "day",
+                )),
+            )
+            .await,
+        );
+
+        // No compatible New-York-day buckets exist: the total is unknown,
+        // never zero, and every connection is excluded with a reason.
+        assert_eq!(stats.totals[0].value(), None);
+        assert_eq!(stats.excluded_scopes.len(), 2);
+        assert!(stats
+            .excluded_scopes
+            .iter()
+            .all(|e| e.reason == quotavista_contracts::ReasonDto::BucketBoundaryMismatch));
+
+        // The UTC-day buckets render as a separate, exact UTC lane.
+        let utc_points: Vec<_> = stats
+            .series
+            .iter()
+            .filter(|point| point.zone.as_str() == "UTC")
+            .collect();
+        assert_eq!(utc_points.len(), 3);
+        const KIMI: u128 = 1_234_567_890_123;
+        const OPENROUTER: u128 = 9_876_543_210_987;
+        for (index, point) in utc_points.iter().enumerate() {
+            let day_total = KIMI + OPENROUTER + 2 * index as u128;
+            assert_eq!(
+                point.metrics[0].value(),
+                Some(day_total.to_string().as_str())
+            );
+        }
+        // The local-day lane is missing rather than zero.
+        let local_points: Vec<_> = stats
+            .series
+            .iter()
+            .filter(|point| point.zone.as_str() == "America/New_York")
+            .collect();
+        assert_eq!(local_points.len(), 5);
+        assert!(local_points
+            .iter()
+            .all(|point| point.metrics[0].value().is_none()));
     }
 }

@@ -50,6 +50,23 @@ impl TokenFact {
             _ => Ok(None),
         }
     }
+    /// Recorded total: base counts plus only the subcounts the source marks as
+    /// additional. Included or unknown subcounts are never added again, so a
+    /// recorded total never double counts cached or reasoning tokens.
+    pub fn recorded_total(&self) -> Result<Option<TokenTotal>, NumericError> {
+        let Some(mut total) = self.base_total()? else {
+            return Ok(None);
+        };
+        for (count, relation) in [
+            (self.cached, self.cached_relation),
+            (self.reasoning, self.reasoning_relation),
+        ] {
+            if let (Some(count), SubcountRelation::Additional) = (count, relation) {
+                total = total.checked_add(count.into())?;
+            }
+        }
+        Ok(Some(total))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -201,6 +218,36 @@ mod tests {
             TokenTotal(u128::MAX).checked_add(TokenTotal(1)),
             Err(NumericError::Overflow)
         );
+    }
+    #[test]
+    fn recorded_total_adds_only_additional_subcounts() {
+        let fact = |cached_relation, reasoning_relation| TokenFact {
+            input: Some(TokenCount(1_000)),
+            output: Some(TokenCount(2_000)),
+            cached: Some(TokenCount(100)),
+            reasoning: Some(TokenCount(50)),
+            cached_relation,
+            reasoning_relation,
+        };
+        assert_eq!(
+            fact(SubcountRelation::Included, SubcountRelation::Included).recorded_total(),
+            Ok(Some(TokenTotal(3_000)))
+        );
+        assert_eq!(
+            fact(SubcountRelation::Unknown, SubcountRelation::Unknown).recorded_total(),
+            Ok(Some(TokenTotal(3_000)))
+        );
+        assert_eq!(
+            fact(SubcountRelation::Included, SubcountRelation::Additional).recorded_total(),
+            Ok(Some(TokenTotal(3_050)))
+        );
+        assert_eq!(
+            fact(SubcountRelation::Additional, SubcountRelation::Additional).recorded_total(),
+            Ok(Some(TokenTotal(3_150)))
+        );
+        let mut incomplete = fact(SubcountRelation::Additional, SubcountRelation::Additional);
+        incomplete.output = None;
+        assert_eq!(incomplete.recorded_total(), Ok(None));
     }
     #[test]
     fn decimals_reject_without_rounding() {

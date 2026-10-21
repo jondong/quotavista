@@ -89,6 +89,13 @@ pub enum Availability {
     Unverified,
     Missing,
 }
+/// Statistics aggregation grain over the reporting zone's calendar.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Grain {
+    Day,
+    /// Monday-start calendar weeks (ISO 8601 week convention).
+    Week,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Unit {
     Tokens,

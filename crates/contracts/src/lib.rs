@@ -186,7 +186,7 @@ wire_enum!(CredentialKind {
     ManagementKey,
     SessionToken
 });
-wire_enum!(Grain { Day, Week });
+domain_enum!(Grain, Grain { Day, Week });
 wire_enum!(Polling {
     Disabled,
     OneMinute,
@@ -432,7 +432,9 @@ dto!(ExcludedScope {
     metric_id: LocalId,
     reason: ReasonDto
 });
-dto!(StatisticsPoint { interval: IntervalDto, metrics: Vec<MetricDto>, coverage: Vec<CoverageDto> });
+// One series point; `zone` names the calendar the interval follows, so a
+// UTC-only lane is never disguised as reporting-zone days.
+dto!(StatisticsPoint { interval: IntervalDto, zone: Zone, metrics: Vec<MetricDto>, coverage: Vec<CoverageDto> });
 dto!(PlanRow { scope_id: LocalId, product_id: LocalId, period: Option<PeriodDto>, metrics: Vec<MetricDto> });
 dto!(StatisticsDto {
     requested_interval: IntervalDto, effective_intervals: Vec<IntervalDto>, reporting_zone: Zone,

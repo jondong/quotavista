@@ -82,6 +82,24 @@ export function formatDateTime(instant: Date, locale: Locale, zone: string): str
   }).format(instant);
 }
 
+
+/**
+ * Exact percentage display for a ratio string in [0, 1]: the decimal point is
+ * shifted two places right with pure string arithmetic, so no digit is ever
+ * rounded through a floating-point Number.
+ */
+export function formatPercent(ratio: string): string {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(ratio);
+  if (!match) return ratio;
+  const integer = match[1];
+  const fraction = match[2] ?? "";
+  const digits = integer + fraction;
+  const point = integer.length + 2;
+  const padded = point >= digits.length ? digits.padEnd(point, "0") : digits;
+  const whole = padded.slice(0, point).replace(/^0+(?=\d)/, "");
+  const frac = padded.slice(point).replace(/0+$/, "");
+  return frac ? `${whole}.${frac}%` : `${whole}%`;
+}
 // shortcut: renderer-local persistence only; P1-10 moves this into the
 // versioned ui_locale setting with the shared optimistic revision check.
 const STORAGE_KEY = "quotavista.ui_locale";
@@ -107,6 +125,7 @@ interface I18n {
   formatTokens: (value: string) => string;
   formatDecimal: (value: string) => string;
   formatDateTime: (instant: Date, zone: string) => string;
+  formatPercent: (ratio: string) => string;
 }
 
 const I18nContext = createContext<I18n | null>(null);
@@ -133,6 +152,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
       formatTokens: (value) => formatTokens(value, locale),
       formatDecimal: (value) => formatDecimal(value, locale),
       formatDateTime: (instant, zone) => formatDateTime(instant, locale, zone),
+      formatPercent,
     }),
     [locale, setLocale],
   );

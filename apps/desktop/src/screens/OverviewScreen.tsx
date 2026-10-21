@@ -6,135 +6,185 @@ import {
   subscribeToChanges,
 } from "../ipc";
 import { useI18n, type MessageKey } from "../i18n";
-import type { ConnectionList } from "../generated/contracts";
+import type { ConnectionList, MetricDto, OverviewDto } from "../generated/contracts";
+import MetricValue from "../components/MetricValue";
 
-// Synthetic demo snapshot. Unknown stays unknown (never rendered as zero);
-// exact strings and the independent reporting zone flow through formatters.
-// Application-owned prose from the backend maps to catalog keys so both
-// locales read naturally; identifiers (provenance, store) stay untranslated.
-const STATUS_MESSAGES: Record<string, MessageKey> = {
-  "Development scaffold running without provider credentials.":
-    "overview.status.scaffoldMessage",
+// The prototype reports in UTC until P1-10 wires the persisted reporting zone.
+const REPORTING_ZONE = "UTC";
+
+// Current UTC calendar date; the overview queries the single current day.
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Catalog key for each current-metric id the backend can return.
+const METRIC_LABELS: Record<string, MessageKey> = {
+  tokens: "overview.metric.tokens",
+  recorded_tokens: "overview.metric.recordedTokens",
+  quota_remaining: "overview.metric.quotaRemaining",
+  quota_consumed: "overview.metric.quotaConsumed",
+  spend: "overview.metric.spend",
 };
-const DEMO_REPORTING_ZONE = "UTC";
-const DEMO_SNAPSHOT = {
-  quotaRemaining: null,
-  quotaUsed: "123456789012345678",
-  balance: "12.50",
-  observedAt: "2026-10-18T12:00:00Z",
-};
+
+function MetricTimestamps({ metric }: { metric: MetricDto }) {
+  const { t, formatDateTime } = useI18n();
+  return (
+    <div className="metric-timestamps">
+      <small>{t("overview.metric.observedAt", { at: formatDateTime(new Date(metric.observed_at), REPORTING_ZONE) })}</small>
+      {metric.source_as_of ? (
+        <small>{t("overview.metric.sourceAsOf", { at: formatDateTime(new Date(metric.source_as_of), REPORTING_ZONE) })}</small>
+      ) : null}
+      {metric.freshness === "stale" ? (
+        <span className="freshness-badge">{t("common.freshness.stale")}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function ScopeSection({ metrics }: { metrics: MetricDto[] }) {
+  const { t } = useI18n();
+  const scopeId = metrics[0]?.scope_id ?? "";
+  const plan = metrics[0]?.product_id ?? null;
+  return (
+    <section>
+      <h3>{t("overview.scope.heading", { scope: scopeId })}</h3>
+      {plan ? <p>{t("overview.scope.plan", { plan })}</p> : null}
+      <dl className="metric-list">
+        {metrics.map((metric) => (
+          <div key={metric.metric_id} className="metric-row">
+            <dt>
+              {METRIC_LABELS[metric.metric_id]
+                ? t(METRIC_LABELS[metric.metric_id])
+                : metric.metric_id}
+              {metric.freshness === "stale" ? (
+                <span className="freshness-badge"> ({t("common.freshness.stale")})</span>
+              ) : null}
+            </dt>
+            <dd>
+              <MetricValue metric={metric} />
+              <MetricTimestamps metric={metric} />
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
 
 export default function OverviewScreen() {
-  const { t, formatTokens, formatDecimal, formatDateTime } = useI18n();
+  const { t, formatDateTime } = useI18n();
+  const [overview, setOverview] = useState<OverviewDto | null>(null);
   const [connections, setConnections] = useState<ConnectionList | null>(null);
   const [failed, setFailed] = useState(false);
-  // Generation of the newest read. A response or an error that belongs to an
-  // older read is obsolete and must not replace the newer view.
-  const generation = useRef(0);
+  const readGeneration = useRef(0);
 
   useEffect(() => {
-    let disposed = false;
-    let unsubscribe: (() => Promise<void>) | undefined;
-
-    // A response older than the observed revision is obsolete: rendering it
-    // would overwrite newer data, so it is discarded.
-    const load = async (): Promise<void> => {
-      const request = generation.current + 1;
-      generation.current = request;
+    let alive = true;
+    const load = async () => {
+      const generation = ++readGeneration.current;
+      const today = todayUtc();
       try {
-        const list = await ipc.listConnections();
-        if (disposed) return;
-        // A response from an older read is obsolete: rendering it would
-        // overwrite newer data.
-        if (request !== generation.current) return;
-        if (isObsoleteResponse(list.data_revision, revisionTracker.observed())) return;
-        revisionTracker.observe(list.data_revision);
-        setConnections(list);
-        setFailed(false);
-      } catch {
-        // An error from an older read is obsolete as well: it must not replace
-        // the newer view with the error state.
-        if (disposed || request !== generation.current) return;
-        setFailed(true);
-      }
-    };
-
-    // The listener is installed before the first read. A commit that lands
-    // between the read and the registration would otherwise be missed.
-    const start = async (): Promise<void> => {
-      try {
-        const dispose = await subscribeToChanges(revisionTracker, (_event, update) => {
-          // A gap means a revision was skipped, so the local view cannot be
-          // patched and is reloaded instead. A stale event carries nothing
-          // newer than the rendered revision, so it is ignored.
-          if (update.kind === "apply" || update.kind === "gap") void load();
-        });
-        if (disposed) {
-          void dispose();
+        const [connectionList, nextOverview] = await Promise.all([
+          ipc.listConnections(),
+          ipc.getOverview({
+            start_date: today,
+            end_date: today,
+            reporting_zone: REPORTING_ZONE,
+          }),
+        ]);
+        if (!alive || generation !== readGeneration.current) return;
+        const observed = revisionTracker.observed();
+        if (
+          isObsoleteResponse(connectionList.data_revision, observed) ||
+          isObsoleteResponse(nextOverview.summary.data_revision, observed)
+        ) {
           return;
         }
-        unsubscribe = dispose;
+        revisionTracker.observe(connectionList.data_revision);
+        revisionTracker.observe(nextOverview.summary.data_revision);
+        setConnections(connectionList);
+        setOverview(nextOverview);
+        setFailed(false);
       } catch {
-        // A live channel that cannot be installed leaves the screen on its
-        // last known state instead of an empty view.
+        if (alive && generation === readGeneration.current) setFailed(true);
       }
-      await load();
     };
-    void start();
-
+    let unsubscribe: (() => Promise<void>) | undefined;
+    void subscribeToChanges(revisionTracker, () => {
+      void load();
+    })
+      .then((release) => {
+        unsubscribe = release;
+      })
+      .catch(() => {
+        // The change channel is optional: without it the last read stays on
+        // screen (the tests exercise this fallback explicitly).
+      });
+    void load();
     return () => {
-      disposed = true;
+      alive = false;
       void unsubscribe?.();
     };
   }, []);
 
-  if (failed) {
-    return <p role="alert" className="error">{t("overview.error.statusUnavailable")}</p>;
-  }
-  if (!connections) {
-    return <p role="status">{t("common.loading")}</p>;
+  if (!overview || !connections) {
+    return (
+      <section className="panel">
+        <h2>{t("nav.overview")}</h2>
+        {failed ? (
+          <p role="alert">{t("overview.error.statusUnavailable")}</p>
+        ) : (
+          <p>{t("common.loading")}</p>
+        )}
+      </section>
+    );
   }
 
-  const provenance = "synthetic";
-  const providerCount = connections.connections.length;
-  const dataRevision = connections.data_revision;
-  const message = "Development scaffold running without provider credentials.";
+  const summary = overview.summary;
+  const total = summary.totals.find((metric) => metric.metric_id === "recorded_tokens");
+  const asOf = formatDateTime(new Date(summary.as_of), REPORTING_ZONE);
 
   return (
-    <section aria-labelledby="overview-heading">
-      <h2 id="overview-heading">{t("overview.heading")}</h2>
-
-      <dl>
-        <dt>{t("overview.status.provenance")}</dt>
-        <dd>{provenance}</dd>
-        <dt>{t("overview.status.providers")}</dt>
-        <dd>{providerCount}</dd>
-        <dt>{t("overview.status.dataRevision")}</dt>
-        <dd>{dataRevision}</dd>
-        <dt>{t("overview.status.message")}</dt>
-        <dd>
-          {STATUS_MESSAGES[message]
-            ? t(STATUS_MESSAGES[message])
-            : message}
-        </dd>
-      </dl>
-
-      <h3>{t("overview.metrics.heading")}</h3>
-      <dl>
-        <dt>{t("overview.metric.quotaRemaining")}</dt>
-        <dd>{t("common.value.unknown")}</dd>
-        <dt>{t("overview.metric.quotaUsed")}</dt>
-        <dd>{formatTokens(DEMO_SNAPSHOT.quotaUsed)}</dd>
-        <dt>{t("overview.metric.balance")}</dt>
-        <dd>{formatDecimal(DEMO_SNAPSHOT.balance)}</dd>
-        <dt>{t("overview.metric.observedAt")}</dt>
-        <dd>
-          <time dateTime={DEMO_SNAPSHOT.observedAt}>
-            {formatDateTime(new Date(DEMO_SNAPSHOT.observedAt), DEMO_REPORTING_ZONE)}
-          </time>
-        </dd>
-      </dl>
-      <p className="note">{t("overview.metric.note")}</p>
+    <section className="panel">
+      <h2>{t("nav.overview")}</h2>
+      <p>
+        {t("overview.summary.range", {
+          start: todayUtc(),
+          end: todayUtc(),
+          zone: summary.reporting_zone,
+        })}
+        {summary.provisional ? ` ${t("overview.summary.provisional", { asOf })}` : ""}
+      </p>
+      <section>
+        <h3>{t("overview.summary.heading")}</h3>
+        <dl className="metric-list">
+          {total ? (
+            <div className="metric-row">
+              <dt>{t("overview.metric.recordedTokens")}</dt>
+              <dd>
+                <MetricValue metric={total} />
+              </dd>
+            </div>
+          ) : null}
+          <div className="metric-row">
+            <dt>{t("overview.status.dataRevision")}</dt>
+            <dd>{summary.data_revision}</dd>
+          </div>
+        </dl>
+      </section>
+      {overview.metrics
+        .reduce<MetricDto[][]>((groups, metric) => {
+          const last = groups[groups.length - 1];
+          if (last && last[0].scope_id === metric.scope_id) {
+            last.push(metric);
+          } else {
+            groups.push([metric]);
+          }
+          return groups;
+        }, [])
+        .map((metrics) => (
+          <ScopeSection key={metrics[0].scope_id} metrics={metrics} />
+        ))}
     </section>
   );
 }
