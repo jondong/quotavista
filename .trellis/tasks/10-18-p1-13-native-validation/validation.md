@@ -558,6 +558,70 @@ This battery re-runs the same checks; it adds no new kind of evidence. It still
 contains **zero** interactive observations and **zero** Linux observations, and
 step 13 still reports `OBSERVED: PENDING` sixteen times with no passes.
 
+### Confirming battery at `d051409`, and what the first run of it exposed
+
+The review round replaced that runner with an *enforcing* one. Recording each
+step's exit status is not a gate: `git status --porcelain` exits 0 on a dirty
+tree, the Keychain cleanup queries exit 0 whether or not the entries are gone,
+and a script that ends with `cat` returns `cat`'s status. The current runner
+asserts the **content** of every required step — 37 assertions over 26 steps —
+and exits non-zero if any assertion fails, so `battery rc=0` finally means
+something.
+
+```text
+started   2026-10-21 16:43:21 UTC      finished 2026-10-21 16:44:24 UTC
+commit    d051409ea9f2206d867f0b2eec1f248422c026f0
+branch    jondong/p1-13-native-validation
+host      Mac18,5  Apple M6  34359738368 bytes
+os        macOS 27.0.1 (26A434) arm64
+steps     26, including 11b test-native-launch-probe.sh
+verdict   BATTERY: PASS — steps with a non-zero exit status: 0,
+          failed content assertions: 0, assertions recorded: 37
+counts    cargo test 13 suites / 221 passed / 0 failed / 1 ignored (summed over
+          the per-suite `test result:` lines, which is the only form cargo
+          prints); npm test 8 files / 82 passed; catalog parity 217 keys;
+          test-native-launch-probe.sh 82 ok; native-launch-probe.sh
+          PROBE: PASS with 9 RESULT: PASS; native-checks.sh --interactive
+          16 OBSERVED: PENDING and 0 passes; benchmark p95 869.7 ms against the
+          1,000 ms target
+keychain  service quotavista-test-p1-05-63429; cleanup verified by
+          `security dump-keychain | grep -c quotavista-test` = 0, three
+          `could not be found in the keychain` results (entry-a, entry-b, and
+          the production `quotavista` service), and the prototype's default
+          state directory absent
+git       status and `git diff --check` empty before and after, so no check
+          dirtied the tree
+```
+
+The first run of this battery at the same commit reported
+`BATTERY: FAIL (7 assertion(s), 0 step(s))`. **All seven failures were defects in
+the runner, not in the repository**, and they are recorded here because a gate
+that fails for the wrong reason is a gate nobody trusts. `a_count` and `a_none`
+captured their match count as `$(grep -Ec … || echo 0)`; `grep -c` prints `0`
+*and* exits 1 when nothing matches, so the `||` appended a second line and the
+variable held the two-line string `0\n0`, which breaks `[ "$got" -eq 0 ]`. Every
+one of the seven was an assertion that had correctly found zero matches —
+clippy errors, `test result: FAILED`, `panicked`, self-test `FAIL` lines,
+`PROBE: FAIL|REFUSED`, interactive `OBSERVED: PASS`, and benchmark failures.
+
+Rather than assume that, each pattern was re-run by hand against the same logs
+(all returned `count=0` with `grep_rc=1`), the helpers were changed to
+`) || true` plus `got=${got:-0}`, and all seven were replayed against the
+*existing* logs: every one passed, while the exact-count assertions that must
+not weaken still held (16 `OBSERVED: PENDING`, 9 probe `RESULT: PASS`, 3
+automated `RESULT: PASS`). The battery was then re-run end to end, which is the
+`BATTERY: PASS` recorded above.
+
+An `a_cargo_totals` helper was added for the same reason: `cargo test` prints one
+`test result:` line per suite and never a single total, so an assertion written
+against `test result: ok\. 221 passed` can never match. The helper sums the
+per-suite lines and asserts the sum, which is how the `13 suites / 221 passed /
+0 failed / 1 ignored` figure above is derived rather than eyeballed.
+
+This is still the same evidence, re-run: **zero** interactive observations and
+**zero** Linux observations. Step 13 reports `OBSERVED: PENDING` sixteen times
+with no passes, and no step in the battery can change that.
+
 ## Pending and not claimed
 
 - **Ubuntu 26.04 GNOME x86_64 native run — blocker, no owner yet.** Nothing was
