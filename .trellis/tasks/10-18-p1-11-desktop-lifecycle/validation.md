@@ -9,7 +9,7 @@ existing `Request::validate` gate, and the existing sealed `Envelope`.
 
 New code:
 
-- `apps/desktop/src-tauri/src/lifecycle.rs` (1161 lines) — close/wake/quit policy
+- `apps/desktop/src-tauri/src/lifecycle.rs` (1162 lines) — close/wake/quit policy
   (`CloseDecision`, `RefreshMode`, `WakeDecision`, `WakeGate`, `handle_wake`,
   `handle_gated_wake`, `shutdown`, `ShutdownSignal`, `ResumeMonitor`,
   `drive_resume_monitor`) plus 21 tests.
@@ -22,10 +22,13 @@ New code:
   registers the tray, the single-instance and notification plugins, spawns the
   resume monitor and handles close/reopen/quit/wake, plus the non-blocking
   `wake`/`quit` callbacks and one new test. Existing logic was not reordered or
-  reformatted: the diff against `origin/main` is 398 insertions and 9 deletions,
-  and 5 of those 9 deletions are one-word visibility widenings (`pub(crate)`) on
-  existing test helpers so the new module tests reuse the P1-07 fixtures instead
-  of duplicating them.
+  reformatted: the diff against `origin/main` is 401 insertions and 10 deletions,
+  and every one of the 10 deletions is accounted for: 5 are one-word visibility
+  widenings (`pub(crate)`) on existing test helpers so the new module tests reuse
+  the P1-07 fixtures instead of duplicating them, 4 are lines inside `run()` that
+  the rewrite replaced (the empty `app.run` callback and three builder lines), and
+  1 is P1-09's `runtime.block_on(seed_demo_connections(&state))` switched to the
+  `setup_runtime` handle clone.
 - `crates/contracts/src/lib.rs` — 1 new scalar, 4 new wire enums, 2 new DTOs, 2
   new `Command`/`CommandResult` variants, appended to the `typescript()` emit
   list (72 insertions). `Request::validate` needed no change because its command
@@ -163,7 +166,7 @@ region is a footer inside the shell, the four P1-08 navigation entries are
 unchanged, and the region issues no IPC call until the user presses a button.
 Proof: `DesktopIntegration.test.tsx` — `reads nothing until the user asks, then
 reports both capabilities` and `explains that closing the window exits when no
-tray was detected`; `App.test.tsx` still passes unmodified (47 renderer tests),
+tray was detected`; `App.test.tsx` still passes unmodified (57 renderer tests),
 which is the evidence that nothing was taken away from the existing shell.
 
 The no-tray path is reproducible on this host without removing the menu bar:
