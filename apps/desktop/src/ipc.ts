@@ -18,9 +18,13 @@ import type {
   ConnectionList,
   Envelope,
   LocalId,
+  NotificationCapabilityDto,
+  NotificationPreviewDto,
+  NotificationTemplateKey,
   OperationDto,
   OperationList,
   OverviewDto,
+  PlatformCapabilitiesDto,
   Request,
   SettingsDto,
   SettingsPatch,
@@ -29,7 +33,7 @@ import type {
 
 export const CONTRACT_VERSION = 1 as const;
 
-export type { ChangeEvent, ConnectionDto, ConnectionList, OperationDto, OperationList, OverviewDto, SettingsDto, SettingsPatch, StatisticsDto };
+export type { ChangeEvent, ConnectionDto, ConnectionList, NotificationCapabilityDto, NotificationPreviewDto, NotificationTemplateKey, OperationDto, OperationList, OverviewDto, PlatformCapabilitiesDto, SettingsDto, SettingsPatch, StatisticsDto };
 
 /** SafeError shape lifted off the envelope. `code` is the only stable branch. */
 export interface IpcError extends Error {
@@ -320,6 +324,26 @@ export const ipc = {
   },
   getOperation(operation_id: string): Promise<OperationDto> {
     return dispatch({ command: "get_operation", args: { operation_id } });
+  },
+  /**
+   * Read the desktop capabilities detected at start-up. Tray availability and
+   * notification support are observations about this machine, so the renderer
+   * must ask rather than assume.
+   */
+  getPlatformCapabilities(): Promise<PlatformCapabilitiesDto> {
+    return dispatch({ command: "get_platform_capabilities" });
+  },
+  /**
+   * Render one notification template in the given locale and, when the platform
+   * channel is usable, hand it to the OS. `delivered` reports whether the
+   * channel accepted the request; the returned text is always present so the
+   * interface can explain itself when delivery is unavailable.
+   */
+  previewSystemNotification(args: {
+    template_key: NotificationTemplateKey;
+    locale: "en" | "zh-CN";
+  }): Promise<NotificationPreviewDto> {
+    return dispatch({ command: "preview_system_notification", args });
   },
 } as const;
 

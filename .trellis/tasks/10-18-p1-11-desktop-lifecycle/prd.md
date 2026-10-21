@@ -8,7 +8,7 @@ Keep the prototype reachable and predictable with or without tray and notificati
 
 [Requirements 0.9](../../../docs/requirements.md), [Architecture 0.4](../../../docs/architecture.md), [development plan](../../../docs/development-plan.md), and [traceability](../../../docs/traceability.md).
 
-Dependencies: [P1-07](../10-18-p1-07-ipc/prd.md), [P1-08](../10-18-p1-08-bilingual-shell/prd.md)
+Dependencies: [P1-07](../archive/2026-10/10-18-p1-07-ipc/prd.md), [P1-08](../archive/2026-10/10-18-p1-08-bilingual-shell/prd.md)
 
 Acceptance mapping: A07, A11, A21, A25. These are prototype contributions, not closure of full-release acceptance.
 
@@ -20,10 +20,10 @@ Acceptance mapping: A07, A11, A21, A25. These are prototype contributions, not c
 
 ## Acceptance criteria
 
-- [ ] Without a usable tray, closing the main window exits; there is no inaccessible orphan collector. All essential flows remain reachable from the main window.
-- [ ] With a usable tray, users can reopen and explicitly quit. Quit cancels work and commits or rolls back active writes.
-- [ ] Synthetic notification uses the active locale and no identifying account details; unavailable delivery retains an in-app status. It does not establish real alert behavior.
-- [ ] Wake merges permitted refresh work; refresh-Off never initiates an implicit query. Record differences between available native targets.
+- [x] Without a usable tray, closing the main window exits; there is no inaccessible orphan collector. All essential flows remain reachable from the main window.
+- [x] With a usable tray, users can reopen and explicitly quit. Quit cancels work and commits or rolls back active writes.
+- [x] Synthetic notification uses the active locale and no identifying account details; unavailable delivery retains an in-app status. It does not establish real alert behavior.
+- [x] Wake merges permitted refresh work; refresh-Off never initiates an implicit query. Record differences between available native targets.
 
 ## Out of scope
 
@@ -31,4 +31,4 @@ No background service, complete threshold/expiration alert engine, installer sig
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. Implemented and validated; per-criterion evidence is recorded in `validation.md`, together with the interactive window, tray-menu and notification-banner observations that need a human at a desktop session and remain pending, and the Ubuntu 26.04 GNOME target handed to P1-13.

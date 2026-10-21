@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import LanguageSelect, { LOCALE_LABEL_KEYS } from "./components/LanguageSelect";
+import DesktopIntegration from "./components/DesktopIntegration";
 import { I18nProvider, useI18n, type MessageKey } from "./i18n";
 import OverviewScreen from "./screens/OverviewScreen";
 import StatisticsScreen from "./screens/StatisticsScreen";
@@ -74,6 +75,7 @@ function Shell() {
         {screen === "connections" && <ConnectionsScreen />}
         {screen === "settings" && <SettingsScreen />}
       </main>
+      <DesktopIntegration />
     </>
   );
 }

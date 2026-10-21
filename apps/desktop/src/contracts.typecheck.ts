@@ -20,6 +20,8 @@ export const commands = [
   { command: "query_statistics", args: { range } },
   { command: "update_settings", args: { expected_settings_revision: "1", changes: { ui_locale: "zh-CN", reporting_zone: "UTC", display_currency: "USD", polling: "disabled" } } },
   { command: "get_operation", args: { operation_id: "demo-job" } },
+  { command: "get_platform_capabilities" },
+  { command: "preview_system_notification", args: { template_key: "synthetic_probe", locale: "zh-CN" } },
 ] satisfies Command[];
 export const request = { contract_version: 1, request_id: "synthetic-request", command: commands[0] } satisfies Request;
 export const emptyPatch = { ui_locale: null, reporting_zone: null, display_currency: null, polling: null } satisfies SettingsPatch;

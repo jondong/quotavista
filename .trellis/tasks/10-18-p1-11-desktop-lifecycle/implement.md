@@ -3,7 +3,7 @@
 ## Entry checks
 
 - [ ] Read the PRD, design, relevant specs, and reviewed baseline.
-- [ ] Confirm predecessor tasks are completed, including archived records: [P1-07](../10-18-p1-07-ipc/prd.md), [P1-08](../10-18-p1-08-bilingual-shell/prd.md)
+- [ ] Confirm predecessor tasks are completed, including archived records: [P1-07](../archive/2026-10/10-18-p1-07-ipc/prd.md), [P1-08](../archive/2026-10/10-18-p1-08-bilingual-shell/prd.md)
 - [ ] Review the plan against any newer decisions and existing user authorization before activation.
 
 ## Work sequence

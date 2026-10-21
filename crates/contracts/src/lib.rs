@@ -74,6 +74,12 @@ scalar!(
 scalar!(SourceLabel, |s: &str| !s.is_empty()
     && s.chars().count() <= 128
     && !s.chars().any(char::is_control));
+// Bounded, already-rendered notification text. The backend renders the whole
+// template catalog, so this scalar only rejects empties, control characters,
+// and anything longer than a platform notification body should be.
+scalar!(NotificationTextDto, |s: &str| !s.is_empty()
+    && s.chars().count() <= 200
+    && !s.chars().any(char::is_control));
 
 macro_rules! wire_enum {
     ($name:ident { $($variant:ident),+ $(,)? }) => {
@@ -196,6 +202,23 @@ wire_enum!(Polling {
 wire_enum!(DeletionIntent {
     CredentialsHistoryAndManagedBackups
 });
+// Tray presence is a detected capability of the running composition, never an
+// assumption about a particular desktop environment.
+wire_enum!(TrayAvailabilityDto {
+    Available,
+    Unavailable
+});
+// Why a system notification could not be delivered. Kept separate from the
+// query failure taxonomy: an unusable channel is a capability, not an error.
+wire_enum!(NotificationCapabilityDto {
+    Available,
+    PermissionDenied,
+    Unsupported
+});
+// Closed set of notification templates. Deliberately separate from future
+// persistent alert episodes so a synthetic probe can never be mistaken for a
+// real alert, and so changing a locale re-renders text without creating one.
+wire_enum!(NotificationTemplateKey { SyntheticProbe });
 wire_enum!(ErrorCode {
     Validation,
     Conflict,
@@ -582,6 +605,24 @@ pub enum RefreshTarget {
 }
 dto!(OverviewRangeInput { start_date: Date, end_date: Date, reporting_zone: Zone, scope_ids: Option<Vec<LocalId>> });
 dto!(RangeInput { start_date: Date, end_date: Date, reporting_zone: Zone, grain: Grain, scope_ids: Option<Vec<LocalId>> });
+// Detected desktop integration capabilities of this running composition. The
+// renderer uses them to explain what the platform offers and what it does not,
+// instead of guessing from the operating system name.
+dto!(PlatformCapabilitiesDto {
+    tray: TrayAvailabilityDto,
+    notification: NotificationCapabilityDto
+});
+// Result of one explicitly user-triggered synthetic notification. The rendered
+// text comes back so the interface can show exactly what was sent (or what
+// could not be sent); it never names an account or a credential.
+dto!(NotificationPreviewDto {
+    template_key: NotificationTemplateKey,
+    locale: Locale,
+    capability: NotificationCapabilityDto,
+    delivered: bool,
+    title: NotificationTextDto,
+    body: NotificationTextDto
+});
 #[derive(Deserialize, TS)]
 #[serde(
     tag = "command",
@@ -636,6 +677,11 @@ pub enum Command {
     GetOperation {
         operation_id: LocalId,
     },
+    GetPlatformCapabilities,
+    PreviewSystemNotification {
+        template_key: NotificationTemplateKey,
+        locale: Locale,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(
@@ -656,6 +702,8 @@ pub enum CommandResult {
     QueryStatistics(StatisticsDto),
     UpdateSettings(SettingsDto),
     GetOperation(OperationDto),
+    GetPlatformCapabilities(PlatformCapabilitiesDto),
+    PreviewSystemNotification(NotificationPreviewDto),
 }
 #[derive(Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -789,6 +837,12 @@ pub fn typescript() -> String {
         RefreshTarget,
         OverviewRangeInput,
         RangeInput,
+        TrayAvailabilityDto,
+        NotificationCapabilityDto,
+        NotificationTemplateKey,
+        NotificationTextDto,
+        PlatformCapabilitiesDto,
+        NotificationPreviewDto,
         Command,
         CommandResult,
         Request,

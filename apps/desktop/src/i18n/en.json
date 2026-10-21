@@ -101,5 +101,22 @@
   "settings.prototype.heading": "Prototype limits",
   "settings.prototype.note": "Persisted settings and real connections arrive in later prototype tasks.",
   "a11y.langSelected": "Interface language changed to {language}",
-  "a11y.skipToContent": "Skip to main content"
+  "a11y.skipToContent": "Skip to main content",
+  "desktop.heading": "Desktop integration",
+  "desktop.note": "Tray and notification support are detected on this machine, not assumed. Nothing is read or sent until you choose an action.",
+  "desktop.tray.label": "System tray",
+  "desktop.tray.available": "Available. Closing the window keeps QuotaVista in the tray; choose Quit to exit.",
+  "desktop.tray.unavailable": "Unavailable. Closing the window exits QuotaVista instead of leaving a hidden collector.",
+  "desktop.notification.label": "System notifications",
+  "desktop.notification.available": "Available",
+  "desktop.notification.permissionDenied": "Not permitted",
+  "desktop.notification.unsupported": "Not supported on this platform",
+  "desktop.notification.send": "Send a test notification",
+  "desktop.notification.preview": "Message",
+  "desktop.notification.delivered": "The platform accepted the notification.",
+  "desktop.notification.explained": "Delivery is unavailable, so the message stays here instead.",
+  "desktop.capabilities.error": "Desktop capabilities could not be read.",
+  "desktop.notification.error": "The test notification could not be sent.",
+  "desktop.status.notChecked": "Not checked yet",
+  "desktop.capabilities.check": "Check desktop capabilities"
 }
