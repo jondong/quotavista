@@ -20,7 +20,7 @@ Environment: macOS 27.0.1 arm64, Rust 1.99.1, Node 24.22.0, npm 11.19.1, SQLx 0.
 - `crates/providers/src/simulated.rs`: Kimi capability gains `quota_remaining` (ratio 0.70) and `quota_consumed` (30 percentage points) metrics; OpenRouter exposes no quota (explicit Unsupported); new `SimulatedRouter` routes demo connections by id so the Kimi and OpenRouter fixtures coexist in one store.
 - `crates/contracts`: `StatisticsPoint` gains a `zone` field (UTC lane must not be disguised as local days); `Grain` mapped from the domain enum; `StatisticsDto`/`OverviewDto` `from_domain` mapping; regenerated `apps/desktop/src/generated/contracts.ts`.
 - `apps/desktop/src-tauri/src/lib.rs` + new `apps/desktop/src-tauri/src/statistics.rs`: `get_overview`/`query_statistics` handlers (validate range via the shared `calendar_range` path, resolve scopes, read via the bounded ports, run the engine, map to DTOs, carry the store `data_revision`); demo seeding of one Kimi and one OpenRouter synthetic connection on first run; `ResourceLimit` mapped to the sealed error.
-- `apps/desktop/src/screens/OverviewScreen.tsx` and `StatisticsScreen.tsx`: real IPC-backed views. Overview shows per-scope Kimi quota vs OpenRouter spend with refreshed-at and source-as-of timestamps and stale badges. Statistics offers all eight range presets plus an explicit custom start/end date pair (future dates blocked by a `max=today` ceiling and backend validation), day/week grain, explicit range dates and zone, provisional marker, per-zone lanes, excluded-scope list with reasons, per-plan rows with native units, an explanation instead of an all-zero line for missing history, and obsolete-response/stale-revision protection via the P1-07 `RevisionTracker` watermarks. `i18n/index.tsx` gains exact string-math `formatPercent`; both catalogs carry the 99 keys.
+- `apps/desktop/src/screens/OverviewScreen.tsx` and `StatisticsScreen.tsx`: real IPC-backed views. Overview shows per-scope Kimi quota vs OpenRouter spend with refreshed-at and source-as-of timestamps and stale badges. Statistics offers all eight range presets plus an explicit custom start/end date pair (future dates blocked by a `max=today` ceiling and backend validation), day/week grain, explicit range dates and zone, provisional marker, per-zone lanes, excluded-scope list with reasons, per-plan rows with native units, an explanation instead of an all-zero line for missing history, and obsolete-response/stale-revision protection via the P1-07 `RevisionTracker` watermarks. `i18n/index.tsx` gains exact string-math `formatPercent`; both catalogs carry the 103 keys.
 
 ## Validation status
 
@@ -32,13 +32,13 @@ Every command was run locally on this branch; results below are the real observe
 | `./scripts/test-check-core-boundaries.sh` | PASS — "all boundary-gate regression checks passed" |
 | `cargo fmt --all -- --check` | PASS (after one `cargo fmt --all` normalization of newly written code) |
 | `cargo clippy --locked --workspace --all-targets -- -D warnings` | PASS — no warnings |
-| `cargo test --locked --workspace` | PASS — 164 passed, 0 failed, 1 ignored (pre-existing native-keychain test): contracts 16, core 29, desktop 27, infrastructure 66 (+1 ignored), providers 13, contract doc-tests 13 |
+| `cargo test --locked --workspace` | PASS — 166 passed, 0 failed, 1 ignored (pre-existing native-keychain test): contracts 16, core 31, desktop 27, infrastructure 66 (+1 ignored), providers 13, contract doc-tests 13 |
 | `cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check` | PASS — "TypeScript contract is current" |
 | `cargo build --locked -p quotavista-desktop` | PASS |
 | `npm ci` (apps/desktop) | PASS |
 | `npm run lint` | PASS |
-| `npm run i18n:check` | PASS — "Catalog parity OK: 99 keys, placeholders matching in both catalogs" |
-| `npm test` | PASS — 5 test files, 48 tests, no unhandled errors |
+| `npm run i18n:check` | PASS — "Catalog parity OK: 103 keys, placeholders matching in both catalogs" |
+| `npm test` | PASS — 5 test files, 49 tests, no unhandled errors |
 | `npm run typecheck` | PASS |
 | `npm run build` | PASS — vite production build |
 | `git diff --check` | PASS — no whitespace errors |
@@ -73,3 +73,18 @@ The task's `prd.md`, `design.md`, and `implement.md` linked `../10-18-p1-07-ipc/
 - `sqlx` 0.9 rejects dynamically built SQL strings, so the bounded reads use static per-scope queries inside one read transaction (scope count is contract-bounded at 100).
 - Coverage rows must be lane-qualified by `source_zone`: without the `row.zone == zone.name()` check a UTC coverage row marked local-zone buckets complete even though the UTC facts were excluded from that lane. The `non_utc_zone_keeps_utc_buckets_in_a_separate_lane` core test caught this.
 - `formatPercent` shifts the decimal point with pure string arithmetic (`0.70` → `70%`, `1` → `100%`) so ratios never round through a floating-point `Number`.
+
+## Round 1 review response (grok-4.7 on PR #10, reviewed head e48440e)
+
+All Blocking and Should-fix items were addressed on this branch; every command in the validation table above was re-run afterwards with the results shown (the numbers are the current head's).
+
+- Blocking — UTC lane not clipped to the requested interval and always labeled Complete: the engine now emits a UTC-lane point only when the bucket is fully inside the effective interval (`contains_bucket`), so out-of-range or edge-crossing UTC buckets are never drawn. Proven by new core tests `utc_lane_only_shows_buckets_fully_inside_the_selection` (a single New York day overlapping the 3-day seeded UTC partition yields an empty lane, null total, and a `BucketBoundaryMismatch` exclusion) and the updated `non_utc_zone_keeps_utc_buckets_in_a_separate_lane` (now expects two in-range UTC points starting 2024-03-02, since the 2024-03-01 UTC bucket crosses the New York left edge).
+- Should-fix — frontend dropped point/statistics coverage: `StatisticsScreen` now surfaces every non-complete coverage row per point — partial buckets render as faint `.bar-partial` bars and the chart's accessible description appends the localized status and reason (e.g. `(partial — not yet settled)`); the top-level `stats.coverage` rows are the same per-point rows, so nothing reported by the backend is dropped. New keys `statistics.coverage.*` exist in both catalogs (103 keys, parity check green). Proven by frontend test `marks partial buckets instead of presenting them as final`.
+- Should-fix — a scope listed as excluded could still contribute facts: a scope is now excluded only when it has no compatible facts at all (`BucketBoundaryMismatch` when incompatible ones exist, otherwise `NoData`); a mixed scope keeps contributing to the total while its UTC days appear in the lane. Proven by new core test `mixed_scope_stays_in_the_total_and_is_not_listed_as_excluded` (total = 42 from the compatible fact, no exclusion entry, two UTC-lane points).
+- Should-fix — `JournalError` mapped `StorageError::ResourceLimit` to `Validation`: `JournalError::ResourceLimit` is a new variant so the sealed category survives the journal boundary (journal errors never reach the wire directly; the command surface already maps storage `ResourceLimit` to the sealed `ErrorCode::ResourceLimit`).
+- Nit — PRD status text contradicted the ticked boxes: `prd.md` planning status now points at validation.md evidence.
+- Nit — `state_metric` mapped any unknown metric id (including a missing `spend`) to `Unit::Tokens`: a missing spend marker now carries `Unit::Money(USD)`; only genuinely unknown ids fall back to tokens.
+- Nit — chart labels sliced the UTC date prefix: point labels are now the bucket-start calendar date in the bucket's own zone via `Intl.DateTimeFormat`, correct for zones east of UTC.
+- Nit — traceability A14 slightly overclaimed: the bullet now states that fixtures publish input/output-only facts (query path adds no subcounts) and that `TokenFact::recorded_total()` is the implemented, unit-tested governing rule.
+
+Nits not listed here were judged out of scope or already correct; the rest of the review's "looks good" items needed no change.

@@ -154,6 +154,40 @@ dd {
   fill: #2563eb;
 }
 
+/* Statistics lanes: partial buckets are drawn faint, unknown buckets empty. */
+.statistics-chart {
+  margin: 0;
+}
+
+.statistics-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.bar {
+  fill: #2563eb;
+}
+
+.bar-partial {
+  fill-opacity: 0.35;
+}
+
+.bar-unknown {
+  fill: transparent;
+}
+
+.bar-label {
+  fill: currentColor;
+  font-size: 0.7rem;
+}
+
+.statistics-chart figcaption {
+  color: #595959;
+  font-size: 0.9rem;
+  margin-top: 0.5rem;
+}
+
 .chart figcaption {
   color: #595959;
   font-size: 0.9rem;

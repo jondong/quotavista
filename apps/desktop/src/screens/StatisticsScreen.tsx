@@ -7,12 +7,13 @@ import {
 } from "../ipc";
 import { useI18n, type MessageKey } from "../i18n";
 import type {
+  CoverageDto,
   Grain,
 
   StatisticsDto,
   StatisticsPoint,
 } from "../generated/contracts";
-import MetricValue, { ReasonText } from "../components/MetricValue";
+import MetricValue, { REASON_KEYS, ReasonText } from "../components/MetricValue";
 
 // The prototype reports in UTC until P1-10 wires the persisted reporting zone.
 const REPORTING_ZONE = "UTC";
@@ -114,11 +115,30 @@ function pointValue(point: StatisticsPoint): string | null {
   return metric?.value ?? null;
 }
 
-// Calendar date that begins the bucket, shown as the point label.
-function pointLabel(point: StatisticsPoint): string {
-  return point.interval.start.slice(0, 10);
+const COVERAGE_KEYS: Record<string, MessageKey> = {
+  complete: "statistics.coverage.complete",
+  partial: "statistics.coverage.partial",
+  missing: "statistics.coverage.missing",
+  unsupported: "statistics.coverage.unsupported",
+};
+
+// First non-complete coverage row the backend attached to a point, if any.
+function pointCoverage(point: StatisticsPoint): CoverageDto | undefined {
+  return point.coverage.find((row) => row.status !== "complete");
 }
 
+// Calendar date that begins the bucket, in the bucket's own zone. A plain UTC
+// slice would show the wrong date for zones east of UTC.
+function pointLabel(point: StatisticsPoint): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: point.zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(point.interval.start));
+  const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
 function LaneChart({
   lane,
   laneIndex,
@@ -131,6 +151,7 @@ function LaneChart({
   const { t, formatTokens } = useI18n();
   const values = lane.points.map(pointValue);
   const known = values.filter((value): value is string => value !== null);
+  const coverageOf = lane.points.map(pointCoverage);
   const descriptionId = `statistics-chart-description-${laneIndex}`;
   if (known.length === 0) {
     return (
@@ -159,7 +180,9 @@ function LaneChart({
                 y={200 - height}
                 width="80"
                 height={height}
-                className={value === null ? "bar bar-unknown" : "bar"}
+                className={
+                  value === null ? "bar bar-unknown" : coverageOf[index] ? "bar bar-partial" : "bar"
+                }
               />
               <text x={index * 100 + 50} y="216" textAnchor="middle" className="bar-label">
                 {pointLabel(point)}
@@ -173,7 +196,20 @@ function LaneChart({
         {lane.points
           .map((point, index) => {
             const value = values[index];
-            return `${pointLabel(point)}: ${value === null ? t("common.value.unknown") : formatTokens(value)}`;
+            const valueText =
+              value === null ? t("common.value.unknown") : formatTokens(value);
+            const coverage = coverageOf[index];
+            if (!coverage) return `${pointLabel(point)}: ${valueText}`;
+            const statusKey = COVERAGE_KEYS[coverage.status];
+            const status = statusKey ? t(statusKey) : coverage.status;
+            const reasonKey = coverage.reason ? REASON_KEYS[coverage.reason] : undefined;
+            const reason = coverage.reason
+              ? reasonKey
+                ? t(reasonKey)
+                : coverage.reason
+              : null;
+            const detail = reason ? `${status} — ${reason}` : status;
+            return `${pointLabel(point)}: ${valueText} (${detail})`;
           })
           .join("; ")}
       </figcaption>

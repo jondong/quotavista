@@ -31,4 +31,4 @@ No live usage totals, estimates from balances/quota differences, provider comple
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Ready for task review against the baseline. No unresolved product decision blocks this plan. Technical choices were checked against current official documentation during implementation. All acceptance criteria are ticked with the evidence recorded in validation.md.

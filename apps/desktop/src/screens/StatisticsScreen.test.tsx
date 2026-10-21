@@ -230,6 +230,38 @@ describe("StatisticsScreen", () => {
     expect(screen.getAllByText("1,234,567,890,123").length).toBeGreaterThan(0);
   });
 
+  it("marks partial buckets instead of presenting them as final", async () => {
+    fixture = statisticsData({
+      totals: [
+        metric({
+          value: "1234567890123",
+          availability: "available",
+          freshness: "current",
+          reason: null,
+        }),
+      ],
+      series: [
+        {
+          ...point("1234567890123", "2026-10-15T00:00:00Z", "2026-10-16T00:00:00Z"),
+          coverage: [
+            {
+              interval: { start: "2026-10-15T00:00:00Z", end: "2026-10-16T00:00:00Z" },
+              status: "partial",
+              reason: "not_yet_settled",
+            },
+          ],
+        },
+      ],
+    });
+    renderScreen();
+    await screen.findAllByText("1,234,567,890,123");
+    const description = document.getElementById("statistics-chart-description-0");
+    expect(description?.textContent).toContain(
+      "2026-10-15: 1,234,567,890,123 (partial — not yet settled)",
+    );
+    expect(document.querySelector(".bar-partial")).not.toBeNull();
+  });
+
   it("keeps the previous view when a reload fails", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     renderScreen();

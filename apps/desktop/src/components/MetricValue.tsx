@@ -2,7 +2,7 @@ import { useI18n, type MessageKey } from "../i18n";
 import type { MetricDto } from "../generated/contracts";
 
 /** Catalog key for each wire-level reason code. */
-const REASON_KEYS: Record<string, MessageKey> = {
+export const REASON_KEYS: Record<string, MessageKey> = {
   permission_required: "statistics.reason.permissionRequired",
   not_yet_settled: "statistics.reason.notYetSettled",
   outside_lookback: "statistics.reason.outsideLookback",

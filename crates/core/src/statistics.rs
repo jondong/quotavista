@@ -254,6 +254,9 @@ fn state_metric(
         TOKENS | RECORDED_TOKENS => crate::domain::Unit::Tokens,
         QUOTA_REMAINING => crate::domain::Unit::Ratio,
         QUOTA_CONSUMED => crate::domain::Unit::PercentagePoints,
+        // A missing spend marker still carries the money unit (the fixture
+        // currency is USD); only genuinely unknown ids fall back to tokens.
+        SPEND => crate::domain::Unit::Money("USD".parse().expect("literal currency code is valid")),
         _ => crate::domain::Unit::Tokens,
     };
     MetricEntry {
@@ -505,6 +508,15 @@ pub fn aggregate(
     let mut utc_days: Vec<(Interval, TokenTotal)> = Vec::new();
     for scope in &facts {
         for (iv, tokens) in &scope.utc {
+            // Only complete source buckets fully inside the selected interval
+            // belong to the lane; out-of-range or edge-crossing buckets must
+            // not be drawn as part of the selection.
+            let in_range = range
+                .effective
+                .is_some_and(|effective| effective.contains_bucket(*iv));
+            if !in_range {
+                continue;
+            }
             match utc_days.iter_mut().find(|(day, _)| *day == *iv) {
                 Some((_, total)) => *total = total.checked_add(*tokens)?,
                 None => utc_days.push((*iv, *tokens)),
@@ -547,13 +559,16 @@ pub fn aggregate(
     let mut any_compatible = false;
     let mut any_incompatible = false;
     for (scope, facts) in scopes.iter().zip(&facts) {
-        let excluded_reason = if !facts.utc.is_empty() || facts.other_incompatible > 0 {
+        // A scope is excluded only when it contributes nothing compatible:
+        // compatible facts stay in the total, and any UTC-only days of a
+        // contributing scope are visible in the UTC lane instead.
+        let excluded_reason = if !facts.compatible.is_empty() {
+            None
+        } else if !facts.utc.is_empty() || facts.other_incompatible > 0 {
             any_incompatible = true;
             Some(Reason::BucketBoundaryMismatch)
-        } else if facts.compatible.is_empty() {
-            Some(Reason::NoData)
         } else {
-            None
+            Some(Reason::NoData)
         };
         if let Some(reason) = excluded_reason {
             excluded.push(ExcludedScope {
@@ -852,14 +867,20 @@ mod tests {
             .iter()
             .filter(|p| p.zone == Tz::UTC)
             .collect();
-        assert_eq!(utc_points.len(), 3);
+        // Only UTC buckets fully inside the selection appear: Mar 2 and Mar 3
+        // are in, while the Mar 1 bucket crosses the left edge (05:00Z) and
+        // stays out of the lane.
+        assert_eq!(utc_points.len(), 2);
         assert_eq!(
             utc_points[0].interval,
             Interval {
-                start: instant("2024-03-01T00:00:00Z"),
-                end: instant("2024-03-02T00:00:00Z"),
+                start: instant("2024-03-02T00:00:00Z"),
+                end: instant("2024-03-03T00:00:00Z"),
             }
         );
+        assert!(utc_points
+            .iter()
+            .all(|p| p.coverage[0].status == CoverageStatus::Complete));
         let local_points: Vec<&SeriesPoint> = statistics
             .series
             .iter()
@@ -870,6 +891,104 @@ mod tests {
         assert!(local_points
             .iter()
             .all(|p| p.coverage[0].reason == Some(Reason::BucketBoundaryMismatch)));
+    }
+
+    #[test]
+    fn utc_lane_only_shows_buckets_fully_inside_the_selection() {
+        // Regression: a single New York day overlaps the seeded 3-day UTC
+        // partition, but no UTC bucket is fully inside it, so the lane must
+        // be empty rather than listing out-of-range buckets as complete.
+        let mut kimi = scope("synthetic-scope-kimi");
+        kimi.partitions.push(utc_partition(
+            "synthetic-scope-kimi",
+            NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
+            1_000,
+        ));
+        let statistics = aggregate(
+            &range(
+                "2024-03-02",
+                "2024-03-02",
+                "America/New_York",
+                "2024-03-04T12:00:00Z",
+            ),
+            Grain::Day,
+            &[kimi],
+        )
+        .unwrap();
+        assert!(statistics.series.iter().all(|p| p.zone != Tz::UTC));
+        assert_eq!(total_value(&statistics), None);
+        assert_eq!(
+            statistics.excluded,
+            vec![ExcludedScope {
+                scope_id: "synthetic-scope-kimi".into(),
+                metric_id: RECORDED_TOKENS.into(),
+                reason: Reason::BucketBoundaryMismatch,
+            }]
+        );
+    }
+
+    #[test]
+    fn mixed_scope_stays_in_the_total_and_is_not_listed_as_excluded() {
+        // One compatible reporting-zone day plus UTC-only days: the
+        // compatible fact stays in the total and the UTC days are visible in
+        // the lane, so the scope must not carry an exclusion entry.
+        let mut kimi = scope("synthetic-scope-kimi");
+        kimi.partitions.push(utc_partition(
+            "synthetic-scope-kimi",
+            NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
+            1_000,
+        ));
+        let ny_day = Interval {
+            start: instant("2024-03-02T05:00:00Z"),
+            end: instant("2024-03-03T05:00:00Z"),
+        };
+        kimi.partitions.push(StoredPartition {
+            partition: Partition {
+                scope_id: "synthetic-scope-kimi".into(),
+                product_key: String::new(),
+                dataset: "shared-pool".into(),
+                metric: TOKENS.into(),
+                interval: ny_day,
+                grain: "P1D".into(),
+                dimensions: String::new(),
+                authority: Provenance::Synthetic,
+            },
+            facts: vec![Fact {
+                identity: FactIdentity::Bucket,
+                interval: ny_day,
+                value: Value::Tokens(TokenTotal(42)),
+                source_revision: "synthetic".into(),
+            }],
+            coverage: vec![CoverageRow {
+                interval: ny_day,
+                status: CoverageStatus::Complete,
+                reason: None,
+                zone: "America/New_York".into(),
+            }],
+            data_revision: 1,
+            successful_sync_at: ny_day.end,
+            watermark: "synthetic".into(),
+        });
+        let statistics = aggregate(
+            &range(
+                "2024-03-01",
+                "2024-03-03",
+                "America/New_York",
+                "2024-03-04T12:00:00Z",
+            ),
+            Grain::Day,
+            &[kimi],
+        )
+        .unwrap();
+        assert_eq!(total_value(&statistics), Some(TokenTotal(42)));
+        assert!(statistics.excluded.is_empty());
+        let utc_points: Vec<&SeriesPoint> = statistics
+            .series
+            .iter()
+            .filter(|p| p.zone == Tz::UTC)
+            .collect();
+        // The Mar 2 and Mar 3 UTC buckets are fully inside; Mar 1 crosses.
+        assert_eq!(utc_points.len(), 2);
     }
 
     #[test]
