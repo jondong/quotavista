@@ -584,39 +584,37 @@ pub async fn remove_connection(
 
     let connection = load_connection(state, connection_id).await?;
     if connection.lifecycle == Lifecycle::DeletionPending {
-        if connection.lifecycle == Lifecycle::DeletionPending {
-            // A removal already in flight: the retry finishes it. The operation
-            // id comes from the incomplete projection, which survives restarts.
-            let pending = state
-                .repository
-                .operations(Some(connection_id.as_str()))
-                .await
-                .map_err(storage_error)?;
-            match pending
-                .iter()
-                .find(|record| record.kind == JournalOperationKind::Delete)
-            {
-                Some(existing) => {
-                    let operation_id = existing.operation_id.clone();
-                    return finish_removal(state, coordinator, connection_id, &operation_id).await;
-                }
-                None => {
-                    // Recovery already ran the owed cleanup (the coordinator
-                    // finishes pending deletions while reopening), but the row
-                    // removal is this layer's job: drop it now and acknowledge.
-                    state
-                        .repository
-                        .delete_connection(connection_id.as_str())
-                        .await
-                        .map_err(storage_error)?;
-                    commit_and_publish(state, connection_id.as_str()).await?;
-                    let operation_id = identity::mint_id("delete");
-                    return completed_operation(
-                        &operation_id,
-                        connection_id.as_str(),
-                        OperationKind::Delete,
-                    );
-                }
+        // A removal already in flight: the retry finishes it. The operation
+        // id comes from the incomplete projection, which survives restarts.
+        let pending = state
+            .repository
+            .operations(Some(connection_id.as_str()))
+            .await
+            .map_err(storage_error)?;
+        match pending
+            .iter()
+            .find(|record| record.kind == JournalOperationKind::Delete)
+        {
+            Some(existing) => {
+                let operation_id = existing.operation_id.clone();
+                return finish_removal(state, coordinator, connection_id, &operation_id).await;
+            }
+            None => {
+                // Recovery already ran the owed cleanup (the coordinator
+                // finishes pending deletions while reopening), but the row
+                // removal is this layer's job: drop it now and acknowledge.
+                state
+                    .repository
+                    .delete_connection(connection_id.as_str())
+                    .await
+                    .map_err(storage_error)?;
+                commit_and_publish(state, connection_id.as_str()).await?;
+                let operation_id = identity::mint_id("delete");
+                return completed_operation(
+                    &operation_id,
+                    connection_id.as_str(),
+                    OperationKind::Delete,
+                );
             }
         }
     }

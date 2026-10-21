@@ -368,7 +368,6 @@ async fn same_identity_rotation_preserves_history() {
     let (_dir, state, _sink) = fixture().await;
     let operation = connect(&state, SECRET_A).await;
     let id = operation.connection_id.expect("setup names the connection");
-    let generation = generation_of(&state, id.as_str()).await;
 
     // Refresh first so the connection carries published history.
     let refreshed = run_ok(
