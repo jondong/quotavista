@@ -677,6 +677,10 @@ async fn pre_journal_rejection_cleans_the_staged_candidate() {
     // journal intent. Store availability is restored first: the refusal
     // itself must remove the staged copy while the store is healthy.
     store.set_fail_reference_deletes(false);
+    // The committed rotation bumped the generation even though its cleanup
+    // is pending; re-read it so the request passes the revision guard and
+    // actually reaches the coordinator's fence refusal.
+    let generation = generation_of(&state, id.as_str()).await;
     let refused = run(&state, rotate_request(id.as_str(), generation, SECRET_A)).await;
     assert!(
         matches!(
