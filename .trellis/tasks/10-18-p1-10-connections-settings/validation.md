@@ -29,16 +29,16 @@ Criterion, method, result. All Rust tests below live in `apps/desktop/src-tauri/
 
 - `invalid_aliases_and_secrets_fail_safely` (Rust): empty alias, 81-code-point alias, header-invalid secret (embedded `\n`), and a 65,537-byte secret each answer `Envelope::Error` with `code: "validation"` (safe message, no echo of the rejected value) and leave no connection row, scope, or staged reference behind.
 - `stale_revisions_fail_safely` (Rust): a rename with a stale `expected_config_revision` and a settings save with a stale `expected_settings_revision` both answer `code: "conflict"` without changing the stored alias or settings.
-- `secrets_never_leave_the_store` (Rust): after add and rotate, the serialized `Envelope::Ok` payloads of every command response and the emitted `ChangeEvent` payloads are searched for both secret plaintexts; neither appears.
+- `secrets_never_leave_the_store` (Rust): after add and rotate, the serialized `Envelope::Ok` and `Envelope::Error` payloads of every connection/settings command (connect, rename, disable, enable, rotate, stale-revision rotate, refresh, remove, list) plus the emitted `ChangeEvent` payloads are searched for both secret plaintexts; neither appears.
 - `submits an add with the typed fields and clears the secret after success` (`screens/ConnectionsScreen.test.tsx`): the add form sends `connect_provider` with provider/alias/credential kind/secret/storage mode, the secret input is emptied after the response, and the `localStorage.setItem` spy is never called.
 - `clears the secret after a failed submission and shows the typed error` (same file): a typed validation envelope leaves the secret input cleared and renders the localized validation message.
 - `surfaces a stale-revision conflict, reloads, and never overwrites the newer choice` and `surfaces a validation failure without clobbering the drafts` (`screens/SettingsScreen.test.tsx`): conflict reloads and shows the newer stored values; validation keeps the drafts for correction.
 
 ### Criterion 2 — same-scope rotation preserves history; different identity cannot merge; one active per provider
 
-- `same_identity_rotation_preserves_history` (Rust): a refresh commits facts, then rotation with the same secret re-uses the identical scope key (identity derived from the secret), preserves the committed history, and activates the new reference.
+- `same_identity_rotation_preserves_history` (Rust): a refresh commits facts, then rotation with the same secret re-uses the identical scope key (identity derived from the secret), the previously published usage snapshot is still retained under that scope (`repository.snapshot(...).is_some()`), and the new reference activates.
 - `different_identity_rotation_is_refused_without_merging` (Rust): rotation with a different secret returns a `failed` operation with `next_action: "replace_connection"` and `code: "conflict"`, the connection's generation and alias are unchanged, and the connection still has exactly one scope — no silent merge, the working credential untouched.
-- `racing_candidates_yield_one_active_connection_per_provider` (Rust): two `connect_provider` requests for the same provider race under `tokio::join!`; exactly one succeeds, the other answers `conflict`, and exactly one active connection row exists (pre-check plus the `one_active_provider` partial unique index).
+- `racing_candidates_yield_one_active_connection_per_provider` (Rust): two `connect_provider` requests for the same provider race under `tokio::join!`; exactly one succeeds, the other answers `conflict`, and exactly one connection row of any lifecycle remains afterwards (the losing setup leaves no `pending_setup` ghost row or scope; pre-check plus the `one_active_provider` partial unique index).
 - `reflects a failed rotation without optimistic success` (`screens/ConnectionsScreen.test.tsx`): a failed `replace_credentials` operation renders the operation state as failed with the replace-connection hint; the row is not optimistically updated.
 
 ### Criterion 3 — disable/remove fence late work; deletion pending survives restart; managed-backup guarantees explicitly pending
@@ -72,15 +72,28 @@ Criterion, method, result. All Rust tests below live in `apps/desktop/src-tauri/
 | `./scripts/test-check-core-boundaries.sh` | pass — boundary-gate regression checks passed |
 | `cargo fmt --all -- --check` | pass — no diff |
 | `cargo clippy --locked --workspace --all-targets -- -D warnings` | pass — zero warnings |
-| `cargo test --locked --workspace` | pass — contracts 16, core 18, desktop 39 (14 new connection/settings tests + 25 P1-07), infrastructure 64 + 1 ignored, plus integration/doc suites; 0 failures |
+| `cargo test --locked --workspace` | pass — contracts 16, core 18, desktop 40 (15 new connection/settings tests + 25 P1-07), infrastructure 64 + 1 ignored, plus integration/doc suites; 0 failures |
 | `cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check` | pass — "TypeScript contract is current" |
 | `cargo build --locked -p quotavista-desktop` | pass |
 | `apps/desktop`: `npm ci` | pass |
 | `apps/desktop`: `npm run lint` | pass |
 | `apps/desktop`: `npm run i18n:check` | pass — "Catalog parity OK: 140 keys, placeholders matching in both catalogs" |
-| `apps/desktop`: `npm test` | pass — 60 tests (11 ConnectionsScreen + 8 SettingsScreen + 12 App + 12 ipc + i18n/Overview suites) |
+| `apps/desktop`: `npm test` | pass — 65 tests (13 ConnectionsScreen + 10 SettingsScreen + 13 App + 12 ipc + i18n/Overview suites) |
 | `apps/desktop`: `npm run typecheck` | pass |
 | `apps/desktop`: `npm run build` | pass — Vite production build |
+
+## Review round 1 fixes (2026-10-21, this branch)
+
+A review of the initial PR found three Blocking and three Should-fix findings; all six are fixed on this branch with regression coverage. Evidence:
+
+- **B1 — committed candidate deleted by the caller on cleanup failure.** `connect_provider`/`replace_credentials` no longer delete the candidate reference after `activate_credentials` errors: a pre-commit failure aborts inside the coordinator (journal-owned candidate cleanup), and the caller only removes the freshly created connection row/scope when the candidate never became live (never the reference). Regression: `rotation_cleanup_failure_keeps_the_activated_credential` (Rust) — with reference deletion failing, same-identity rotation answers a retryable `storage_error` while the activated credential stays readable (`SECRET_A` under the current reference), the superseded reference still resolves, the connection stays `active`, and after `recover()` completes the owed cleanup the connection accepts further mutations.
+- **B2 — locale-only revision bump reset unsaved settings drafts.** `SettingsScreen` now resets drafts only when the persisted *content* changed (zone/currency/polling/thresholds), not on every revision bump. Regression: `preserves non-secret form drafts across a language switch` (renderer) now persists the locale through a revision-advancing write (revision 0 → 1) and asserts the unsaved zone draft survives the bump.
+- **B3 — a stale locale retry could overwrite a newer committed choice.** Locale selections are fenced by a generation counter in `SettingsContext.selectLocale`; only the newest issued selection may reload and retry after a conflict. Regression: `an older in-flight locale write never overwrites a newer committed choice` (renderer) — the zh-CN write hangs, the newer en write commits, the older write then conflicts and neither retries, reloads, nor re-persists (exactly three `update_settings` calls total).
+- **S4 — secrets cleared on submission, not after the response settles.** Both credential forms clear the field before any `await`; regression pair `clears the add secret on submission, before the request settles` and `clears the rotation secret on submission, before the request settles` (renderer) assert the empty field and the submitted payload while the request is still an unresolved promise.
+- **S5 — nonzero revision no longer implied an explicit locale choice.** The first persistence of any preference records the displayed locale with it (`SettingsContext.save`); from then on a nonzero revision honestly reflects a locale the user saw. Regression: `records the displayed locale with the first persisted preference and stops pinning afterwards` (renderer) plus `applies a pinned locale from a first save after restart, even for non-locale changes` (App suite, restart semantics).
+- **S6 — losing racing setup left a durable ghost `pending_setup` row.** The racing-candidates test now asserts exactly one connection row of any lifecycle remains (no ghost row/scope), and the backend removes the aborted setup's rows once compensation completes.
+
+The overstated claims called out by the review were corrected: `secrets_never_leave_the_store` now scans every mutation envelope (Ok and Error) plus events, and `same_identity_rotation_preserves_history` asserts the retained usage snapshot. The full validation battery below was re-run after these fixes with the updated counts.
 
 Rust test names above are exactly as they appear in the suites; the renderer test names match the `it(...)` titles in the cited files.
 

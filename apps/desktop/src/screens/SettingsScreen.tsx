@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import LanguageSelect from "../components/LanguageSelect";
 import { useI18n, type MessageKey } from "../i18n";
 import { isIpcError, type IpcError } from "../ipc";
 import { EMPTY_PATCH, useSettings } from "../SettingsContext";
-import type { Polling, SettingsPatch } from "../generated/contracts";
+import type { Polling, SettingsDto, SettingsPatch } from "../generated/contracts";
 
 const POLLING_OPTIONS: ReadonlyArray<Polling> = [
   "disabled",
@@ -45,12 +45,27 @@ export default function SettingsScreen() {
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // Drafts reinitialize whenever the persisted revision changes (initial
-  // load and after a successful save). A pure locale switch leaves them
-  // alone: non-secret form state survives language changes.
+  // Drafts reinitialize when the persisted *content* changes (initial load,
+  // a successful save, a conflict reload). A revision bump that only moves
+  // the locale leaves them alone: unsaved non-secret drafts survive a
+  // language switch, and the zone the user is still editing is not reset by
+  // the locale write that advanced the revision.
+  const previousSettings = useRef<SettingsDto | null>(null);
   const revision = settings?.settings_revision;
   useEffect(() => {
-    if (settings) setDrafts(draftsFromSettings(settings));
+    if (!settings) return;
+    const previous = previousSettings.current;
+    previousSettings.current = settings;
+    if (previous) {
+      const sameContent =
+        previous.reporting_zone === settings.reporting_zone &&
+        previous.display_currency === settings.display_currency &&
+        previous.polling === settings.polling &&
+        previous.quota_threshold === settings.quota_threshold &&
+        previous.balance_threshold === settings.balance_threshold;
+      if (sameContent) return;
+    }
+    setDrafts(draftsFromSettings(settings));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revision]);
 

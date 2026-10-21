@@ -287,19 +287,22 @@ export default function ConnectionsScreen() {
     const alias = addAlias.trim();
     if (!alias || addBusy) return;
     setAddBusy(true);
+    // The submitted value leaves the field at submission, before any await:
+    // clearing is not tied to when (or whether) the response settles, and
+    // input the user types afterwards is their next attempt, untouched here.
+    const { secret } = addDraft;
+    setAddDraft({ ...addDraft, secret: "" });
     try {
       await runAction(() =>
         ipc.connectProvider({
           provider: addProvider,
           alias,
           credential_kind: addDraft.credential_kind,
-          secret: addDraft.secret,
+          secret,
           storage_mode: addDraft.storage_mode,
         }),
       );
     } finally {
-      // The secret never survives a submission, whatever the outcome.
-      setAddDraft({ ...addDraft, secret: "" });
       setAddBusy(false);
     }
   };
@@ -307,18 +310,21 @@ export default function ConnectionsScreen() {
   const submitRotate = async (connectionId: string, revision: string): Promise<void> => {
     if (rotateBusy) return;
     setRotateBusy(true);
+    // Same discipline as the add form: the secret leaves the field at
+    // submission, before the request is even sent.
+    const { secret } = rotateDraft;
+    setRotateDraft({ ...rotateDraft, secret: "" });
     try {
       await runAction(() =>
         ipc.replaceCredentials({
           connection_id: connectionId,
           expected_config_revision: revision,
           credential_kind: rotateDraft.credential_kind,
-          secret: rotateDraft.secret,
+          secret,
           storage_mode: rotateDraft.storage_mode,
         }),
       );
     } finally {
-      setRotateDraft({ ...rotateDraft, secret: "" });
       setRotateBusy(false);
     }
   };

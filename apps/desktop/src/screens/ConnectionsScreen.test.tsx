@@ -344,6 +344,94 @@ describe("connections screen", () => {
     });
   });
 
+
+  it("clears the add secret on submission, before the request settles", async () => {
+    let resolveAdd: ((value: unknown) => void) | null = null;
+    const mutations = route({
+      list: () => listEnvelope([ACTIVE, { ...ACTIVE, connection_id: "held-kimi", alias: "Held" }]),
+      mutation: () =>
+        new Promise((resolve) => {
+          resolveAdd = resolve;
+        }),
+    });
+    render(
+      <I18nProvider>
+        <ConnectionsScreen />
+      </I18nProvider>,
+    );
+    fireEvent.change(await screen.findByLabelText("Connection alias"), {
+      target: { value: "Held" },
+    });
+    fireEvent.change(screen.getByLabelText("Credential (synthetic)"), {
+      target: { value: "held-secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add connection" }));
+
+    // The field is cleared at submission time — the request is still in
+    // flight, so clearing cannot depend on when (or whether) it settles.
+    await waitFor(() => {
+      expect((document.getElementById("add-secret") as HTMLInputElement).value).toBe("");
+    });
+    expect(mutations.at(-1)?.args).toEqual(
+      expect.objectContaining({ alias: "Held", secret: "held-secret" }),
+    );
+    const settleAdd = (payload: unknown) => resolveAdd?.(payload);
+    settleAdd(mutationResult("connect_provider"));
+    expect(await screen.findByText("Held")).not.toBeNull();
+    expect((document.getElementById("add-secret") as HTMLInputElement).value).toBe("");
+  });
+
+  it("clears the rotation secret on submission, before the request settles", async () => {
+    let resolveRotate: ((value: unknown) => void) | null = null;
+    const mutations = route({
+      mutation: () =>
+        new Promise((resolve) => {
+          resolveRotate = resolve;
+        }),
+    });
+    render(
+      <I18nProvider>
+        <ConnectionsScreen />
+      </I18nProvider>,
+    );
+    await screen.findByText("Work Kimi account");
+    fireEvent.click(screen.getByRole("button", { name: "Replace credentials" }));
+    const secret = await waitFor(() => {
+      const input = document.getElementById("rotate-demo-kimi-secret") as HTMLInputElement;
+      expect(input).not.toBeNull();
+      return input;
+    });
+    fireEvent.change(secret, { target: { value: "held-rotation-secret" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Replace credentials" }).at(-1)!);
+
+    await waitFor(() => {
+      expect(
+        (document.getElementById("rotate-demo-kimi-secret") as HTMLInputElement).value,
+      ).toBe("");
+    });
+    expect(mutations.at(-1)?.args).toEqual(
+      expect.objectContaining({ secret: "held-rotation-secret" }),
+    );
+    const settle = (payload: unknown) => resolveRotate?.(payload);
+    settle(
+      envelope("replace_credentials", {
+        operation_id: "op-held",
+        connection_id: "demo-kimi",
+        kind: "replace_credentials",
+        state: "succeeded",
+        next_action: "none",
+        retryable: false,
+        retry_at: null,
+        error: null,
+      }),
+    );
+    expect(
+      await screen.findByText(
+        (_, element) => element?.textContent === "Replace credentials — Completed",
+      ),
+    ).not.toBeNull();
+    expect((document.getElementById("rotate-demo-kimi-secret") as HTMLInputElement).value).toBe("");
+  });
   it("reflects a failed rotation without optimistic success", async () => {
     route({
       mutation: (request) =>

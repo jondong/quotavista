@@ -315,6 +315,34 @@ describe("bilingual shell", () => {
     expect(await screen.findByRole("heading", { name: "Overview" })).not.toBeNull();
     expect(document.documentElement.lang).toBe("en");
   });
+  it("applies a pinned locale from a first save after restart, even for non-locale changes", async () => {
+    // The previous session had a zh-CN system, and the only save ever made
+    // was a refresh-interval change: the first persisted preference records
+    // the displayed locale with it, so this revision-1 row honestly says the
+    // user saw zh-CN, and the restart applies zh-CN instead of flipping to en.
+    await routeInvoke(async (_cmd, args) => {
+      if (args.request.command.command !== "update_settings") {
+        return PROTOTYPE_ENVELOPE;
+      }
+      return {
+        ...SETTINGS_ENVELOPE,
+        data: {
+          ...SETTINGS_ENVELOPE.data,
+          data: {
+            ...SETTINGS_ENVELOPE.data.data,
+            settings_revision: "1",
+            ui_locale: "zh-CN",
+            polling: "disabled",
+          },
+        },
+      };
+    });
+    setNavigatorLanguages(["en-US"]);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "概览" })).not.toBeNull();
+    expect(document.documentElement.lang).toBe("zh-CN");
+  });
+
 
   it("keeps first-launch system detection while the settings row is untouched", async () => {
     // Revision 0 is the seeded row: it must never override detection.

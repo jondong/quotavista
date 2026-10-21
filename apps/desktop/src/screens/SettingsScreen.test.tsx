@@ -155,7 +155,10 @@ describe("settings screen", () => {
     expect(await screen.findByText("Settings saved.")).not.toBeNull();
     await waitFor(() => {
       expect(updateCalls().at(-1)?.changes).toEqual({
-        ui_locale: null,
+        // The first persistence of any preference records the displayed
+        // locale with it, so a nonzero revision always reflects a locale the
+        // user actually saw (chosen or confirmed), never the seed.
+        ui_locale: "en",
         reporting_zone: "Asia/Shanghai",
         display_currency: null,
         polling: "disabled",
@@ -194,10 +197,12 @@ describe("settings screen", () => {
       await screen.findByText(/The settings changed elsewhere; showing the stored values/u),
     ).not.toBeNull();
     // The drafts were reset to the newer persisted truth, not to the stale
-    // local edit.
-    expect(
-      (screen.getByLabelText("Reporting time zone") as HTMLInputElement).value,
-    ).toBe("Europe/Berlin");
+    // local edit. (The reset lands in the revision effect, so wait for it.)
+    await waitFor(() => {
+      expect(
+        (screen.getByLabelText("Reporting time zone") as HTMLInputElement).value,
+      ).toBe("Europe/Berlin");
+    });
   });
 
   it("surfaces a validation failure without clobbering the drafts", async () => {
@@ -227,10 +232,20 @@ describe("settings screen", () => {
 
   it("preserves non-secret form drafts across a language switch", async () => {
     invoke.mockImplementation(async (_cmd: string, invokeArgs?: unknown): Promise<unknown> => {
-      const command = (invokeArgs as {
-        request: { command: { command: string } };
-      }).request.command.command;
-      if (command !== "update_settings") throw new Error("unexpected");
+      const args = (invokeArgs as {
+        request: {
+          command: { command: string; args: { changes?: Record<string, string | null> } };
+        };
+      }).request.command;
+      if (args.command !== "update_settings") throw new Error("unexpected");
+      // The locale write is a real save: it advances the revision. The draft
+      // must survive that bump, because the persisted content did not change.
+      if (args.args.changes?.ui_locale) {
+        return settingsEnvelope({
+          settings_revision: "1",
+          ui_locale: args.args.changes.ui_locale as "en" | "zh-CN",
+        });
+      }
       return settingsEnvelope();
     });
     renderScreen();
@@ -253,6 +268,115 @@ describe("settings screen", () => {
       expect(localeWrite?.changes.ui_locale).toBe("zh-CN");
     });
     expect(window.localStorage.setItem).not.toHaveBeenCalled();
+  });
+
+  it("records the displayed locale with the first persisted preference and stops pinning afterwards", async () => {
+    let revision = 0;
+    let stored: Partial<{
+      ui_locale: "en" | "zh-CN";
+      reporting_zone: string;
+      polling: "disabled" | "one_minute" | "five_minutes" | "fifteen_minutes";
+    }> = {};
+    invoke.mockImplementation(async (_cmd: string, invokeArgs?: unknown): Promise<unknown> => {
+      const args = (invokeArgs as {
+        request: {
+          command: { command: string; args: { changes?: Record<string, string | null> } };
+        };
+      }).request.command;
+      if (args.command !== "update_settings") throw new Error("unexpected");
+      if (args.args.changes && Object.values(args.args.changes).some((value) => value !== null)) {
+        // A save applies its non-null fields and advances the revision.
+        stored = { ...stored, ...args.args.changes } as typeof stored;
+        revision += 1;
+        return settingsEnvelope({ settings_revision: String(revision), ...stored });
+      }
+      return settingsEnvelope({ settings_revision: String(revision), ...stored });
+    });
+    renderScreen();
+    await screen.findByDisplayValue("UTC");
+
+    // First save (a non-locale preference at the seeded revision 0): the
+    // displayed locale is recorded with it, so the stored row can never
+    // silently claim a locale the user never saw.
+    fireEvent.change(screen.getByLabelText("Reporting time zone"), {
+      target: { value: "Europe/Berlin" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Settings saved.");
+    expect(updateCalls().at(-1)?.changes).toEqual({
+      ui_locale: "en",
+      reporting_zone: "Europe/Berlin",
+      display_currency: null,
+      polling: null,
+      quota_threshold: null,
+      balance_threshold: null,
+    });
+
+    // A later save at a nonzero revision pins nothing: the locale is already
+    // an explicit recorded choice.
+    fireEvent.change(screen.getByLabelText("Automatic refresh"), {
+      target: { value: "disabled" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+    await waitFor(() => {
+      expect(updateCalls().at(-1)?.expected_settings_revision).toBe("1");
+    });
+    expect(updateCalls().at(-1)?.changes).toEqual({
+      ui_locale: null,
+      reporting_zone: null,
+      display_currency: null,
+      polling: "disabled",
+      quota_threshold: null,
+      balance_threshold: null,
+    });
+  });
+
+  it("an older in-flight locale write never overwrites a newer committed choice", async () => {
+    let attempts = 0;
+    let releaseOlderWrite: ((value: unknown) => void) | null = null;
+    invoke.mockImplementation(async (_cmd: string, invokeArgs?: unknown): Promise<unknown> => {
+      const args = (invokeArgs as {
+        request: {
+          command: { command: string; args: { changes?: Record<string, string | null> } };
+        };
+      }).request.command;
+      if (args.command !== "update_settings") throw new Error("unexpected");
+      attempts += 1;
+      const locale = args.args.changes?.ui_locale ?? null;
+      if (attempts === 1) return settingsEnvelope();
+      if (locale === "zh-CN") {
+        // The older write hangs until the newer one has committed.
+        return new Promise((resolve) => {
+          releaseOlderWrite = resolve;
+        });
+      }
+      if (locale === "en") {
+        // The newer write commits; the older one then settles as a conflict.
+        releaseOlderWrite?.(errorPayload("conflict", "stale revision"));
+        return settingsEnvelope({ settings_revision: "2", ui_locale: "en" });
+      }
+      // Any later read reflects the newer committed choice.
+      return settingsEnvelope({ settings_revision: "2", ui_locale: "en" });
+    });
+    renderScreen();
+    await screen.findByDisplayValue("UTC");
+
+    fireEvent.change(screen.getByLabelText("Interface language"), {
+      target: { value: "zh-CN" },
+    });
+    await screen.findByLabelText("界面语言");
+    // Switch back while the zh-CN write is still in flight.
+    fireEvent.change(screen.getByLabelText("界面语言"), { target: { value: "en" } });
+
+    // The newer choice is the last locale write, and the older one — after
+    // its late conflict — never retries, never reloads, never re-persists.
+    await waitFor(() => {
+      expect(updateCalls().at(-1)?.changes.ui_locale).toBe("en");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(updateCalls().filter((call) => call.changes.ui_locale === "zh-CN")).toHaveLength(1);
+    expect(attempts).toBe(3);
+    expect(screen.getByLabelText("Interface language")).not.toBeNull();
   });
 
   it("offers refresh Off explicitly alongside the intervals", async () => {

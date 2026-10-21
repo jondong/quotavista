@@ -43,7 +43,13 @@ pub struct RoutingSecrets {
     session: Arc<SessionSecrets>,
     /// Test-only injection point so the deletion-recovery flows can exercise a
     /// failing reference cleanup. Production never sets it.
+    /// Test-only injection point so the deletion-recovery flows can exercise a
+    /// failing reference cleanup. Production never sets it.
     fail_reference_ops: AtomicBool,
+    /// Test-only injection point that fails reference *deletion* only, so a
+    /// rotation can commit and then fail the superseded-reference cleanup.
+    /// Production never sets it.
+    fail_reference_deletes: AtomicBool,
 }
 
 impl RoutingSecrets {
@@ -55,6 +61,7 @@ impl RoutingSecrets {
             native: None,
             session: Arc::new(SessionSecrets::new()),
             fail_reference_ops: AtomicBool::new(false),
+            fail_reference_deletes: AtomicBool::new(false),
         }
     }
 
@@ -66,6 +73,7 @@ impl RoutingSecrets {
             native: Some(native),
             session: Arc::new(SessionSecrets::new()),
             fail_reference_ops: AtomicBool::new(false),
+            fail_reference_deletes: AtomicBool::new(false),
         }
     }
 
@@ -78,6 +86,12 @@ impl RoutingSecrets {
     /// Test-only failure injection for reference cleanup.
     pub fn set_fail_reference_ops(&self, on: bool) {
         self.fail_reference_ops.store(on, Ordering::SeqCst);
+    }
+
+    /// Test-only failure injection for reference deletion only: writes still
+    /// succeed, so an activation can commit before its cleanup is owed.
+    pub fn set_fail_reference_deletes(&self, on: bool) {
+        self.fail_reference_deletes.store(on, Ordering::SeqCst);
     }
 
     fn check_injected_failure(&self) -> Result<(), SecretStoreError> {
@@ -131,6 +145,9 @@ impl SecretReferenceStore for RoutingSecrets {
 
     fn delete_reference(&self, reference: &str) -> Result<(), SecretStoreError> {
         self.check_injected_failure()?;
+        if self.fail_reference_deletes.load(Ordering::SeqCst) {
+            return Err(SecretStoreError::Unavailable);
+        }
         self.route_reference(reference)?.delete_reference(reference)
     }
 }
@@ -341,7 +358,27 @@ pub async fn connect_provider(
         )
         .await
     {
-        let _ = store.delete_reference(&reference);
+        // The journal owns candidate compensation on activation failure:
+        // `activate_credentials` aborts an uncommitted attempt by deleting
+        // the candidate itself, and a *committed* attempt keeps that
+        // reference as the live credential while its superseded-reference
+        // cleanup is pending. Touching the store here could delete the
+        // credential that was just activated, so the caller never does.
+        // What is ours to clean are the rows this request created: when the
+        // candidate never activated, the PendingSetup row and its scope are
+        // a ghost of a refused setup (including the one-active-per-provider
+        // race) and are removed here.
+        let candidate_live = matches!(
+            state.repository.credential_ref(connection_id.as_str()).await,
+            Ok(Some(current)) if current == reference
+        );
+        if !candidate_live {
+            let _ = state
+                .repository
+                .delete_connection(connection_id.as_str())
+                .await;
+            let _ = commit_and_publish(state, &connection_id).await;
+        }
         return Err(journal_error(&error));
     }
     drop(coordinator);
@@ -442,7 +479,11 @@ pub async fn replace_credentials(
         )
         .await
     {
-        let _ = store.delete_reference(&reference);
+        // Never touch the store on an activation failure: an aborted attempt
+        // already had its uncommitted candidate deleted by the coordinator,
+        // and a committed attempt (whose superseded-reference cleanup failed
+        // and is pending) holds the candidate as the live credential. The
+        // journal owns both compensations, across restarts.
         return Err(journal_error(&error));
     }
     drop(coordinator);

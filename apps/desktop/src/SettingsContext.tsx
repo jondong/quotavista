@@ -78,7 +78,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       setError("settings.error.loadFailed");
       return null;
     }
-  }, [t]);
+  }, []);
 
   // Apply the persisted locale once the first read settles. Only an
   // explicitly saved choice (revision > 0) outranks system detection; the
@@ -99,8 +99,15 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Locale selections are fenced by a generation counter: only the newest
+  // issued selection may retry after a conflict or apply its result. An
+  // older in-flight write must never overwrite a newer committed choice —
+  // the visible locale and the persisted one stay the same.
+  const selectionSeq = useRef(0);
+
   const selectLocale = useCallback(
     (next: Locale) => {
+      const seq = ++selectionSeq.current;
       // The switch itself is immediate and never blocked by the backend.
       setLocale(next);
       void (async () => {
@@ -108,53 +115,66 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         if (!current) {
           // Unreadable settings cannot hold the choice either; the switch
           // itself already applied. Surface that it was not saved.
-          setError("settings.error.localeNotSaved");
+          if (seq === selectionSeq.current) setError("settings.error.localeNotSaved");
           return;
         }
-        const expected = current.settings_revision;
-        try {
-          const saved = await ipc.updateSettings({
-            expected_settings_revision: expected,
+        if (seq !== selectionSeq.current) return;
+        const persist = async (revision: string): Promise<SettingsDto> =>
+          ipc.updateSettings({
+            expected_settings_revision: revision,
             changes: { ...EMPTY_PATCH, ui_locale: next },
           });
-          setSettings(saved);
+        try {
+          const saved = await persist(current.settings_revision);
+          if (seq === selectionSeq.current) setSettings(saved);
         } catch (persistError) {
-          if (isConflict(persistError)) {
-            // Someone else moved the revision: reload once and retry with
-            // the fresh value, never overwriting a newer choice blindly.
-            try {
-              const fresh = await read();
-              if (!fresh || fresh.ui_locale === next) return;
-              const saved = await ipc.updateSettings({
-                expected_settings_revision: fresh.settings_revision,
-                changes: { ...EMPTY_PATCH, ui_locale: next },
-              });
-              setSettings(saved);
-              return;
-            } catch {
-              // fall through to the error note
-            }
+          if (!isConflict(persistError)) {
+            if (seq === selectionSeq.current) setError("settings.error.localeNotSaved");
+            return;
           }
-          setError("settings.error.localeNotSaved");
+          // Someone else moved the revision: reload once and retry with the
+          // fresh value — never past a newer selection.
+          try {
+            if (seq !== selectionSeq.current) return;
+            const fresh = await read();
+            if (seq !== selectionSeq.current || !fresh) return;
+            if (fresh.ui_locale === next) {
+              setSettings(fresh);
+              return;
+            }
+            const saved = await persist(fresh.settings_revision);
+            if (seq === selectionSeq.current) setSettings(saved);
+          } catch {
+            if (seq === selectionSeq.current) setError("settings.error.localeNotSaved");
+          }
         }
       })();
     },
-    [read, setLocale, settings, t],
+    [read, setLocale, settings],
   );
 
   const save = useCallback(
     async (changes: SettingsPatch): Promise<SettingsDto> => {
       const current = settings ?? (await read());
       if (!current) throw new Error(t("settings.error.loadFailed"));
+      // The first persistence of any preference also records the locale the
+      // user is actually seeing: from then on a nonzero revision always
+      // means an explicit locale choice (chosen or confirmed at save time),
+      // never the seeded row silently overriding system detection.
+      const hasChanges = Object.values(changes).some((value) => value !== null);
+      const patch =
+        hasChanges && changes.ui_locale === null && current.settings_revision === "0"
+          ? { ...changes, ui_locale: locale }
+          : changes;
       const saved = await ipc.updateSettings({
         expected_settings_revision: current.settings_revision,
-        changes,
+        changes: patch,
       });
       setSettings(saved);
       setError(null);
       return saved;
     },
-    [read, settings, t],
+    [locale, read, settings, t],
   );
 
   const dismissError = useCallback(() => setError(null), []);

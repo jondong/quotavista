@@ -10,6 +10,7 @@ use quotavista_contracts::{
     OperationState, Polling, SettingsDto,
 };
 use quotavista_core::domain::Lifecycle;
+use quotavista_core::secrets::SecretStore;
 use quotavista_core::storage::{Repository, WriteContext};
 use quotavista_providers::synthetic_providers;
 use tempfile::TempDir;
@@ -325,39 +326,129 @@ async fn stale_revisions_fail_safely() {
 
 /// PRD criterion 1: the credential value never appears in any response,
 /// event, or error the backend produces.
+async fn run_capturing(
+    state: &AppState,
+    command: serde_json::Value,
+    responses: &mut Vec<String>,
+) -> Envelope {
+    let envelope = run(state, command).await;
+    responses.push(serde_json::to_string(&envelope).expect("envelope serializes"));
+    envelope
+}
+
 #[tokio::test]
 async fn secrets_never_leave_the_store() {
     let (_dir, state, sink) = fixture().await;
-    let operation = connect(&state, SECRET_A).await;
-    let id = operation.connection_id.expect("setup names the connection");
-    let generation = generation_of(&state, id.as_str()).await;
+    let mut responses: Vec<String> = Vec::new();
 
-    // A same-identity rotation with a fresh value still never echoes it.
-    let rotated = run_ok(&state, rotate_request(id.as_str(), generation, SECRET_A)).await;
-    let rotated = operation_of(rotated);
-    assert_eq!(rotated.state, OperationState::Succeeded);
-
-    // An error path (stale revision) never echoes it either.
-    let _ = run(
+    // Every response this flow produces is captured and scanned — the
+    // connect, rename, disable, enable, rotate, refresh, and remove results,
+    // the stale-revision error, and the final list read — not only the list.
+    let connected = run_capturing(
         &state,
-        rotate_request(id.as_str(), generation + 100, SECRET_B),
+        connect_request("kimi", "Synthetic Kimi", SECRET_A),
+        &mut responses,
+    )
+    .await;
+    let id = match connected {
+        Envelope::Ok { ref data, .. } => match &**data {
+            CommandResult::ConnectProvider(operation) => operation
+                .connection_id
+                .clone()
+                .expect("setup names the connection"),
+            other => panic!("expected ConnectProvider, got {other:?}"),
+        },
+        other => panic!("expected Envelope::Ok, got {other:?}"),
+    };
+
+    let generation = generation_of(&state, id.as_str()).await;
+    let _ = run_capturing(
+        &state,
+        rename_request(id.as_str(), generation, "Renamed"),
+        &mut responses,
+    )
+    .await;
+    let generation = generation_of(&state, id.as_str()).await;
+    let _ = run_capturing(
+        &state,
+        enabled_request(id.as_str(), generation, false),
+        &mut responses,
+    )
+    .await;
+    let generation = generation_of(&state, id.as_str()).await;
+    let _ = run_capturing(
+        &state,
+        enabled_request(id.as_str(), generation, true),
+        &mut responses,
     )
     .await;
 
-    let list = serde_json::to_string(
-        &run_ok(
-            &state,
-            canonical(serde_json::json!({ "command": "list_connections" })),
-        )
-        .await,
+    // A same-identity rotation with a fresh value still never echoes it.
+    let generation = generation_of(&state, id.as_str()).await;
+    let rotated = run_capturing(
+        &state,
+        rotate_request(id.as_str(), generation, SECRET_A),
+        &mut responses,
     )
-    .expect("list serializes");
-    assert!(!list.contains(SECRET_A));
-    assert!(!list.contains(SECRET_B));
+    .await;
+    match rotated {
+        Envelope::Ok { ref data, .. } => match &**data {
+            CommandResult::ReplaceCredentials(operation) => {
+                assert_eq!(operation.state, OperationState::Succeeded);
+            }
+            other => panic!("expected ReplaceCredentials, got {other:?}"),
+        },
+        other => panic!("expected Envelope::Ok, got {other:?}"),
+    }
+
+    // An error path (stale revision) never echoes it either.
+    let generation = generation_of(&state, id.as_str()).await;
+    let _ = run_capturing(
+        &state,
+        rotate_request(id.as_str(), generation + 100, SECRET_B),
+        &mut responses,
+    )
+    .await;
+
+    let _ = run_capturing(
+        &state,
+        canonical(serde_json::json!({
+            "command": "refresh_connections",
+            "args": { "target": { "kind": "all" } },
+        })),
+        &mut responses,
+    )
+    .await;
+
+    let generation = generation_of(&state, id.as_str()).await;
+    let _ = run_capturing(
+        &state,
+        remove_request(id.as_str(), generation),
+        &mut responses,
+    )
+    .await;
+
+    let _ = run_capturing(
+        &state,
+        canonical(serde_json::json!({ "command": "list_connections" })),
+        &mut responses,
+    )
+    .await;
+
+    for (index, response) in responses.iter().enumerate() {
+        assert!(
+            !response.contains(SECRET_A),
+            "no secret in response {index}"
+        );
+        assert!(
+            !response.contains(SECRET_B),
+            "no secret in response {index}"
+        );
+    }
     for event in sink.events() {
         let text = serde_json::to_string(&event).expect("event serializes");
         assert!(!text.contains(SECRET_A), "no secret in change events");
-        assert!(!text.contains(SECRET_B));
+        assert!(!text.contains(SECRET_B), "no secret in change events");
     }
 }
 
@@ -416,8 +507,138 @@ async fn same_identity_rotation_preserves_history() {
         .collect();
     assert_eq!(scope_before, scope_after, "rotation preserves the scope");
 
+    // The published history bound to the scope survives the rotation: the
+    // current-value projection the earlier refresh produced is still there.
+    let scope_id = state
+        .repository
+        .scopes(id.as_str())
+        .await
+        .expect("scopes readable")
+        .into_iter()
+        .map(|scope| scope.id)
+        .next()
+        .expect("connection has a scope");
+    let retained = state
+        .repository
+        .snapshot(&scope_id, None, "tokens")
+        .await
+        .expect("the snapshot read must succeed");
+    assert!(
+        retained.is_some(),
+        "rotation must retain the published history"
+    );
+
     let connections = list_connections(&state).await;
     assert_eq!(connections[0].lifecycle, LifecycleDto::Active);
+}
+/// Review round 1, blocking finding 1: a rotation whose superseded-reference
+/// cleanup fails must keep the credential it already activated. The
+/// operation stays pending cleanup behind the fence, recovery completes it,
+/// and the live credential stays readable throughout.
+#[tokio::test]
+async fn rotation_cleanup_failure_keeps_the_activated_credential() {
+    let (_dir, state, _sink) = fixture().await;
+    let operation = connect(&state, SECRET_A).await;
+    let id = operation.connection_id.expect("setup names the connection");
+    let generation = generation_of(&state, id.as_str()).await;
+
+    // Fail reference deletion only: the candidate write and the activation
+    // still commit, then the superseded-reference cleanup fails.
+    state
+        .secrets
+        .as_ref()
+        .expect("session composition has a store")
+        .set_fail_reference_deletes(true);
+    let failed = run(&state, rotate_request(id.as_str(), generation, SECRET_A)).await;
+    assert!(
+        matches!(
+            &failed,
+            Envelope::Error { ref error, .. } if error.code() == ErrorCode::StorageError
+        ),
+        "the pending cleanup reports a retryable storage failure, got {failed:?}"
+    );
+
+    // The activated candidate is the live credential: readable, with the
+    // connection still active and the operation visibly pending cleanup.
+    let records = state
+        .repository
+        .operations(Some(id.as_str()))
+        .await
+        .expect("operations readable");
+    let pending = records
+        .iter()
+        .find(|record| record.kind == quotavista_core::journal::OperationKind::ReplaceCredentials)
+        .expect("the rotation stays pending");
+    let current = state
+        .repository
+        .credential_ref(id.as_str())
+        .await
+        .expect("credential ref readable")
+        .expect("the activated candidate is live");
+    assert_eq!(
+        current,
+        pending
+            .candidate_ref
+            .clone()
+            .expect("the record names its candidate")
+    );
+    let superseded = pending
+        .previous_ref
+        .clone()
+        .expect("the rotation names the superseded reference");
+    assert_ne!(current, superseded);
+    let store = state.secrets.as_ref().expect("store present");
+    assert_eq!(
+        store
+            .read(&current)
+            .expect("the activated credential stays readable"),
+        SECRET_A
+    );
+    assert_eq!(
+        store
+            .read(&superseded)
+            .expect("the superseded credential is held until recovery"),
+        SECRET_A
+    );
+    let connections = list_connections(&state).await;
+    assert_eq!(connections[0].lifecycle, LifecycleDto::Active);
+
+    // Recovery — the same resumption a restart runs — completes the owed
+    // cleanup and keeps the live credential.
+    store.set_fail_reference_deletes(false);
+    let coordinator = state.coordinator.as_ref().expect("coordinator present");
+    coordinator
+        .lock()
+        .await
+        .recover()
+        .await
+        .expect("recovery completes the pending cleanup");
+    assert_eq!(
+        store
+            .read(&current)
+            .expect("the activated credential survives recovery"),
+        SECRET_A
+    );
+    assert!(
+        store.read(&superseded).is_err(),
+        "recovery removed the superseded reference"
+    );
+    let records = state
+        .repository
+        .operations(Some(id.as_str()))
+        .await
+        .expect("operations readable");
+    assert!(
+        records.iter().all(
+            |record| record.kind != quotavista_core::journal::OperationKind::ReplaceCredentials
+        ),
+        "the rotation projection completed"
+    );
+
+    // The fence is released: the connection accepts a later mutation.
+    let generation = generation_of(&state, id.as_str()).await;
+    let disabled = run_ok(&state, enabled_request(id.as_str(), generation, false)).await;
+    assert_eq!(connection_of(disabled).lifecycle, LifecycleDto::Disabled);
 }
 
 /// PRD criterion 2: a different (and in this prototype unverifiable)
@@ -481,6 +702,16 @@ async fn racing_candidates_yield_one_active_connection_per_provider() {
         .filter(|connection| connection.lifecycle == LifecycleDto::Active)
         .count();
     assert_eq!(active, 1);
+    // The refused candidate must not leave a ghost row behind: exactly one
+    // connection — the winner — remains, with no lingering PendingSetup.
+    assert_eq!(
+        connections.len(),
+        1,
+        "the refused racing setup leaves no ghost connection"
+    );
+    assert!(connections
+        .iter()
+        .all(|connection| connection.lifecycle != LifecycleDto::PendingSetup));
 }
 
 /// PRD criterion 3: disabling fences late work — a write context captured
