@@ -210,8 +210,14 @@ wire_enum!(TrayAvailabilityDto {
 });
 // Why a system notification could not be delivered. Kept separate from the
 // query failure taxonomy: an unusable channel is a capability, not an error.
+// `Unconfirmed` is its own answer rather than a polite `Available`: the pinned
+// notification plugin always reports "granted" on desktop and hands delivery to
+// an asynchronous task whose result it never reads, so a running adapter cannot
+// prove that the operating system would accept anything. Answering `Available`
+// there would turn an unprobed platform into a promise it cannot keep.
 wire_enum!(NotificationCapabilityDto {
     Available,
+    Unconfirmed,
     PermissionDenied,
     Unsupported
 });
@@ -219,6 +225,16 @@ wire_enum!(NotificationCapabilityDto {
 // persistent alert episodes so a synthetic probe can never be mistaken for a
 // real alert, and so changing a locale re-renders text without creating one.
 wire_enum!(NotificationTemplateKey { SyntheticProbe });
+// How far one notification actually got. `Delivered` means the platform
+// confirmed it; `Queued` means the adapter handed it over and cannot see the
+// result, which is all the pinned desktop plugin reports. Keeping the two apart
+// is what stops "the platform accepted the notification" from being read as
+// "the user saw a banner".
+wire_enum!(NotificationDeliveryDto {
+    Delivered,
+    Queued,
+    Refused
+});
 wire_enum!(ErrorCode {
     Validation,
     Conflict,
@@ -614,12 +630,13 @@ dto!(PlatformCapabilitiesDto {
 });
 // Result of one explicitly user-triggered synthetic notification. The rendered
 // text comes back so the interface can show exactly what was sent (or what
-// could not be sent); it never names an account or a credential.
+// could not be sent); it never names an account or a credential. `delivery`
+// says how far it got, and `capability` says what the platform could confirm.
 dto!(NotificationPreviewDto {
     template_key: NotificationTemplateKey,
     locale: Locale,
     capability: NotificationCapabilityDto,
-    delivered: bool,
+    delivery: NotificationDeliveryDto,
     title: NotificationTextDto,
     body: NotificationTextDto
 });
@@ -839,6 +856,7 @@ pub fn typescript() -> String {
         RangeInput,
         TrayAvailabilityDto,
         NotificationCapabilityDto,
+        NotificationDeliveryDto,
         NotificationTemplateKey,
         NotificationTextDto,
         PlatformCapabilitiesDto,

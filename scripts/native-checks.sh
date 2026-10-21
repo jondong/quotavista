@@ -2,7 +2,7 @@
 # Reproducible native desktop-lifecycle checks for QuotaVista.
 #
 # P1-11 implements the lifecycle behaviour (tray detection, close/reopen/quit,
-# single instance, wake, synthetic notification). This script is how a human
+# single instance, sleep/resume detection, synthetic notification). This script
 # records what the real desktop actually did, on any target. It is the procedure
 # P1-13 runs on macOS and on Ubuntu 26.04 GNOME x86_64.
 #
@@ -42,6 +42,11 @@ print_environment() {
       echo "- macOS: $(sw_vers -productName 2>/dev/null) $(sw_vers -productVersion 2>/dev/null) ($(sw_vers -buildVersion 2>/dev/null))"
       echo "- Architecture: $(uname -m)"
       echo "- Session type: n/a (Aqua)"
+      # macOS has no session bus to probe, and the pinned plugin reports
+      # "granted" without asking the system, so the application surfaces the
+      # channel as unconfirmed. Record the operator's own setting instead;
+      # a dev build is attributed to Terminal rather than to QuotaVista.
+      echo "- Notification daemon: n/a (macOS); check System Settings > Notifications"
       ;;
     Linux)
       echo "- Distribution: $(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")"
@@ -65,6 +70,20 @@ print_environment() {
           echo "- StatusNotifier host: registered"
         else
           echo "- StatusNotifier host: not reachable (tray icons will not be visible)"
+        fi
+      fi
+      # A freedesktop notification daemon is what makes a Linux banner appear.
+      # The prototype never assumes one: the pinned plugin reports "granted" on
+      # desktop regardless, so the application surfaces the channel as
+      # unconfirmed and this probe is what a native run records instead.
+      if command -v gdbus >/dev/null 2>&1; then
+        if gdbus call --session --dest org.freedesktop.Notifications \
+             --object-path /org/freedesktop/Notifications \
+             --method org.freedesktop.Notifications.GetCapabilities \
+             >/dev/null 2>&1; then
+          echo "- Notification daemon: reachable"
+        else
+          echo "- Notification daemon: not reachable (in-app explanation only)"
         fi
       fi
       ;;
@@ -161,7 +180,7 @@ run_interactive() {
     "press 'Check desktop capabilities' in the Desktop integration region and read the System tray and System notifications rows"
 
   observe "3. Synthetic notification, English" \
-    "press 'Send a test notification'; note whether an OS banner appeared AND what the in-app verdict says ('accepted' vs 'stays here')"
+    "press 'Send a test notification'; record BOTH what appeared on screen and the in-app verdict ('confirmed', 'handed to the platform, which never reported back', or 'delivery is unavailable'). A queued verdict next to a visible banner is the expected desktop result, not a failure"
 
   observe "4. Synthetic notification, Simplified Chinese" \
     "switch the interface language to 简体中文, press 'Send a test notification' again, and confirm the banner text is Chinese and carries no account data"
@@ -192,6 +211,15 @@ run_interactive() {
 
   observe "13. Restart keeps committed data" \
     "after a refresh that committed, quit and relaunch: the connections and the last data revision are still there"
+
+  observe "14. Real suspend/resume, automatic refresh on" \
+    "enable automatic refresh, hide the window in the tray, suspend the machine for longer than lifecycle::RESUME_THRESHOLD (two minutes), then wake it: stderr shows 'quotavista: wake ResumeAfterSuspend mode Automatic(1) permitted true ...' even though no window was focused or reopened"
+
+  observe "15. Real suspend/resume, refresh Off" \
+    "repeat step 14 with automatic refresh disabled: the wake line reports mode Off and permitted false, and no provider query is issued"
+
+  observe "16. Window stays responsive during a slow refresh" \
+    "start a manual refresh, then immediately move or resize the window and choose Quit: interaction is not frozen for the duration of the refresh, because the refresh runs on the composition runtime instead of the event-loop thread"
 }
 
 # ----------------------------------------------------------------------- main

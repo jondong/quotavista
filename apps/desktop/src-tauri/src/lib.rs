@@ -172,6 +172,10 @@ pub struct AppState {
     /// notification channel. Every test composition starts headless and the
     /// desktop entry point replaces this once it has probed the real platform.
     pub platform: PlatformState,
+    /// Raised once by quit. Lifecycle paths that could still start or continue
+    /// work read it, so a wake in flight releases the refresh lock instead of
+    /// making the user's Quit action wait for it.
+    pub shutdown_signal: lifecycle::ShutdownSignal,
 }
 impl AppState {
     /// Synthetic operation id for an admission that has no coordinator job.
@@ -293,6 +297,7 @@ async fn build_inner(
         admission_counter: std::sync::atomic::AtomicU64::new(0),
         changes,
         platform: PlatformState::headless(),
+        shutdown_signal: lifecycle::ShutdownSignal::new(),
     })
 }
 
@@ -873,41 +878,63 @@ fn show_main_window(handle: &tauri::AppHandle) {
     let _ = window.set_focus();
 }
 
-/// Merge the refresh work one reactivation permits.
+/// The wake gate, shared by every callback that can wake the application.
+type SharedWakeGate = Arc<std::sync::Mutex<lifecycle::WakeGate>>;
+
+/// Merge the refresh work one wake permits.
 ///
-/// The gate holds a burst of focus, reopen, and handover signals down to one
-/// wake, and the report is printed as a count-only diagnostic so a native run
-/// can show that the signal arrived without naming any connection.
-fn wake(
-    handle: &tauri::AppHandle,
-    gate: &std::sync::Mutex<lifecycle::WakeGate>,
+/// The event-loop thread only clones a handle and spawns: the settings read, the
+/// admission writes and the coordinator pump all run on a runtime worker, so a
+/// slow provider or a contended database cannot freeze window interaction - or
+/// the user's Quit action. The architecture forbids blocking the UI thread on
+/// database work, and `block_on` here did exactly that.
+///
+/// The gate holds a burst of focus, reopen, resume and handover signals down to
+/// one wake, and the report is printed as a count-only diagnostic so a native
+/// run can show the signal arrived without naming any connection.
+fn wake<R: tauri::Runtime>(
+    handle: &tauri::AppHandle<R>,
+    gate: &SharedWakeGate,
     source: lifecycle::WakeSource,
     runtime: &tokio::runtime::Handle,
 ) {
-    let Some(state) = handle.try_state::<AppState>() else {
-        return;
-    };
-    match runtime.block_on(lifecycle::handle_gated_wake(state.inner(), gate, source)) {
-        Ok(Some(report)) => eprintln!("quotavista: {}", report.diagnostic()),
-        Ok(None) => {}
-        Err(error) => eprintln!("quotavista: wake skipped: {}", error.message()),
-    }
+    let target = handle.clone();
+    let gate = Arc::clone(gate);
+    runtime.spawn(async move {
+        let Some(state) = target.try_state::<AppState>() else {
+            return;
+        };
+        match lifecycle::handle_gated_wake(state.inner(), &gate, source).await {
+            Ok(Some(report)) => eprintln!("quotavista: {}", report.diagnostic()),
+            Ok(None) => {}
+            Err(error) => eprintln!("quotavista: wake skipped: {}", error.message()),
+        }
+    });
 }
 
 /// Cancel in-flight work, close the pools, and exit.
 ///
-/// This is the only path out of the application. `handle.exit` re-enters the
-/// event loop with a coded exit request, which the loop below leaves alone, so
-/// the shutdown step cannot run twice.
-fn quit(handle: &tauri::AppHandle, runtime: &tokio::runtime::Handle) {
-    if let Some(state) = handle.try_state::<AppState>() {
-        let report = runtime.block_on(lifecycle::shutdown(state.inner()));
-        eprintln!(
-            "quotavista: quit cancelled {} in-flight job(s)",
-            report.cancelled.len()
-        );
-    }
-    handle.exit(0);
+/// This is the only path out of the application. Cancellation and the pool close
+/// run on a runtime worker rather than on the event-loop thread, so a refresh
+/// that is mid-pump cannot make Quit hang: `shutdown` raises its signal first,
+/// and that is what lets the pump stop and release the lock.
+///
+/// The process exits from inside the task, after the work is finished, so "commit
+/// or roll back active writes" still holds at the process boundary. `handle.exit`
+/// re-enters the event loop with a coded exit request, which the loop below
+/// leaves alone, so the shutdown step cannot run twice.
+fn quit<R: tauri::Runtime>(handle: &tauri::AppHandle<R>, runtime: &tokio::runtime::Handle) {
+    let target = handle.clone();
+    runtime.spawn(async move {
+        if let Some(state) = target.try_state::<AppState>() {
+            let report = lifecycle::shutdown(state.inner()).await;
+            eprintln!(
+                "quotavista: quit cancelled {} in-flight job(s)",
+                report.cancelled.len()
+            );
+        }
+        target.exit(0);
+    });
 }
 
 /// Tray menu item ids.
@@ -988,6 +1015,9 @@ pub fn run() {
     let wake_gate = Arc::new(std::sync::Mutex::new(lifecycle::WakeGate::new(
         lifecycle::WAKE_GATE_INTERVAL,
     )));
+    // Cloned up front: the `setup` closure moves this one, and the event loop
+    // below still needs `wake_gate` afterwards.
+    let monitor_gate = Arc::clone(&wake_gate);
 
     let mut builder = tauri::Builder::default();
     #[cfg(desktop)]
@@ -1067,6 +1097,25 @@ pub fn run() {
                 detected.tray, detected.notification
             );
             app.manage(state);
+            // The resume monitor is the sleep/wake adapter. It compares the
+            // monotonic and wall clocks on a runtime worker, so a resume is
+            // detected even while the main window stays hidden in the tray and
+            // no window event fires at all. Reactivation alone would miss that.
+            let monitor_target = app.handle().clone();
+            setup_runtime.spawn(async move {
+                let Some(state) = monitor_target.try_state::<AppState>() else {
+                    return;
+                };
+                lifecycle::drive_resume_monitor(
+                    state.inner(),
+                    &monitor_gate,
+                    lifecycle::ResumeMonitor::new(
+                        lifecycle::RESUME_TICK,
+                        lifecycle::RESUME_THRESHOLD,
+                    ),
+                )
+                .await;
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -1089,8 +1138,10 @@ pub fn run() {
                     }
                 }
             }
-            // Tauri emits no desktop suspend or resume event, so wake is
-            // derived from reactivation instead.
+            // A focus transition is one wake source, not the only one. Tauri
+            // emits no desktop suspend or resume event, so `setup` also spawns
+            // `ResumeMonitor`, which is what notices a resume while the window
+            // stays hidden and no event fires at all.
             tauri::WindowEvent::Focused(true) => {
                 wake(
                     handle,
@@ -1855,6 +1906,91 @@ mod tests {
             }
             other => panic!("expected a JSON body, got {other:?}"),
         }
+    }
+
+    /// The event-loop callback must not wait for the refresh pipeline. A slow
+    /// provider or a contended database would otherwise freeze window
+    /// interaction - including the user's Quit action - for as long as the
+    /// bounded pump loop takes, and a step count bounds the number of awaits,
+    /// not the duration of each one.
+    #[test]
+    fn the_wake_callback_returns_while_the_refresh_pipeline_is_still_busy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sink = Arc::new(RecordingChangeSink::new());
+        let changes: Arc<dyn ChangeSink> = sink.clone();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = runtime
+            .block_on(build_with_provider(
+                dir.path().to_path_buf(),
+                changes,
+                SecretChoice::SessionOnly,
+                SimulatedAdapter::new(synthetic_providers()[0]),
+            ))
+            .expect("composition must initialise");
+        runtime.block_on(seed_connection(&state, Lifecycle::Active));
+
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        let handle = app.handle().clone();
+
+        // Synthetic slow work standing in for a provider that has not answered
+        // yet or a database that is contended: it holds the refresh lock the
+        // wake needs for 400ms.
+        let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let holder = handle.clone();
+        let released_flag = Arc::clone(&released);
+        runtime.spawn(async move {
+            let state = holder.try_state::<AppState>().expect("managed state");
+            // Holding this guard across the sleep below is the fixture, not an
+            // oversight: the test exists to prove the callback and Quit do not
+            // wait on work that owns the refresh lock.
+            let _guard = state.refresh.lock().await;
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            released_flag.store(true, Ordering::SeqCst);
+        });
+        // Let the holder take the lock before the callback runs.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let gate: SharedWakeGate = Arc::new(std::sync::Mutex::new(lifecycle::WakeGate::new(
+            lifecycle::WAKE_GATE_INTERVAL,
+        )));
+        let started = std::time::Instant::now();
+        wake(
+            &handle,
+            &gate,
+            lifecycle::WakeSource::WindowFocused,
+            runtime.handle(),
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "the callback blocked for {elapsed:?}; it must only clone and spawn"
+        );
+
+        // Quit stays reachable while that work runs. Shutdown raises its signal
+        // before it waits for the lock, so the wake queued behind the holder
+        // finds the signal raised and stops instead of running its pump loop
+        // first: nothing commits and nothing is announced.
+        let quitting = handle.clone();
+        let quit = runtime.block_on(async move {
+            let state = quitting.try_state::<AppState>().expect("managed state");
+            lifecycle::shutdown(state.inner()).await
+        });
+        assert_eq!(quit.running_after, 0);
+        assert_eq!(quit.pending_after, 0);
+        assert!(
+            sink.events().is_empty(),
+            "quit must win over a queued refresh"
+        );
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the slow work really did hold the lock until after quit ran"
+        );
     }
 
     /// A credential-store failure keeps its own code: a locked store and an

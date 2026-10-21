@@ -203,50 +203,106 @@ identifier).
 Text is bounded through `NotificationTextDto::try_from`, and a bound violation
 becomes a typed `internal_error` rather than a panic inside a command handler.
 
-Unavailable delivery keeps an in-app status: `PlatformState::preview` returns the
-rendered text on every path, with `delivered: false` and the detected capability
-echoed back when the channel refused. Proof:
+Delivery is reported in three states instead of one boolean, because the pinned
+plugin can only ever say one of them honestly. `DeliveryOutcome::Delivered` is
+reserved for an adapter that read the platform's own answer;
+`DeliveryOutcome::Queued` is what the desktop plugin produces, since `show()`
+hands the notice to an asynchronous task and returns `Ok` without the result;
+`DeliveryOutcome::Refused(capability)` carries the reason.
+`PlatformState::preview` maps only a confirmed delivery to
+`NotificationCapabilityDto::Available` — a queued one keeps whatever was
+detected, so it can never upgrade an unconfirmed channel into a confirmed one —
+and returns the rendered text on every path, so the interface always has
+something to show. Proof:
+`platform::tests::only_a_confirmed_delivery_reports_delivered` (each of the three
+outcomes maps to its own `NotificationPreviewDto.delivery`),
+`platform::tests::a_queued_notification_stays_unconfirmed_and_keeps_its_text`
+(the capability stays `Unconfirmed` next to `delivery == Queued`, and the zh-CN
+text still reaches the caller),
 `platform::tests::an_unusable_channel_keeps_the_explanation_in_the_application`
 (both `Unsupported` and `PermissionDenied`),
-`platform::tests::an_available_channel_reports_the_text_it_accepted`, and
-`platform::tests::a_channel_that_refuses_at_delivery_time_reports_why` (a channel
-that detected as available but refuses at delivery time reports the refusal
-instead of a false success). In the renderer: `keeps an in-app explanation when
-delivery is unavailable` and `explains a failed transport without pretending the
-notification went out`.
+`platform::tests::a_channel_that_confirms_delivery_reports_delivered_and_available`,
+and `platform::tests::a_channel_that_refuses_at_delivery_time_reports_why` (a
+channel that detected as available but refuses at delivery time reports the
+refusal instead of a false success). In the renderer: `keeps an in-app
+explanation when delivery is unavailable`, `reports a queued notification as
+unconfirmed rather than accepted`, and `explains a failed transport without
+pretending the notification went out`.
 
 This does not establish real alert behaviour. No episode is persisted, nothing is
 sent on a timer, on launch or on wake, and the renderer sends nothing until the
 user presses the button (`sends the synthetic notification in the active locale
-and reports acceptance`, `asks for the notification in the locale the user
+and reports confirmed delivery`, `asks for the notification in the locale the user
 selected`, which asserts the exact wire shape
 `{ command: "preview_system_notification", args: { template_key: "synthetic_probe", locale: "zh-CN" } }`).
 
-One honesty limit is recorded in the adapter's own documentation and in
+The real adapter's two mappings are pure functions so they can be tested without
+a window server and without sending anything to the operating system:
+`capability_from_plugin(registered, permission_granted)` and
+`delivery_from_plugin(shown)`. Proof:
+`platform::tests::a_plugin_that_answers_granted_is_reported_as_unconfirmed`
+(registered plus granted yields `Unconfirmed`, not `Available`, and an
+unregistered plugin yields `Unsupported` even when something claims it was
+granted) and
+`platform::tests::plugin_success_is_queued_because_the_os_result_is_never_read`.
+The limits those functions encode are documented in the adapter and in
 `.trellis/spec/backend/error-handling.md`: `tauri-plugin-notification`'s desktop
 `show()` spawns the delivery and discards the operating-system result
 (`src/desktop.rs:434-441` on Windows and macOS, `:448-467` on Linux), and its
 desktop `permission_state()` and `request_permission()` hard-code
 `Ok(PermissionState::Granted)` (`src/desktop.rs:196-206`, "Desktop applications
-do not need to ask for this permission"). So `delivered: true` means only that
-the platform channel accepted the request, never that a banner was seen. The
-renderer says exactly that: `desktop.notification.delivered` reads "The platform
-accepted the notification."
+do not need to ask for this permission"). A native macOS launch therefore prints
+`notification=Unconfirmed`, and the renderer says so in both catalogs:
+`desktop.notification.unconfirmed` reads "Channel present, delivery unconfirmed"
+and `desktop.notification.queued` reads "Handed to the platform, which never
+reported back. The message is repeated here." `desktop.notification.delivered`
+now reads "The operating system confirmed the notification." and is unreachable
+from the pinned desktop adapter. Detecting a real Linux notification daemon is
+left to P1-13: `scripts/native-checks.sh --environment` probes
+`org.freedesktop.Notifications.GetCapabilities` over the session bus on Linux and
+records the answer, because a probe this host cannot validate natively must not
+ship as a guess.
 
 ## Criterion 4 — wake merges permitted work, Off starts nothing
 
 > Wake merges permitted refresh work; refresh-Off never initiates an implicit
 > query. Record differences between available native targets.
 
-Tauri 2.12 has no desktop suspend or resume event: `WindowEvent::Suspended` and
-`Resumed` are `#[cfg(mobile)]` (`tauri-2.12.4/src/app.rs:111-170`). Wake is
-therefore derived from reactivation, and each source is named in the report so
-the native targets can be compared: `WindowFocused`,
-`ReopenWithoutVisibleWindow` (macOS only — `RunEvent::Reopen` is
-`#[cfg(target_os = "macos")]`, `src/app.rs:275-283`), and
-`SingleInstanceActivation`. **This is the recorded difference between available
-native targets**: macOS has two reactivation signals plus the handover, Linux has
-the focus signal plus the handover and no `Reopen`.
+Tauri 2.12 emits no desktop suspend or resume event: `WindowEvent::Suspended` and
+`Resumed` are `#[cfg(mobile)]` (`tauri-2.12.4/src/app.rs:111-170`). Two
+independent sources therefore feed the wake path, and each is named in the report
+so the native targets can be compared.
+
+The first is reactivation: `WindowFocused`, `ReopenWithoutVisibleWindow` (macOS
+only — `RunEvent::Reopen` is `#[cfg(target_os = "macos")]`, `src/app.rs:275-283`)
+and `SingleInstanceActivation`. **This is the recorded difference between
+available native targets**: macOS has two reactivation signals plus the handover,
+Linux has the focus signal plus the handover and no `Reopen`.
+
+The second is `ResumeMonitor`, the actual sleep/wake adapter, which does not
+depend on window activation at all. Reactivation alone would miss a resume that
+happens while the main window stays hidden in the tray, because nothing is
+focused and nothing is reopened. `run()` spawns `drive_resume_monitor` on the
+composition runtime; it samples a monotonic and a wall clock every `RESUME_TICK`
+(30s) and treats an advance of at least `RESUME_THRESHOLD` (120s) as a suspend
+gap, reporting `WakeSource::ResumeAfterSuspend`. Both clocks are compared and
+either one advancing is enough, because Rust's `Instant` is `mach_absolute_time`
+on macOS (which does not advance during sleep) but `CLOCK_MONOTONIC` on Linux,
+whose behaviour across suspend varies by kernel, while the wall clock always
+advances. A wall-clock step from NTP or a manual change is at worst one extra
+wake, still governed by the refresh mode, the coordinator's own interval and the
+gate; `saturating_sub` makes a backwards clock look like no time at all, so it can
+never trigger a refresh. The first sample only establishes a baseline. Proof:
+`lifecycle::tests::a_suspend_gap_is_detected_from_either_clock`,
+`lifecycle::tests::the_first_resume_sample_only_establishes_a_baseline`,
+`lifecycle::tests::ordinary_ticks_and_a_backwards_clock_are_not_a_resume`,
+`lifecycle::tests::a_detected_resume_merges_one_refresh_without_window_activation`
+(a resume with no focus and no reopen still merges exactly one refresh, and a
+second gap inside the gate interval adds nothing) and
+`lifecycle::tests::a_detected_resume_starts_nothing_while_refresh_is_off` (the
+Off gate holds on the resume path too). A real machine suspend is still pending
+`scripts/native-checks.sh --interactive` step 14; what is proven here is the
+detection mechanism and that it reaches the same gated wake path.
 
 `handle_wake` reads the persisted settings first. With `refresh_minutes: None`
 it returns before the coordinator is touched, so no job is created and no
@@ -274,6 +330,31 @@ event, and a handover raises both — so `WakeGate` collapses them on a monotoni
 clock; a backwards clock reading counts as an immediate repeat and is refused.
 Proof: `lifecycle::tests::the_wake_gate_swallows_a_burst_of_reactivation_signals`
 and `lifecycle::tests::the_wake_gate_turns_a_reactivation_burst_into_one_wake`.
+
+Lifecycle work never blocks the event-loop thread. `wake` and `quit` only clone an
+`AppHandle` and `runtime.spawn`; the settings read, the admission writes and the
+coordinator pump all run on a composition-runtime worker, so a contended database
+or a slow provider cannot freeze window interaction or the user's Quit action,
+which is what `docs/architecture.md` requires of database work.
+`AppState.shutdown_signal` ties the two together: `shutdown` raises it before it
+waits for the refresh lock, `handle_gated_wake` checks it before the gate so a
+wake arriving while quitting neither consumes the gate's slot nor competes for
+that lock, and `handle_wake`'s bounded pump loop checks it between steps so it
+releases the lock instead of running the remaining steps. `quit` exits the process
+from inside its own task, after cancellation and the pool close, so "commit or
+roll back active writes" still holds at the process boundary. Proof:
+`tests::the_wake_callback_returns_while_the_refresh_pipeline_is_still_busy` (a
+synthetic holder owns the refresh lock for 400ms; the real `wake` callback returns
+in under 100ms, and shutdown still completes with nothing running, nothing
+pending and no event published),
+`lifecycle::tests::the_pump_loop_releases_the_lock_when_quit_is_raised` (24
+admitted jobs stay exactly as admission left them — `MAX_CONCURRENCY` running and
+the rest pending, none terminal — so the loop broke before its first pump step),
+`lifecycle::tests::every_wake_source_is_inert_once_quit_was_raised` (all four
+sources, including `ResumeAfterSuspend`),
+`lifecycle::tests::a_resume_detected_after_quit_starts_no_work`,
+`lifecycle::tests::the_resume_monitor_stops_itself_once_quit_was_raised` and
+`lifecycle::tests::the_resume_monitor_keeps_sampling_until_quit`.
 
 Wake is wired into the same commit-announcement path as the refresh command: it
 captures the revision before, pumps within `MAX_REFRESH_STEPS`, and calls

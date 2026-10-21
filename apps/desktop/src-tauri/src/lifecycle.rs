@@ -15,7 +15,8 @@
 //! * With automatic refresh off, only an explicit user action may contact a
 //!   provider. Waking the application is not an explicit user action.
 
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 use quotavista_contracts::{LocalId, SafeError, TrayAvailabilityDto};
 use quotavista_core::storage::{Repository, WriteContext};
@@ -85,9 +86,12 @@ pub fn wake_decision(mode: RefreshMode) -> WakeDecision {
 /// The platform signal that woke the application.
 ///
 /// Tauri 2.12 emits no desktop suspend, resume, or wake event: the `Suspended`
-/// and `Resumed` window events exist on mobile targets only. Wake is therefore
-/// derived from reactivation, and each signal is named in the report so the
-/// native targets can be compared against each other.
+/// and `Resumed` window events exist on mobile targets only. Wake therefore
+/// comes from two independent places - the reactivation signals a window server
+/// does emit, and [`ResumeMonitor`], which detects the suspend gap itself by
+/// comparing clocks. The monitor is what covers a resume while the application
+/// stays hidden in the tray, where no window event fires at all. Each signal is
+/// named in the report so the native targets can be compared with each other.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WakeSource {
     /// The main window regained focus.
@@ -96,6 +100,11 @@ pub enum WakeSource {
     ReopenWithoutVisibleWindow,
     /// A second launch attempt handed over to the running instance.
     SingleInstanceActivation,
+    /// A clock comparison showed the process had been suspended.
+    ///
+    /// The only source that does not depend on window activation, so it is what
+    /// makes "refresh after wake" work while the main window stays hidden.
+    ResumeAfterSuspend,
 }
 
 /// Minimum spacing between two wakes that are acted on.
@@ -139,6 +148,165 @@ impl WakeGate {
                 self.last = Some(now);
                 true
             }
+        }
+    }
+}
+
+/// Raised once by quit, and read by anything that could still start or continue
+/// lifecycle work.
+///
+/// Without it a wake spawned just before the user chose Quit would take the
+/// refresh lock that shutdown needs, so quitting would wait for a bounded pump
+/// loop nobody wants any more. Raising the flag first is what keeps the Quit
+/// action reachable while refresh work is in flight.
+#[derive(Debug, Default)]
+pub struct ShutdownSignal(AtomicBool);
+
+impl ShutdownSignal {
+    /// A signal that has not been raised.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Tell every lifecycle path to stop starting work.
+    pub fn raise(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether quitting has begun.
+    pub fn raised(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// How often the resume monitor samples the clocks.
+///
+/// Short enough that a resume is noticed soon after it happens, long enough that
+/// sampling costs nothing next to the refresh work it may trigger.
+pub const RESUME_TICK: Duration = Duration::from_secs(30);
+
+/// A clock advance of at least this much counts as a suspend gap.
+///
+/// Four ticks, so scheduler jitter, a busy event loop, or a paused debugger
+/// cannot trigger a refresh. A real sleep is minutes to hours.
+pub const RESUME_THRESHOLD: Duration = Duration::from_secs(120);
+
+/// One reading of the two clocks the resume monitor compares.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResumeSample {
+    /// Monotonic reading, as an offset from a process-wide base.
+    pub monotonic: Duration,
+    /// Wall-clock reading since the Unix epoch.
+    pub wall: Duration,
+}
+
+/// The process-wide base for monotonic readings, so a sample is a plain
+/// `Duration` that a test can construct without waiting for anything.
+fn monotonic_base() -> &'static Instant {
+    static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    BASE.get_or_init(Instant::now)
+}
+
+/// Take one sample now.
+pub fn now_sample() -> ResumeSample {
+    ResumeSample {
+        monotonic: monotonic_base().elapsed(),
+        wall: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default(),
+    }
+}
+
+/// Detects a system suspend by comparing two clock readings.
+///
+/// Tauri offers no desktop resume event, and reactivation cannot be the whole
+/// story: a machine can sleep and wake with the main window hidden in the tray
+/// and never gain focus, so the permitted post-wake refresh would never run.
+/// This monitor is the desktop resume signal. It samples on a timer and looks
+/// for a gap far larger than the tick, which is what a suspend leaves behind.
+///
+/// Both clocks are compared and either one advancing is enough. Rust's `Instant`
+/// is `mach_absolute_time` on macOS, which does not advance during sleep, but
+/// `CLOCK_MONOTONIC` on Linux, whose behaviour across suspend varies by kernel;
+/// the wall clock always advances. Accepting either signal means the monitor
+/// never has to assume which platform it is on. A wall-clock step (NTP, a manual
+/// change) is at worst one extra wake, and the refresh mode plus the
+/// coordinator's own interval still govern whether that wake does anything.
+#[derive(Debug)]
+pub struct ResumeMonitor {
+    tick: Duration,
+    threshold: Duration,
+    previous: Option<ResumeSample>,
+}
+
+impl ResumeMonitor {
+    /// A monitor that has not sampled yet.
+    pub fn new(tick: Duration, threshold: Duration) -> Self {
+        Self {
+            tick,
+            threshold,
+            previous: None,
+        }
+    }
+
+    /// How often [`ResumeMonitor::observe`] should be called.
+    pub fn tick(&self) -> Duration {
+        self.tick
+    }
+
+    /// Record one sample and report a suspend gap if the clocks show one.
+    ///
+    /// The first sample only establishes a baseline. Saturating subtraction makes
+    /// a clock that reads backwards - a wall-clock step back, or a monotonic base
+    /// from a different process - look like no time at all, so it can never
+    /// trigger a refresh on its own.
+    pub fn observe(&mut self, sample: ResumeSample) -> Option<Duration> {
+        let previous = self.previous.replace(sample)?;
+        let monotonic = sample.monotonic.saturating_sub(previous.monotonic);
+        let wall = sample.wall.saturating_sub(previous.wall);
+        let advanced = monotonic.max(wall);
+        (advanced >= self.threshold).then_some(advanced)
+    }
+}
+
+/// Act on one resume sample.
+///
+/// When the monitor sees a suspend gap this runs exactly the gated wake path
+/// every other resume signal uses, so refresh-Off still starts nothing and a
+/// burst of samples still produces one merged refresh. `None` means no gap was
+/// detected, or the wake gate swallowed it.
+pub async fn observe_resume(
+    state: &AppState,
+    gate: &std::sync::Mutex<WakeGate>,
+    monitor: &mut ResumeMonitor,
+    sample: ResumeSample,
+) -> Result<Option<WakeReport>, SafeError> {
+    if monitor.observe(sample).is_none() {
+        return Ok(None);
+    }
+    handle_gated_wake(state, gate, WakeSource::ResumeAfterSuspend).await
+}
+
+/// Sample the clocks until the application is quitting.
+///
+/// Runs on the composition runtime, never on the event-loop thread, so a slow
+/// provider or a contended database cannot freeze window interaction.
+pub async fn drive_resume_monitor(
+    state: &AppState,
+    gate: &std::sync::Mutex<WakeGate>,
+    monitor: ResumeMonitor,
+) {
+    let mut monitor = monitor;
+    let tick = monitor.tick();
+    loop {
+        tokio::time::sleep(tick).await;
+        if state.shutdown_signal.raised() {
+            return;
+        }
+        match observe_resume(state, gate, &mut monitor, now_sample()).await {
+            Ok(Some(report)) => eprintln!("quotavista: {}", report.diagnostic()),
+            Ok(None) => {}
+            Err(error) => eprintln!("quotavista: resume refresh skipped: {}", error.message()),
         }
     }
 }
@@ -248,6 +416,11 @@ pub async fn handle_wake(state: &AppState, source: WakeSource) -> Result<WakeRep
         // announced. The bound only stops a provider that never terminates;
         // whatever it leaves in flight is what quitting then cancels.
         for _ in 0..MAX_REFRESH_STEPS {
+            // Quit wins over finishing. Breaking here releases the lock so
+            // shutdown can cancel instead of waiting for the remaining steps.
+            if state.shutdown_signal.raised() {
+                break;
+            }
             let running = admitted
                 .iter()
                 .any(|(job, _)| refresh.outcome(job).is_none());
@@ -281,12 +454,19 @@ pub async fn handle_wake(state: &AppState, source: WakeSource) -> Result<WakeRep
 }
 
 /// Apply the wake gate and, unless the signal is part of a burst, merge the
-/// permitted refresh work. `None` means the gate swallowed the signal.
+/// permitted refresh work. `None` means the signal was not acted on: either the
+/// gate swallowed it as part of a burst, or quitting has already begun and
+/// starting work would only create something shutdown has to cancel.
 pub async fn handle_gated_wake(
     state: &AppState,
     gate: &std::sync::Mutex<WakeGate>,
     source: WakeSource,
 ) -> Result<Option<WakeReport>, SafeError> {
+    // Checked before the gate so a wake that arrives while quitting neither
+    // consumes the gate's slot nor competes with shutdown for the refresh lock.
+    if state.shutdown_signal.raised() {
+        return Ok(None);
+    }
     let admitted = gate
         .lock()
         .expect("the wake gate never stays poisoned")
@@ -316,7 +496,15 @@ pub struct ShutdownReport {
 /// candidate and leaves the published partition untouched. The step drives no
 /// pump, so it cannot commit anything new and announces no change event: every
 /// commit is announced by the command path that made it.
+///
+/// The first thing it does is raise [`ShutdownSignal`], so a wake that is still
+/// running lets go of the refresh lock instead of making the user's Quit action
+/// wait for the rest of a bounded pump loop.
 pub async fn shutdown(state: &AppState) -> ShutdownReport {
+    // Raised before anything else: a concurrently spawned wake stops asking for
+    // the refresh lock instead of racing the cancellation below, and the resume
+    // monitor returns at its next sample.
+    state.shutdown_signal.raise();
     let report = {
         let mut refresh = state.refresh.lock().await;
         let cancelled: Vec<String> = refresh
@@ -686,5 +874,288 @@ mod tests {
             "{not a journal"
         );
         assert!(sink.events().is_empty());
+    }
+
+    /// Place a resume sample anywhere on either clock, so the detection logic
+    /// can be tested without sleeping the machine.
+    fn sample(monotonic_secs: u64, wall_secs: u64) -> ResumeSample {
+        ResumeSample {
+            monotonic: Duration::from_secs(monotonic_secs),
+            wall: Duration::from_secs(wall_secs),
+        }
+    }
+
+    #[test]
+    fn a_suspend_gap_is_detected_from_either_clock() {
+        // Which clock keeps counting across a suspend is platform-dependent, so
+        // the monitor accepts either signal rather than assuming one.
+        let tick = Duration::from_secs(30);
+        let threshold = Duration::from_secs(120);
+
+        // macOS: `Instant` is `mach_absolute_time`, which stops during sleep,
+        // while the wall clock keeps running.
+        let mut wall_only = ResumeMonitor::new(tick, threshold);
+        assert!(wall_only.observe(sample(0, 1_000)).is_none());
+        assert_eq!(
+            wall_only.observe(sample(30, 4_600)),
+            Some(Duration::from_secs(3_600)),
+            "a wall-clock advance past the threshold is a resume"
+        );
+
+        // A platform whose monotonic clock does count suspend time sees both
+        // move; the larger advance is the one reported.
+        let mut both = ResumeMonitor::new(tick, threshold);
+        assert!(both.observe(sample(0, 1_000)).is_none());
+        assert_eq!(
+            both.observe(sample(3_630, 4_630)),
+            Some(Duration::from_secs(3_630)),
+            "a monotonic advance past the threshold is a resume too"
+        );
+    }
+
+    #[test]
+    fn the_first_resume_sample_only_establishes_a_baseline() {
+        let mut monitor = ResumeMonitor::new(Duration::from_secs(30), Duration::from_secs(120));
+        // No previous sample means no elapsed span, so starting the monitor -
+        // including starting it long after boot - cannot report a wake on its
+        // own and trigger a refresh nobody asked for.
+        assert_eq!(monitor.observe(sample(90_000, 1_700_000_000)), None);
+    }
+
+    #[test]
+    fn ordinary_ticks_and_a_backwards_clock_are_not_a_resume() {
+        let mut monitor = ResumeMonitor::new(Duration::from_secs(30), Duration::from_secs(120));
+        assert!(monitor.observe(sample(0, 1_000)).is_none());
+        assert_eq!(
+            monitor.observe(sample(30, 1_030)),
+            None,
+            "one tick is normal"
+        );
+        assert_eq!(monitor.observe(sample(60, 1_060)), None);
+        // A wall clock stepped backwards (NTP correction, a manual change) must
+        // never read as elapsed time; saturating subtraction makes it no time at
+        // all, so a clock anomaly cannot start a refresh.
+        assert_eq!(monitor.observe(sample(90, 500)), None);
+        // The baseline moved with it, so the next ordinary tick is normal too.
+        assert_eq!(monitor.observe(sample(120, 530)), None);
+    }
+
+    #[tokio::test]
+    async fn a_detected_resume_merges_one_refresh_without_window_activation() {
+        // This is the path that works while the main window stays hidden in the
+        // tray: no focus transition, no reopen, no second instance - only the
+        // clock gap the monitor measures.
+        let (_dir, state, sink) = fixture().await;
+        seed_connection(&state, Lifecycle::Active).await;
+        set_automatic_refresh(&state, 1).await;
+        let revision = state.repository.data_revision().await.expect("revision");
+        let gate = std::sync::Mutex::new(WakeGate::new(WAKE_GATE_INTERVAL));
+        let mut monitor = ResumeMonitor::new(Duration::from_secs(30), Duration::from_secs(120));
+
+        let baseline = observe_resume(&state, &gate, &mut monitor, sample(0, 1_000))
+            .await
+            .expect("resume");
+        assert!(baseline.is_none(), "a baseline sample is not a wake");
+        assert!(sink.events().is_empty());
+
+        let resumed = observe_resume(&state, &gate, &mut monitor, sample(30, 4_600))
+            .await
+            .expect("resume");
+        let report = resumed.expect("a gap past the threshold is a wake");
+        assert_eq!(report.source, WakeSource::ResumeAfterSuspend);
+        assert_eq!(report.mode, RefreshMode::Automatic(1));
+        assert!(report.permitted);
+        assert_eq!(report.launched.len(), 1, "the resume merged one refresh");
+        assert!(
+            state.repository.data_revision().await.expect("revision") > revision,
+            "the merged refresh committed"
+        );
+        assert_eq!(sink.events().len(), 1, "the wake announces its own commit");
+
+        // A second gap inside the same refresh interval merges nothing: the
+        // resume path reuses the gate and the coordinator, so deduplication and
+        // the interval rule both survive the change of trigger.
+        let again = observe_resume(&state, &gate, &mut monitor, sample(60, 8_200))
+            .await
+            .expect("resume");
+        assert!(
+            again.is_none(),
+            "the gate still deduplicates a resume burst"
+        );
+        assert_eq!(sink.events().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_detected_resume_starts_nothing_while_refresh_is_off() {
+        // Off gating has to survive the new trigger: a real suspend gap is
+        // exactly the case where an implicit query would be most tempting.
+        let (_dir, state, sink) = fixture().await;
+        seed_connection(&state, Lifecycle::Active).await;
+        let revision = state.repository.data_revision().await.expect("revision");
+        let gate = std::sync::Mutex::new(WakeGate::new(WAKE_GATE_INTERVAL));
+        let mut monitor = ResumeMonitor::new(Duration::from_secs(30), Duration::from_secs(120));
+
+        observe_resume(&state, &gate, &mut monitor, sample(0, 1_000))
+            .await
+            .expect("resume");
+        let report = observe_resume(&state, &gate, &mut monitor, sample(30, 4_600))
+            .await
+            .expect("resume")
+            .expect("the gap is detected, so the gated wake runs and reports");
+
+        assert_eq!(report.mode, RefreshMode::Off);
+        assert!(!report.permitted);
+        assert!(report.launched.is_empty());
+        assert_eq!(report.refused, 0, "nothing was offered to the coordinator");
+        assert!(!report.diagnostic().contains(CONNECTION_ID));
+        {
+            let refresh = state.refresh.lock().await;
+            assert!(
+                refresh.job_ids().is_empty(),
+                "no job means no provider call"
+            );
+        }
+        assert_eq!(
+            state.repository.data_revision().await.expect("revision"),
+            revision,
+            "an off-mode resume must not move the store revision"
+        );
+        assert!(sink.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_resume_detected_after_quit_starts_no_work() {
+        // Quit raises its signal before it cancels, so a resume that lands in
+        // the same instant neither competes for the refresh lock nor creates
+        // work that shutdown would immediately have to cancel. The pools are
+        // already closed here, which is what makes the check meaningful: an
+        // inert wake never touches them.
+        let (_dir, state, sink) = fixture().await;
+        seed_connection(&state, Lifecycle::Active).await;
+        set_automatic_refresh(&state, 1).await;
+        let gate = std::sync::Mutex::new(WakeGate::new(WAKE_GATE_INTERVAL));
+
+        let quit = shutdown(&state).await;
+        assert!(state.shutdown_signal.raised());
+        assert_eq!(quit.running_after, 0);
+
+        let mut monitor = ResumeMonitor::new(Duration::from_secs(30), Duration::from_secs(120));
+        observe_resume(&state, &gate, &mut monitor, sample(0, 1_000))
+            .await
+            .expect("resume");
+        let after = observe_resume(&state, &gate, &mut monitor, sample(30, 4_600))
+            .await
+            .expect("resume");
+        assert!(after.is_none(), "a wake after quit must not start work");
+        assert!(sink.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_wake_source_is_inert_once_quit_was_raised() {
+        let (_dir, state, _sink) = fixture().await;
+        seed_connection(&state, Lifecycle::Active).await;
+        set_automatic_refresh(&state, 1).await;
+        let gate = std::sync::Mutex::new(WakeGate::new(WAKE_GATE_INTERVAL));
+        shutdown(&state).await;
+
+        for source in [
+            WakeSource::WindowFocused,
+            WakeSource::ReopenWithoutVisibleWindow,
+            WakeSource::SingleInstanceActivation,
+            WakeSource::ResumeAfterSuspend,
+        ] {
+            let woke = handle_gated_wake(&state, &gate, source)
+                .await
+                .expect("wake");
+            assert!(woke.is_none(), "{source:?} must not start work after quit");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_pump_loop_releases_the_lock_when_quit_is_raised() {
+        // What keeps the user's Quit action reachable is not the step bound but
+        // the signal check at the top of every iteration. Raising it before the
+        // call exercises that check deterministically, including on the first
+        // pass, so not one pump step runs.
+        let (_dir, state, sink) = fixture().await;
+        for index in 0..24 {
+            seed_connection_with_id(
+                &state,
+                &format!("synthetic-connection-{index}"),
+                Lifecycle::Active,
+            )
+            .await;
+        }
+        set_automatic_refresh(&state, 1).await;
+        state.shutdown_signal.raise();
+
+        let report = handle_wake(&state, WakeSource::WindowFocused)
+            .await
+            .expect("wake");
+        assert!(
+            report.permitted,
+            "automatic refresh was on when the wake ran"
+        );
+        {
+            let refresh = state.refresh.lock().await;
+            // Admission promotes its own first `MAX_CONCURRENCY` jobs, so those
+            // are already running before the loop starts. The loop's first act
+            // would advance them. Seeing exactly the admission-time split, and
+            // no job with a terminal outcome, proves it broke before its first
+            // pump step rather than running to the step bound.
+            assert_eq!(refresh.running(), MAX_CONCURRENCY);
+            assert_eq!(refresh.pending(), 24 - MAX_CONCURRENCY);
+            assert!(
+                refresh
+                    .job_ids()
+                    .iter()
+                    .all(|job| refresh.outcome(job).is_none()),
+                "not one job reached a terminal outcome"
+            );
+        }
+        assert!(
+            sink.events().is_empty(),
+            "nothing committed, so nothing was announced"
+        );
+
+        // The jobs the wake admitted are still cancelled rather than left
+        // half-applied, which is what quit is for.
+        let quit = shutdown(&state).await;
+        assert_eq!(quit.cancelled.len(), 24);
+        assert_eq!(quit.running_after, 0);
+        assert_eq!(quit.pending_after, 0);
+    }
+
+    #[tokio::test]
+    async fn the_resume_monitor_stops_itself_once_quit_was_raised() {
+        let (_dir, state, _sink) = fixture().await;
+        let gate = std::sync::Mutex::new(WakeGate::new(WAKE_GATE_INTERVAL));
+        let monitor = ResumeMonitor::new(Duration::from_millis(10), Duration::from_secs(120));
+        state.shutdown_signal.raise();
+
+        // The monitor only returns when quitting has begun, so this completing
+        // at all is the assertion.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            drive_resume_monitor(&state, &gate, monitor),
+        )
+        .await
+        .expect("the monitor must stop after quit");
+    }
+
+    #[tokio::test]
+    async fn the_resume_monitor_keeps_sampling_until_quit() {
+        let (_dir, state, _sink) = fixture().await;
+        let gate = std::sync::Mutex::new(WakeGate::new(WAKE_GATE_INTERVAL));
+        let monitor = ResumeMonitor::new(Duration::from_millis(10), Duration::from_secs(120));
+
+        // An unraised signal must keep the loop alive for the whole application
+        // lifetime; only the timeout ending the future stops it here.
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(100),
+            drive_resume_monitor(&state, &gate, monitor),
+        )
+        .await;
+        assert!(outcome.is_err(), "the monitor must not stop on its own");
     }
 }

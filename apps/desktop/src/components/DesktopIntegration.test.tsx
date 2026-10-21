@@ -31,13 +31,17 @@ function errorEnvelope(code: string) {
 
 const CAPABILITIES = { tray: "available", notification: "available" } as const;
 const NO_TRAY_CAPABILITIES = { tray: "unavailable", notification: "unsupported" } as const;
+// What a real desktop run reports today: the tray registers, but the pinned
+// notification plugin cannot read the operating system's answer, so the channel
+// is present without a confirmed delivery.
+const MACOS_CAPABILITIES = { tray: "available", notification: "unconfirmed" } as const;
 
-function notice(capability: string, delivered: boolean, locale: string) {
+function notice(capability: string, delivery: string, locale: string) {
   return {
     template_key: "synthetic_probe",
     locale,
     capability,
-    delivered,
+    delivery,
     title: locale === "zh-CN" ? "QuotaVista 测试通知" : "QuotaVista test notification",
     body:
       locale === "zh-CN"
@@ -148,17 +152,17 @@ describe("desktop integration region", () => {
     expect((action as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("sends the synthetic notification in the active locale and reports acceptance", async () => {
+  it("sends the synthetic notification in the active locale and reports confirmed delivery", async () => {
     await mockDispatch({
       get_platform_capabilities: okEnvelope("get_platform_capabilities", CAPABILITIES),
-      preview_system_notification: okEnvelope("preview_system_notification", notice("available", true, "en")),
+      preview_system_notification: okEnvelope("preview_system_notification", notice("available", "delivered", "en")),
     });
     renderRegion();
 
     fireEvent.click(await screen.findByRole("button", { name: "Send a test notification" }));
 
     await waitFor(() => {
-      expect(screen.getByText("The platform accepted the notification.")).toBeDefined();
+      expect(screen.getByText("The operating system confirmed the notification.")).toBeDefined();
     });
     expect(screen.getByText("QuotaVista test notification")).toBeDefined();
     expect(
@@ -173,7 +177,7 @@ describe("desktop integration region", () => {
       get_platform_capabilities: okEnvelope("get_platform_capabilities", CAPABILITIES),
       preview_system_notification: okEnvelope(
         "preview_system_notification",
-        notice("available", true, "zh-CN"),
+        notice("available", "delivered", "zh-CN"),
       ),
     });
     renderRegion();
@@ -181,7 +185,7 @@ describe("desktop integration region", () => {
     fireEvent.click(await screen.findByRole("button", { name: "发送测试通知" }));
 
     await waitFor(() => {
-      expect(screen.getByText("平台已接受该通知。")).toBeDefined();
+      expect(screen.getByText("操作系统已确认该通知。")).toBeDefined();
     });
     expect(screen.getByText("QuotaVista 测试通知")).toBeDefined();
     const sent = vi.mocked(invoke).mock.calls.map(
@@ -201,7 +205,7 @@ describe("desktop integration region", () => {
       ),
       preview_system_notification: okEnvelope(
         "preview_system_notification",
-        notice("unsupported", false, "en"),
+        notice("unsupported", "refused", "en"),
       ),
     });
     renderRegion();
@@ -218,6 +222,39 @@ describe("desktop integration region", () => {
     expect(screen.getByText("QuotaVista test notification")).toBeDefined();
   });
 
+  it("reports a queued notification as unconfirmed rather than accepted", async () => {
+    // This is the regression the reviewer asked for: the pinned desktop plugin
+    // enqueues the notification and returns without ever reading the operating
+    // system's answer. Turning that into "accepted" would claim a delivery
+    // nobody observed, so the region reports it as queued and keeps the
+    // capability unconfirmed.
+    await mockDispatch({
+      get_platform_capabilities: okEnvelope("get_platform_capabilities", MACOS_CAPABILITIES),
+      preview_system_notification: okEnvelope(
+        "preview_system_notification",
+        notice("unconfirmed", "queued", "en"),
+      ),
+    });
+    renderRegion();
+
+    fireEvent.click(screen.getByRole("button", { name: "Check desktop capabilities" }));
+    await waitFor(() => {
+      expect(screen.getByText("Channel present, delivery unconfirmed")).toBeDefined();
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Send a test notification" }));
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Handed to the platform, which never reported back/),
+      ).toBeDefined();
+    });
+    expect(screen.queryByText("The operating system confirmed the notification.")).toBeNull();
+    expect(screen.queryByText(/^Available$/)).toBeNull();
+    // The text the operating system would have shown stays visible, so an
+    // unconfirmed channel still leaves an explanation in the application.
+    expect(screen.getByText("QuotaVista test notification")).toBeDefined();
+  });
+
   it("explains a failed transport without pretending the notification went out", async () => {
     await mockDispatch({
       get_platform_capabilities: okEnvelope("get_platform_capabilities", CAPABILITIES),
@@ -230,6 +267,6 @@ describe("desktop integration region", () => {
     await waitFor(() => {
       expect(screen.getByText("The test notification could not be sent.")).toBeDefined();
     });
-    expect(screen.queryByText("The platform accepted the notification.")).toBeNull();
+    expect(screen.queryByText("The operating system confirmed the notification.")).toBeNull();
   });
 });

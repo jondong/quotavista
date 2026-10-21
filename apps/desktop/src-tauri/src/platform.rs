@@ -9,8 +9,9 @@
 use std::sync::Arc;
 
 use quotavista_contracts::{
-    ErrorCode, Locale, NotificationCapabilityDto, NotificationPreviewDto, NotificationTemplateKey,
-    NotificationTextDto, PlatformCapabilitiesDto, SafeError, TrayAvailabilityDto,
+    ErrorCode, Locale, NotificationCapabilityDto, NotificationDeliveryDto, NotificationPreviewDto,
+    NotificationTemplateKey, NotificationTextDto, PlatformCapabilitiesDto, SafeError,
+    TrayAvailabilityDto,
 };
 
 /// One rendered synthetic notification.
@@ -29,8 +30,16 @@ pub struct SyntheticNotice {
 /// What happened when one synthetic notification was handed to the platform.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeliveryOutcome {
-    /// The platform channel accepted the notification.
+    /// The platform confirmed delivery.
+    ///
+    /// Only an adapter that can read the operating system's answer may report
+    /// this. The pinned desktop plugin cannot, so the real adapter never does.
     Delivered,
+    /// The adapter handed the notice over and the platform reported no error,
+    /// but the operating-system result was never observed. This is all
+    /// `tauri-plugin-notification`'s desktop `show()` can say: it spawns the
+    /// delivery and returns `Ok` regardless of what happens next.
+    Queued,
     /// It could not be handed over; the carried capability says why.
     Refused(NotificationCapabilityDto),
 }
@@ -121,22 +130,34 @@ impl PlatformState {
     /// The rendered text is returned whether or not delivery was possible, so
     /// the interface always has something to show: either what the OS accepted,
     /// or the same localized text plus the reason it stayed in the application.
-    /// A refused delivery is a reported capability, not an error envelope.
+    /// A refused delivery is a reported capability rather than an error
+    /// envelope, and a queued one is reported as queued - never as confirmed.
     pub fn preview(
         &self,
         template_key: NotificationTemplateKey,
         locale: Locale,
     ) -> Result<NotificationPreviewDto, SafeError> {
         let notice = render_notice(template_key, locale);
-        let (delivered, capability) = match self.notifications.deliver(&notice) {
-            DeliveryOutcome::Delivered => (true, NotificationCapabilityDto::Available),
-            DeliveryOutcome::Refused(capability) => (false, capability),
+        let (delivery, capability) = match self.notifications.deliver(&notice) {
+            // Only a confirmed delivery may upgrade the capability answer: an
+            // adapter that read the operating system's result has proven the
+            // channel works. A queued one has proven nothing new, so it keeps
+            // whatever was detected.
+            DeliveryOutcome::Delivered => (
+                NotificationDeliveryDto::Delivered,
+                NotificationCapabilityDto::Available,
+            ),
+            DeliveryOutcome::Queued => (
+                NotificationDeliveryDto::Queued,
+                self.notifications.capability(),
+            ),
+            DeliveryOutcome::Refused(reason) => (NotificationDeliveryDto::Refused, reason),
         };
         Ok(NotificationPreviewDto {
             template_key,
             locale,
             capability,
-            delivered,
+            delivery,
             title: bounded_text(&notice.title)?,
             body: bounded_text(&notice.body)?,
         })
@@ -199,6 +220,41 @@ pub fn tray_disabled(value: Option<&str>) -> bool {
     value == Some("off")
 }
 
+/// Map the notification plugin's registration and permission answers onto the
+/// contract.
+///
+/// Split out of [`TauriNotifications::detect`] so the mapping itself is covered
+/// by a test instead of only being reachable through a window server. An
+/// unregistered plugin has no channel to address; a registered one is
+/// *unconfirmed* rather than available, because the plugin's desktop
+/// `permission_state` always answers granted without asking the operating system
+/// anything, so it cannot distinguish a host with a notification service from a
+/// host without one.
+pub fn capability_from_plugin(
+    registered: bool,
+    permission_granted: bool,
+) -> NotificationCapabilityDto {
+    match (registered, permission_granted) {
+        (false, _) => NotificationCapabilityDto::Unsupported,
+        (_, false) => NotificationCapabilityDto::PermissionDenied,
+        (true, true) => NotificationCapabilityDto::Unconfirmed,
+    }
+}
+
+/// Map the plugin's `show` result onto the contract.
+///
+/// `Ok` means "the plugin accepted the notice and spawned its delivery", never
+/// "the operating system displayed it": on desktop the plugin discards the OS
+/// response and answers `Ok` either way. Only a synchronous failure - the plugin
+/// cannot even build the request - is a refusal.
+pub fn delivery_from_plugin(shown: bool) -> DeliveryOutcome {
+    if shown {
+        DeliveryOutcome::Queued
+    } else {
+        DeliveryOutcome::Refused(NotificationCapabilityDto::Unsupported)
+    }
+}
+
 /// Notification channel backed by the Tauri notification plugin.
 ///
 /// The plugin is registered from Rust only and no capability permission exposes
@@ -212,29 +268,35 @@ impl TauriNotifications {
     /// Ask the plugin what this platform offers.
     ///
     /// Observed from the plugin source (tauri-plugin-notification 2.7.0,
-    /// `src/desktop.rs`): on desktop `permission_state` always resolves to
-    /// `Granted` because desktop applications do not request that permission,
-    /// and `show` hands the notification to a background task without reporting
-    /// the OS response. A desktop answer is therefore *channel presence*, not a
-    /// delivery guarantee - which is why the renderer always keeps an in-app
-    /// status next to whatever this reports.
+    /// `src/desktop.rs`): on desktop `permission_state` unconditionally resolves
+    /// to `Granted` because desktop applications do not request that permission,
+    /// and `show` hands the notification to a background task whose
+    /// operating-system response is never read back. Neither call can therefore
+    /// prove that this host has a notification service at all.
+    ///
+    /// A registered plugin is consequently reported as `Unconfirmed`: the
+    /// channel exists inside this process, and whether the operating system will
+    /// accept anything through it is not something this adapter can know. Only
+    /// an absent plugin, or a permission answer that is not granted, counts as a
+    /// refusal. `Available` is reserved for an adapter that can read the
+    /// platform's own answer - the mobile target, where the plugin does real
+    /// permission handling - and for a native probe validated by a run on the
+    /// target, which is P1-13 work.
     pub fn detect(handle: tauri::AppHandle) -> Self {
         use tauri::Manager;
         use tauri_plugin_notification::{Notification, PermissionState};
 
-        let detected = if handle.try_state::<Notification<tauri::Wry>>().is_none() {
-            // The plugin is not registered, so no channel exists to address.
-            NotificationCapabilityDto::Unsupported
-        } else {
+        let registered = handle.try_state::<Notification<tauri::Wry>>().is_some();
+        // `notification()` panics when the plugin is missing, so it is only
+        // reached once registration is known.
+        let granted = registered && {
             use tauri_plugin_notification::NotificationExt;
-            match handle.notification().permission_state() {
-                Ok(PermissionState::Granted) => NotificationCapabilityDto::Available,
-                // Denied, Prompt and PromptWithRationale all mean the channel
-                // may not be used right now; the desktop plugin never returns
-                // them, and a future mobile target must not read them as "on".
-                _ => NotificationCapabilityDto::PermissionDenied,
-            }
+            matches!(
+                handle.notification().permission_state(),
+                Ok(PermissionState::Granted)
+            )
         };
+        let detected = capability_from_plugin(registered, granted);
         Self { handle, detected }
     }
 }
@@ -247,7 +309,12 @@ impl NotificationPort for TauriNotifications {
     fn deliver(&self, notice: &SyntheticNotice) -> DeliveryOutcome {
         use tauri_plugin_notification::NotificationExt;
 
-        if self.detected != NotificationCapabilityDto::Available {
+        // A channel that detection already refused is never addressed, so a
+        // missing notification service cannot be reported as a success.
+        if matches!(
+            self.detected,
+            NotificationCapabilityDto::Unsupported | NotificationCapabilityDto::PermissionDenied
+        ) {
             return DeliveryOutcome::Refused(self.detected);
         }
         let prepared = self
@@ -256,10 +323,9 @@ impl NotificationPort for TauriNotifications {
             .builder()
             .title(notice.title.clone())
             .body(notice.body.clone());
-        match prepared.show() {
-            Ok(()) => DeliveryOutcome::Delivered,
-            Err(_) => DeliveryOutcome::Refused(NotificationCapabilityDto::Unsupported),
-        }
+        // Delegated so the mapping is covered by a test that sends nothing to
+        // the operating system.
+        delivery_from_plugin(prepared.show().is_ok())
     }
 }
 
@@ -370,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn an_available_channel_reports_the_text_it_accepted() {
+    fn a_channel_that_confirms_delivery_reports_delivered_and_available() {
         let fake = Arc::new(FakeNotifications::new(
             NotificationCapabilityDto::Available,
             DeliveryOutcome::Delivered,
@@ -379,7 +445,7 @@ mod tests {
             .preview(NotificationTemplateKey::SyntheticProbe, Locale::ZhCn)
             .expect("preview is built from the fixed catalog");
 
-        assert!(preview.delivered);
+        assert_eq!(preview.delivery, NotificationDeliveryDto::Delivered);
         assert_eq!(preview.capability, NotificationCapabilityDto::Available);
         assert_eq!(preview.locale, Locale::ZhCn);
         assert_eq!(
@@ -411,7 +477,7 @@ mod tests {
             let preview = platform
                 .preview(NotificationTemplateKey::SyntheticProbe, Locale::En)
                 .expect("a refused delivery is still a report");
-            assert!(!preview.delivered);
+            assert_eq!(preview.delivery, NotificationDeliveryDto::Refused);
             assert_eq!(preview.capability, capability);
             // The port was still handed the notice, and the interface still
             // gets the localized text to display in-app even though nothing
@@ -433,7 +499,7 @@ mod tests {
         let preview = state(fake, TrayAvailabilityDto::Available)
             .preview(NotificationTemplateKey::SyntheticProbe, Locale::En)
             .expect("preview survives a refused delivery");
-        assert!(!preview.delivered);
+        assert_eq!(preview.delivery, NotificationDeliveryDto::Refused);
         assert_eq!(preview.capability, NotificationCapabilityDto::Unsupported);
     }
 
@@ -490,5 +556,102 @@ mod tests {
         // A forced-off run registers no icon at all, so `detect_tray(false)` is
         // the only answer it can reach, on every platform.
         assert_eq!(detect_tray(false), TrayAvailabilityDto::Unavailable);
+    }
+    #[test]
+    fn a_plugin_that_answers_granted_is_reported_as_unconfirmed() {
+        // The exact answers the pinned desktop plugin gives: it is registered,
+        // and `permission_state` says granted without ever consulting the
+        // operating system. That is not evidence a notification service exists,
+        // so the capability must not read as available.
+        assert_eq!(
+            capability_from_plugin(true, true),
+            NotificationCapabilityDto::Unconfirmed
+        );
+        // No plugin means there is no channel to address at all.
+        assert_eq!(
+            capability_from_plugin(false, false),
+            NotificationCapabilityDto::Unsupported
+        );
+        assert_eq!(
+            capability_from_plugin(false, true),
+            NotificationCapabilityDto::Unsupported,
+            "an unregistered plugin cannot have been granted anything"
+        );
+        // A permission model that really says no is a refusal, not an unknown.
+        assert_eq!(
+            capability_from_plugin(true, false),
+            NotificationCapabilityDto::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn plugin_success_is_queued_because_the_os_result_is_never_read() {
+        // `show()` answering Ok means the plugin spawned the delivery; nothing
+        // observed the operating system, so it may not be reported as delivered.
+        assert_eq!(delivery_from_plugin(true), DeliveryOutcome::Queued);
+        assert_eq!(
+            delivery_from_plugin(false),
+            DeliveryOutcome::Refused(NotificationCapabilityDto::Unsupported)
+        );
+    }
+
+    #[test]
+    fn a_queued_notification_stays_unconfirmed_and_keeps_its_text() {
+        // The case a fake refusal cannot model: the plugin reports success while
+        // the operating system confirms nothing. The renderer has to receive
+        // "queued" with the detected capability unchanged, so it can say the
+        // delivery is unconfirmed instead of implying a banner appeared.
+        let fake = Arc::new(FakeNotifications::new(
+            NotificationCapabilityDto::Unconfirmed,
+            DeliveryOutcome::Queued,
+        ));
+        let platform = state(fake.clone(), TrayAvailabilityDto::Available);
+        assert_eq!(
+            platform.capabilities().notification,
+            NotificationCapabilityDto::Unconfirmed
+        );
+
+        let preview = platform
+            .preview(NotificationTemplateKey::SyntheticProbe, Locale::ZhCn)
+            .expect("the catalog is inside the scalar's bounds");
+        assert_eq!(preview.delivery, NotificationDeliveryDto::Queued);
+        assert_eq!(
+            preview.capability,
+            NotificationCapabilityDto::Unconfirmed,
+            "a queued delivery proves nothing, so it must not upgrade the capability"
+        );
+        // The port was addressed once, and the interface still gets the
+        // localized text to display in-app.
+        let seen = fake.delivered();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].locale, Locale::ZhCn);
+        assert!(!preview.title.as_str().is_empty());
+        assert!(!preview.body.as_str().is_empty());
+    }
+
+    #[test]
+    fn only_a_confirmed_delivery_reports_delivered() {
+        // The three outcomes stay distinguishable end to end, so no adapter can
+        // collapse "queued" or "refused" into a success.
+        for (outcome, expected) in [
+            (
+                DeliveryOutcome::Delivered,
+                NotificationDeliveryDto::Delivered,
+            ),
+            (DeliveryOutcome::Queued, NotificationDeliveryDto::Queued),
+            (
+                DeliveryOutcome::Refused(NotificationCapabilityDto::PermissionDenied),
+                NotificationDeliveryDto::Refused,
+            ),
+        ] {
+            let fake = Arc::new(FakeNotifications::new(
+                NotificationCapabilityDto::Unconfirmed,
+                outcome,
+            ));
+            let preview = state(fake, TrayAvailabilityDto::Unavailable)
+                .preview(NotificationTemplateKey::SyntheticProbe, Locale::En)
+                .expect("preview survives every outcome");
+            assert_eq!(preview.delivery, expected);
+        }
     }
 }

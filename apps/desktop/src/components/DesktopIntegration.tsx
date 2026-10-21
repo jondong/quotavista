@@ -4,6 +4,7 @@ import { useI18n, type MessageKey } from "../i18n";
 import {
   ipc,
   type NotificationCapabilityDto,
+  type NotificationDeliveryDto,
   type NotificationPreviewDto,
   type PlatformCapabilitiesDto,
 } from "../ipc";
@@ -25,8 +26,19 @@ const TRAY_MESSAGE_KEYS: Record<PlatformCapabilitiesDto["tray"], MessageKey> = {
 
 const CAPABILITY_MESSAGE_KEYS: Record<NotificationCapabilityDto, MessageKey> = {
   available: "desktop.notification.available",
+  unconfirmed: "desktop.notification.unconfirmed",
   permission_denied: "desktop.notification.permissionDenied",
   unsupported: "desktop.notification.unsupported",
+};
+
+// `delivered` is only reachable from an adapter that can read the operating
+// system's own answer. The pinned desktop plugin cannot - it spawns the
+// delivery and returns without the result - so a real run reports `queued`, and
+// the message below says that plainly instead of implying the banner appeared.
+const DELIVERY_MESSAGE_KEYS: Record<NotificationDeliveryDto, MessageKey> = {
+  delivered: "desktop.notification.delivered",
+  queued: "desktop.notification.queued",
+  refused: "desktop.notification.explained",
 };
 
 /** Which request is in flight, if any. */
@@ -152,11 +164,7 @@ export default function DesktopIntegration() {
         <div className="desktop-integration-result" role="status">
           {status.preview !== null && (
             <p className="desktop-integration-verdict">
-              {t(
-                status.preview.delivered
-                  ? "desktop.notification.delivered"
-                  : "desktop.notification.explained",
-              )}
+              {t(DELIVERY_MESSAGE_KEYS[status.preview.delivery])}
             </p>
           )}
           {status.failure !== null && (

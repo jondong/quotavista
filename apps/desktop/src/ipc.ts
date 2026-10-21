@@ -19,6 +19,7 @@ import type {
   Envelope,
   LocalId,
   NotificationCapabilityDto,
+  NotificationDeliveryDto,
   NotificationPreviewDto,
   NotificationTemplateKey,
   OperationDto,
@@ -33,7 +34,7 @@ import type {
 
 export const CONTRACT_VERSION = 1 as const;
 
-export type { ChangeEvent, ConnectionDto, ConnectionList, NotificationCapabilityDto, NotificationPreviewDto, NotificationTemplateKey, OperationDto, OperationList, OverviewDto, PlatformCapabilitiesDto, SettingsDto, SettingsPatch, StatisticsDto };
+export type { ChangeEvent, ConnectionDto, ConnectionList, NotificationCapabilityDto, NotificationDeliveryDto, NotificationPreviewDto, NotificationTemplateKey, OperationDto, OperationList, OverviewDto, PlatformCapabilitiesDto, SettingsDto, SettingsPatch, StatisticsDto };
 
 /** SafeError shape lifted off the envelope. `code` is the only stable branch. */
 export interface IpcError extends Error {
