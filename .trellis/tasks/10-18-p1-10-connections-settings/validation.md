@@ -97,6 +97,18 @@ The overstated claims called out by the review were corrected: `secrets_never_le
 
 Rust test names above are exactly as they appear in the suites; the renderer test names match the `it(...)` titles in the cited files.
 
+## Rebase onto merged P1-09 main (2026-10-21, this branch)
+
+P1-09 merged to `main` (757facf, archive 60a4649) while this branch was in review. The branch was rebased onto the new `main`; conflicts in the shared additive files were resolved by keeping both sides' content:
+
+- `apps/desktop/src-tauri/src/lib.rs`: P1-09's `SimulatedRouter` composition parameter and overview/statistics dispatch arms plus this task's `RoutingSecrets` parameter, connection arms, and startup reconciliation; the pre-merge placeholder test asserting overview/statistics were `UnsupportedInPhaseOne` was removed (its premise no longer holds; both command families are covered by the merged suites).
+- `apps/desktop/src/i18n/{en,zh-CN}.json`: union of both tasks' keys (198 keys per catalog, parity re-checked); shared keys keep the merged `main` wording (e.g. `settings.reporting.zone` "报告时区"), and the test asserting that label was aligned to the merged catalog.
+- `apps/desktop/src/App.test.tsx`: P1-09's envelope helpers/fixtures plus this task's settings routing in one `routeInvoke` default router; both suites' tests kept (74 renderer tests). The rebase splice initially dropped the `PROTOTYPE_ENVELOPE` fixture (runtime `ReferenceError` surfaced as "Backend status unavailable"); restored and re-verified.
+- `apps/desktop/src-tauri/src/connections.rs`: new `JournalError::ResourceLimit` arm in `journal_error` (P1-09 added the variant).
+- `docs/traceability.md`: both evidence sections kept (P1-09 before P1-10).
+
+`git range-diff` against the pre-rebase branch: commits 2-5 patch-identical, commit 1 differs only in the conflict files above. The full validation battery (13 commands) was re-run on the rebased head — all exit 0, workspace test totals now include P1-09's suites (contracts 16, core 31, desktop 44, infrastructure 66 + 1 ignored, plus 13 + 13; renderer 74).
+
 ## Pending and not claimed
 
 - Native store smoke check (real macOS Keychain round trip through the new flows): pending — every fixture uses the session-only in-memory fake; no native credential or real keychain entry was touched, and the extra-rules native smoke option was not needed for the criteria. To be exercised in native validation (P1-13) or on explicit request with a disposable `quotavista-test-` service entry.

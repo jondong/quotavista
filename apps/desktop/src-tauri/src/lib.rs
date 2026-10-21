@@ -1757,7 +1757,6 @@ mod tests {
         expect_error(&envelope, ErrorCode::Validation);
     }
 
-
     #[tokio::test]
     async fn a_degraded_composition_reports_the_credential_store_error() {
         let dir = tempfile::tempdir().expect("temp dir");

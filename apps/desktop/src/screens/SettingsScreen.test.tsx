@@ -259,7 +259,7 @@ describe("settings screen", () => {
 
     expect(await screen.findByText(/该选择随持久化设置保存/u)).not.toBeNull();
     // The zone draft (non-secret form state) survives the switch.
-    expect((screen.getByLabelText("报表时区") as HTMLInputElement).value).toBe(
+    expect((screen.getByLabelText("报告时区") as HTMLInputElement).value).toBe(
       "Asia/Shanghai",
     );
     // The explicit locale choice is persisted through the versioned setting.

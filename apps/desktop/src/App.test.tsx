@@ -39,6 +39,40 @@ const SETTINGS_ENVELOPE = {
   },
 } as const;
 
+const PROTOTYPE_ENVELOPE = {
+  status: "ok",
+  contract_version: 1,
+  request_id: "fixture-request",
+  data: {
+    command: "list_connections",
+    data: {
+      connections: [
+        {
+          connection_id: "demo-kimi",
+          provider: "kimi",
+          alias: "Demo Kimi",
+          lifecycle: "active",
+          config_revision: "1",
+          generation: "1",
+          datasets: [],
+          capabilities: [],
+        },
+        {
+          connection_id: "demo-openrouter",
+          provider: "openrouter",
+          alias: "Demo OpenRouter",
+          lifecycle: "active",
+          config_revision: "1",
+          generation: "1",
+          datasets: [],
+          capabilities: [],
+        },
+      ],
+      data_revision: "1",
+    },
+  },
+} as const;
+
 function metric(overrides: Record<string, unknown>) {
   return {
     metric_id: "tokens",
@@ -202,8 +236,6 @@ const EMPTY_STATISTICS_DATA = {
 };
 
 let statisticsFixture: unknown = STATISTICS_DATA;
-
-} as const;
 // Routers return whole envelopes (or throw); `unknown` keeps the const
 // literals from fighting the mock's generic signature.
 type InvokeRouter = (

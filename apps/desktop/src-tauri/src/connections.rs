@@ -164,6 +164,7 @@ pub fn journal_error(error: &quotavista_core::journal::JournalError) -> SafeErro
             safe(ErrorCode::StorageError)
         }
         JournalError::Unavailable => safe(ErrorCode::StorageError),
+        JournalError::ResourceLimit => safe(ErrorCode::ResourceLimit),
     }
 }
 
