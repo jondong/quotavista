@@ -407,6 +407,10 @@ review-round-1 fixes, which is why the notification capability reads differently
 
 ### Round 1 (commit `4045a2e`)
 
+Round 1 reported `notification=Available`. That is exactly what review round 1
+raised as Blocking 1, and the current code reports `Unconfirmed`; the lines below
+are kept as the record of what that commit actually printed.
+
 1. **Default run.** `quotavista: capabilities tray=Available
    notification=Available`. The process stayed alive. The data directory
    contained only `quotavista-prototype/{journal, quotavista.sqlite,
@@ -418,8 +422,10 @@ review-round-1 fixes, which is why the notification capability reads differently
    notification=Available` then `quotavista: wake SingleInstanceActivation mode
    Off permitted false merged 0 not-due 0`, with no panic. Second instance
    `alive=no`, first `alive=yes`, `leftover=0` after cleanup. This is native
-   evidence that the handover reaches the wake path and that refresh-Off starts
-   nothing on a real wake.
+   evidence that the handover reaches the gated wake path and that refresh-Off
+   starts nothing on a real reactivation. It is **not** evidence of a
+   sleep/resume cycle: that is `ResumeMonitor`, whose real-machine check is
+   `scripts/native-checks.sh --interactive` step 14.
 3. **No-tray run.** `QUOTAVISTA_TRAY=off` printed `quotavista: capabilities
    tray=Unavailable notification=Available`; the process launched and stayed
    alive; `leftover=0` after cleanup.
@@ -437,7 +443,10 @@ main thread with `run_on_main_thread`. The other callbacks were checked and need
 no change: the tray `on_menu_event` handler is drained at
 `tauri-2.12.4/src/app.rs:2755` from `EventLoopMessage::MenuEvent`, tray icon
 events via `src/manager/tray.rs:44`, and `WindowEvent`, `Reopen` and
-`ExitRequested` are all main-thread, so `block_on` is safe in every one of them.
+`ExitRequested` are all main-thread. Review round 1 later removed `block_on` from
+every callback anyway (Should-fix 3 below), so this argument now only explains why
+the marshalling was not the cause of the panic; the `run_on_main_thread` call stays
+because `show_main_window` is a window operation.
 Using `tauri::async_runtime::spawn` instead was rejected because the SQLite pools
 in `AppState` are bound to the runtime built in `run()`.
 
@@ -640,6 +649,17 @@ The single-instance callback keeps its `run_on_main_thread` marshalling from rou
 1, because the plugin dispatches it from its own async-runtime task; the marshalled
 closure now only shows the window and spawns.
 
+**Rebase onto the merged P1-09.** While these fixes were in flight, P1-09 merged
+into `main` as `757facf` (archived by `60a4649`) and this branch was rebased onto
+it. Both conflicts were additive and were resolved by keeping both sides:
+`mod statistics;` next to `mod lifecycle;` and `mod platform;` in
+`apps/desktop/src-tauri/src/lib.rs`, and the `## P1-09 prototype evidence` section
+next to `## P1-11 prototype evidence` in `docs/traceability.md`. A clean
+`git rebase --continue` did not mean a compiling tree: P1-09's
+`runtime.block_on(seed_demo_connections(&state))` inside `setup` moved the owned
+runtime out from under `app.run`, and a test-module import was missing. Both are
+fixed and recorded under Repository validation. No P1-09 logic was rewritten.
+
 ## Technical choices checked against official documentation
 
 Verified against v2.tauri.app, docs.rs/tauri/2.12.4, and the vendored crate
@@ -684,8 +704,22 @@ still pass, so the IPC boundary is unchanged.
 - `.trellis/spec/backend/error-handling.md` — one appended paragraph recording
   the rule this task established: a capability that cannot report failure must
   not be surfaced as success, and a successful registration is not proof of a
-  usable surface.
-- `scripts/native-checks.sh` — new, executable, `bash -n` clean.
+  usable surface. Review round 1 rewrote it into the vocabulary the fix shipped:
+  `Available` is reserved for a channel whose delivery the platform confirmed,
+  `Unconfirmed` means the channel exists but nothing could be verified, and
+  `NotificationPreviewDto.delivery` separates `Delivered`, `Queued` and
+  `Refused` so only a confirmed delivery may upgrade the capability.
+- `scripts/native-checks.sh` — new, executable, `bash -n` clean. `--environment`
+  records the host and, on Linux, probes `org.freedesktop.Notifications` and the
+  StatusNotifierWatcher host so a native run records a detection instead of
+  trusting the plugin's always-granted answer. `--automated` runs three labelled
+  test steps from their real exit status. `--interactive` walks 16 observed steps
+  and prints `OBSERVED: PENDING` rather than a guessed pass when there is no
+  terminal; steps 14 to 16 are the real suspend/resume and responsiveness checks
+  review round 1 asked for.
+- `docs/traceability.md` — the A07, A11 and A25 bullets of the P1-11 section were
+  rewritten after review round 1 to name both wake sources, the three delivery
+  states and the post-rebase catalog size.
 - No other spec, requirement or architecture document was changed, and no sibling
   task directory was touched.
 
