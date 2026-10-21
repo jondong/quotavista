@@ -3,12 +3,7 @@
 ALTER TABLE settings ADD COLUMN quota_threshold TEXT NOT NULL DEFAULT '0.2';
 ALTER TABLE settings ADD COLUMN balance_threshold TEXT NOT NULL DEFAULT '0';
 
--- The requirements set the default refresh interval to five minutes. The
--- seed row ships refresh_minutes NULL because 0001 predates the choice;
--- only rows that were never explicitly saved are upgraded, so an explicit
--- "refresh off" written by save_settings is preserved.
-UPDATE settings
-   SET refresh_minutes = 5
- WHERE id = 1
-   AND revision = 0
-   AND refresh_minutes IS NULL;
+-- refresh_minutes deliberately stays NULL on the never-saved seed row: the
+-- prototype ships with automatic refresh off (P1-11 semantics on main), and
+-- an explicit interval choice — including Off — is persisted by save_settings
+-- with its revision, so no data repair is needed or wanted here.

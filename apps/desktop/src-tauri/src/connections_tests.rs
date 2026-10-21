@@ -949,7 +949,7 @@ async fn explicit_settings_survive_restart() {
 
     let defaults = read_settings(&state).await;
     assert_eq!(defaults.ui_locale, Locale::En);
-    assert_eq!(defaults.polling, Polling::FiveMinutes);
+    assert_eq!(defaults.polling, Polling::Disabled);
     assert_eq!(defaults.settings_revision.as_str(), "0");
 
     let saved = run_ok(
@@ -1033,12 +1033,14 @@ async fn undocumented_lifecycle_transitions_are_refused() {
     assert!(list_connections(&state).await.is_empty());
 }
 
-/// The default polling interval matches the requirements: five minutes.
+/// The never-saved seed keeps the shipped Off default (P1-11 semantics on
+/// main); an explicit interval choice — including Off — is what survives a
+/// restart, and that is covered by `explicit_settings_survive_restart`.
 #[tokio::test]
 async fn empty_patch_reads_current_settings_without_bumping_the_revision() {
     let (_dir, state, _sink) = fixture().await;
     let first = read_settings(&state).await;
     let second = read_settings(&state).await;
     assert_eq!(first.settings_revision, second.settings_revision);
-    assert_eq!(second.polling, Polling::FiveMinutes);
+    assert_eq!(second.polling, Polling::Disabled);
 }
