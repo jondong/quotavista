@@ -15,6 +15,8 @@ Thumbs.db
 
 # Build outputs
 /target/
+# benchmark artifact scratch dir (P1-12)
+apps/desktop/src-tauri/target/
 node_modules/
 dist/
 *.tsbuildinfo

@@ -1,6 +1,6 @@
 # Contributing to QuotaVista
 
-QuotaVista has reviewed requirements and architecture and a Trellis-managed prototype backlog. A minimal Tauri 2 scaffold with synthetic-only data now exists under `apps/desktop/` and `crates/`; complete screens, provider integrations, persistence, and native integrations are not implemented yet.
+QuotaVista has reviewed requirements and architecture and a Trellis-managed prototype backlog. The Phase 1 prototype now integrates a four-screen Tauri 2 desktop app over a SQLite backend with synthetic providers only: overview, statistics, connections, and settings screens, bilingual (en/zh-CN) catalogs, session-only or platform credential stores, and lifecycle-aware refresh. Real provider integrations and release acceptance are not implemented; see [traceability](docs/traceability.md) for what the synthetic evidence does and does not cover.
 
 Read [task management](docs/task-management.md) and the [Phase 1 plan](docs/phase-one-plan.md) before implementation. Initialize your local Trellis identity, select an existing task, verify its prerequisites, and follow its acceptance criteria.
 
@@ -41,6 +41,7 @@ Run everything from the repository root:
 cargo fmt --all -- --check                                   # formatting
 cargo clippy --locked --workspace --all-targets -- -D warnings  # lints
 cargo test --locked --workspace                              # Rust tests
+cargo run -p quotavista-contracts --bin generate-contracts -- --check  # Rust/TypeScript contract drift
 (cd apps/desktop && npm run lint)                            # ESLint
 (cd apps/desktop && npm run i18n:check)                      # en/zh-CN catalog key parity
 (cd apps/desktop && npm test)                                # renderer unit/component tests (Vitest)
@@ -51,10 +52,19 @@ cargo test --locked --workspace                              # Rust tests
 
 CI (`.github/workflows/ci.yml`) runs these checks without credentials. A green CI build is not evidence of a native Linux run; platform behavior needs separate validation evidence.
 
-### SQLite note for later tasks
+### Local query benchmark (P1-12)
 
-SQLx is not a dependency yet (it arrives with task P1-03). When adding it, pin a SQLite release whose changelog includes the current upstream WAL fixes, record the exact linked version here, and verify the version actually linked at runtime during setup.
+The integration benchmark seeds ninety settled days of synthetic usage history — exactly 100,000 facts, the storage bound for one query — and measures the statistics/overview query mix through the same validated request path the renderer uses. It is env-gated so the default suite stays fast:
 
+```sh
+QUOTAVISTA_BENCHMARK=1 cargo test --locked -p quotavista-desktop statistics_query_mix_benchmark -- --nocapture
+```
+
+It writes a JSON artifact to `apps/desktop/src-tauri/target/p1-12-benchmark.json` (cargo sets the test working directory to the package root; override with `QUOTAVISTA_BENCHMARK_OUT`) recording five warmups, thirty measured queries, per-mix and overall p50/p95/max against the 1-second prototype target, cancellation behavior, and failures. A target miss is recorded in the artifact, not asserted away.
+
+### SQLite note
+
+SQLx is pinned to `0.9.0` and `libsqlite3-sys = 0.37.0` (bundled) links SQLite `3.51.3`; startup and tests assert the linked version, and the WAL-reset fix is included. Do not enable SQLx's unbundled SQLite feature.
 ## Documentation language
 
 Write all repository documentation in English so the project is accessible to a global audience. This applies to README files, requirements, architecture decisions, development plans, installation instructions, contributor guidance, and diagram labels.

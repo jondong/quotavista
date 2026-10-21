@@ -5,6 +5,10 @@
 mod connections;
 mod identity;
 
+/// P1-12 integration benchmark: the 100,000-fact local query workload,
+/// env-gated so the default suite stays fast.
+#[cfg(test)]
+mod benchmark;
 /// End-to-end flow tests for the P1-10 command surface.
 #[cfg(test)]
 mod connections_tests;

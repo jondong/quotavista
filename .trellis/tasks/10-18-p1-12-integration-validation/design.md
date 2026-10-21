@@ -6,7 +6,7 @@ Use the task-specific tests already created rather than duplicating them. Add on
 
 ## Dependencies and contracts
 
-Use the baseline linked in [PRD](prd.md). Predecessors: [P1-09](../10-18-p1-09-overview-statistics/prd.md), [P1-10](../10-18-p1-10-connections-settings/prd.md), [P1-11](../10-18-p1-11-desktop-lifecycle/prd.md) Update affected DTO mappings, migrations, and consumers together; preserve core dependency direction and synthetic provenance.
+Use the baseline linked in [PRD](prd.md). Predecessors: [P1-09](../archive/2026-10/10-18-p1-09-overview-statistics/prd.md), [P1-10](../archive/2026-10/10-18-p1-10-connections-settings/prd.md), [P1-11](../archive/2026-10/10-18-p1-11-desktop-lifecycle/prd.md) Update affected DTO mappings, migrations, and consumers together; preserve core dependency direction and synthetic provenance.
 
 ## Compatibility and rollback
 

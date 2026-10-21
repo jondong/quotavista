@@ -3,7 +3,7 @@
 ## Entry checks
 
 - [ ] Read the PRD, design, relevant specs, and reviewed baseline.
-- [ ] Confirm predecessor tasks are completed, including archived records: [P1-09](../10-18-p1-09-overview-statistics/prd.md), [P1-10](../10-18-p1-10-connections-settings/prd.md), [P1-11](../10-18-p1-11-desktop-lifecycle/prd.md)
+- [ ] Confirm predecessor tasks are completed, including archived records: [P1-09](../archive/2026-10/10-18-p1-09-overview-statistics/prd.md), [P1-10](../archive/2026-10/10-18-p1-10-connections-settings/prd.md), [P1-11](../archive/2026-10/10-18-p1-11-desktop-lifecycle/prd.md)
 - [ ] Review the plan against any newer decisions and existing user authorization before activation.
 
 ## Work sequence

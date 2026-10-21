@@ -1,0 +1,209 @@
+{
+  "benchmark": "p1-12-local-query-mix",
+  "budget": {
+    "cancellation_deadline_ms": 5000.0,
+    "p95_target_ms": 1000.0
+  },
+  "cancellation": {
+    "attempts": [
+      {
+        "abort_to_join_ms": 0.591333,
+        "attempt": 0,
+        "cancelled_mid_flight": true
+      },
+      {
+        "abort_to_join_ms": 0.47800000000000004,
+        "attempt": 1,
+        "cancelled_mid_flight": true
+      },
+      {
+        "abort_to_join_ms": 0.280542,
+        "attempt": 2,
+        "cancelled_mid_flight": true
+      },
+      {
+        "abort_to_join_ms": 0.283792,
+        "attempt": 3,
+        "cancelled_mid_flight": true
+      },
+      {
+        "abort_to_join_ms": 0.299416,
+        "attempt": 4,
+        "cancelled_mid_flight": true
+      }
+    ],
+    "mechanism": "tokio task abort at the next await point",
+    "note": "No mid-aggregation cancellation token exists; a query already inside the synchronous aggregation runs to completion. Measured p95 shows how far that worst case sits from the 5-second deadline."
+  },
+  "failures": 0,
+  "machine": "Apple M6, 32 GB, macOS 27.0.1 (26A434), arm64",
+  "measured": [
+    {
+      "ms": 751.4952910000001,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 737.609417,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 737.775125,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 758.069,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 750.3696669999999,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 737.667875,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 740.410958,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 747.779583,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 738.527375,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 741.748083,
+      "query": "A-statistics-90d-day"
+    },
+    {
+      "ms": 759.667583,
+      "query": "B-statistics-90d-week"
+    },
+    {
+      "ms": 760.618417,
+      "query": "B-statistics-90d-week"
+    },
+    {
+      "ms": 751.636167,
+      "query": "B-statistics-90d-week"
+    },
+    {
+      "ms": 747.33825,
+      "query": "B-statistics-90d-week"
+    },
+    {
+      "ms": 752.800583,
+      "query": "B-statistics-90d-week"
+    },
+    {
+      "ms": 751.988208,
+      "query": "B-statistics-90d-week"
+    },
+    {
+      "ms": 767.9189170000001,
+      "query": "B-statistics-90d-week"
+    },
+    {
+      "ms": 743.12025,
+      "query": "B-statistics-90d-week"
+    },
+    {
+      "ms": 250.508708,
+      "query": "C-statistics-30d-day"
+    },
+    {
+      "ms": 252.909459,
+      "query": "C-statistics-30d-day"
+    },
+    {
+      "ms": 256.152625,
+      "query": "C-statistics-30d-day"
+    },
+    {
+      "ms": 254.972459,
+      "query": "C-statistics-30d-day"
+    },
+    {
+      "ms": 251.16216699999998,
+      "query": "C-statistics-30d-day"
+    },
+    {
+      "ms": 246.699375,
+      "query": "C-statistics-30d-day"
+    },
+    {
+      "ms": 753.3375,
+      "query": "D-overview-90d"
+    },
+    {
+      "ms": 752.713459,
+      "query": "D-overview-90d"
+    },
+    {
+      "ms": 744.6475,
+      "query": "D-overview-90d"
+    },
+    {
+      "ms": 747.626208,
+      "query": "D-overview-90d"
+    },
+    {
+      "ms": 755.006667,
+      "query": "D-overview-90d"
+    },
+    {
+      "ms": 745.719292,
+      "query": "D-overview-90d"
+    }
+  ],
+  "overall": {
+    "count": 30,
+    "max_ms": 767.9189170000001,
+    "p50_ms": 745.719292,
+    "p95_ms": 760.618417
+  },
+  "per_mix": {
+    "A-statistics-90d-day": {
+      "count": 10,
+      "max_ms": 758.069,
+      "p50_ms": 740.410958,
+      "p95_ms": 758.069
+    },
+    "B-statistics-90d-week": {
+      "count": 8,
+      "max_ms": 767.9189170000001,
+      "p50_ms": 751.988208,
+      "p95_ms": 767.9189170000001
+    },
+    "C-statistics-30d-day": {
+      "count": 6,
+      "max_ms": 256.152625,
+      "p50_ms": 251.16216699999998,
+      "p95_ms": 256.152625
+    },
+    "D-overview-90d": {
+      "count": 6,
+      "max_ms": 755.006667,
+      "p50_ms": 747.626208,
+      "p95_ms": 755.006667
+    }
+  },
+  "platform": "macos/aarch64",
+  "seed": {
+    "connections": 1,
+    "facts": 100000,
+    "partitions": 90,
+    "scopes": 1,
+    "window": {
+      "end_date": "2026-09-28",
+      "start_date": "2026-07-01",
+      "zone": "UTC"
+    }
+  },
+  "toolchain": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "warmups": 5,
+  "within_p95_target": true
+}
