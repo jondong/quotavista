@@ -343,6 +343,12 @@ impl Repository for SqliteRepository {
                 .map_err(db_error)?
                 .map(|n| u8::try_from(n).map_err(|_| StorageError::Unavailable))
                 .transpose()?,
+            quota_threshold: text(&row, "quota_threshold")?
+                .parse()
+                .map_err(|_| StorageError::Unavailable)?,
+            balance_threshold: text(&row, "balance_threshold")?
+                .parse()
+                .map_err(|_| StorageError::Unavailable)?,
         })
     }
     async fn save_settings(&self, settings: &Settings) -> Result<Settings, StorageError> {
@@ -352,8 +358,8 @@ impl Repository for SqliteRepository {
             return Err(StorageError::Validation);
         }
         let mut tx = self.write().await?;
-        let next: Option<i64> = sqlx::query_scalar("UPDATE settings SET revision=revision+1,locale=?,reporting_zone=?,currency=?,refresh_minutes=? WHERE id=1 AND revision=? RETURNING revision")
-            .bind(&settings.locale).bind(settings.reporting_zone.name()).bind(settings.currency.to_string()).bind(settings.refresh_minutes.map(i64::from)).bind(settings.revision)
+        let next: Option<i64> = sqlx::query_scalar("UPDATE settings SET revision=revision+1,locale=?,reporting_zone=?,currency=?,refresh_minutes=?,quota_threshold=?,balance_threshold=? WHERE id=1 AND revision=? RETURNING revision")
+            .bind(&settings.locale).bind(settings.reporting_zone.name()).bind(settings.currency.to_string()).bind(settings.refresh_minutes.map(i64::from)).bind(settings.quota_threshold.to_string()).bind(settings.balance_threshold.to_string()).bind(settings.revision)
             .fetch_optional(&mut *tx).await.map_err(db_error)?;
         let next = next.ok_or(StorageError::Conflict)?;
         tx.commit().await.map_err(db_error)?;
@@ -452,6 +458,65 @@ impl Repository for SqliteRepository {
             .bind(lifecycle(state)).bind(&context.connection_id).bind(context.generation)
             .fetch_optional(&mut *tx).await.map_err(db_error)?;
         let next = next.ok_or(StorageError::Conflict)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(next)
+    }
+    async fn set_alias(&self, context: &WriteContext, alias: &str) -> Result<i64, StorageError> {
+        // Same alias rules as create_connection: trimmed, nonempty, bounded,
+        // and free of control characters.
+        if alias.trim() != alias
+            || alias.chars().count() > 80
+            || alias.chars().any(char::is_control)
+            || alias.is_empty()
+        {
+            return Err(StorageError::Validation);
+        }
+        let mut tx = self.write().await?;
+        // The write re-checks the captured generation, refuses a connection
+        // pending deletion, and observes the same operation fence as the other
+        // lifecycle mutations.
+        let next: Option<i64> = sqlx::query_scalar("UPDATE connections SET alias=?,generation=generation+1 WHERE id=? AND generation=? AND lifecycle <> 'deletion_pending' AND NOT EXISTS(SELECT 1 FROM lifecycle_operations o WHERE o.connection_id=connections.id AND o.state <> 'complete') RETURNING generation")
+            .bind(alias).bind(&context.connection_id).bind(context.generation)
+            .fetch_optional(&mut *tx).await.map_err(db_error)?;
+        let next = next.ok_or(StorageError::Conflict)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(next)
+    }
+    async fn delete_connection(&self, connection_id: &str) -> Result<(), StorageError> {
+        nonempty(connection_id)?;
+        let mut tx = self.write().await?;
+        // Cascades take scopes, projections, and usage data with the row; the
+        // opaque managed-backup membership deliberately survives until backup
+        // cleanup exists. An absent row is already deleted, so it is a success.
+        sqlx::query("DELETE FROM connections WHERE id=?")
+            .bind(connection_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_error)?;
+        tx.commit().await.map_err(db_error)?;
+        Ok(())
+    }
+    async fn scopes(&self, connection_id: &str) -> Result<Vec<Scope>, StorageError> {
+        nonempty(connection_id)?;
+        let rows = sqlx::query("SELECT * FROM provider_scopes WHERE connection_id=? ORDER BY id")
+            .bind(connection_id)
+            .fetch_all(&self.readers)
+            .await
+            .map_err(db_error)?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(Scope {
+                    id: text(&row, "id")?.to_owned(),
+                    connection_id: text(&row, "connection_id")?.to_owned(),
+                    key: text(&row, "scope_key")?.to_owned(),
+                    kind: text(&row, "scope_type")?.to_owned(),
+                })
+            })
+            .collect()
+    }
+    async fn advance_data_revision(&self) -> Result<i64, StorageError> {
+        let mut tx = self.write().await?;
+        let next = revision(&mut tx).await?;
         tx.commit().await.map_err(db_error)?;
         Ok(next)
     }

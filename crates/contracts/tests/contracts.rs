@@ -576,7 +576,7 @@ fn args() -> Vec<(&'static str, Option<Value>)> {
         (
             "update_settings",
             Some(
-                json!({"expected_settings_revision":"1","changes":{"ui_locale":"zh-CN","reporting_zone":"UTC","display_currency":"USD","polling":"disabled"}}),
+                json!({"expected_settings_revision":"1","changes":{"ui_locale":"zh-CN","reporting_zone":"UTC","display_currency":"USD","polling":"disabled","quota_threshold":"0.2","balance_threshold":"0"}}),
             ),
         ),
         ("get_operation", Some(json!({"operation_id":"demo-job"}))),
@@ -623,7 +623,7 @@ fn all_result_envelopes_round_trip_with_explicit_nulls_and_tags() {
             "query_statistics" => stats.clone(),
             "get_overview" => json!({"metrics":[],"summary":stats.clone()}),
             "update_settings" => {
-                json!({"settings_revision":"1","ui_locale":"zh-CN","reporting_zone":"UTC","display_currency":"USD","polling":"disabled"})
+                json!({"settings_revision":"1","ui_locale":"zh-CN","reporting_zone":"UTC","display_currency":"USD","polling":"disabled","quota_threshold":"0.2","balance_threshold":"0"})
             }
             _ => op.clone(),
         };
@@ -636,7 +636,7 @@ fn all_result_envelopes_round_trip_with_explicit_nulls_and_tags() {
     let empty_patch: SettingsPatch = serde_json::from_value(json!({})).unwrap();
     assert_eq!(
         serde_json::to_value(empty_patch).unwrap(),
-        json!({"ui_locale":null,"reporting_zone":null,"display_currency":null,"polling":null})
+        json!({"ui_locale":null,"reporting_zone":null,"display_currency":null,"polling":null,"quota_threshold":null,"balance_threshold":null})
     );
 }
 

@@ -490,9 +490,11 @@ dto!(SettingsDto {
     ui_locale: Locale,
     reporting_zone: Zone,
     display_currency: CurrencyDto,
-    polling: Polling
+    polling: Polling,
+    quota_threshold: RatioDto,
+    balance_threshold: DecimalDto
 });
-dto!(SettingsPatch { ui_locale: Option<Locale>, reporting_zone: Option<Zone>, display_currency: Option<CurrencyDto>, polling: Option<Polling> });
+dto!(SettingsPatch { ui_locale: Option<Locale>, reporting_zone: Option<Zone>, display_currency: Option<CurrencyDto>, polling: Option<Polling>, quota_threshold: Option<RatioDto>, balance_threshold: Option<DecimalDto> });
 dto!(OperationDto { operation_id: LocalId, connection_id: Option<LocalId>, kind: OperationKind, state: OperationState, next_action: NextAction, retryable: bool, retry_at: Option<Instant>, error: Option<SafeError> });
 dto!(OperationList { operations: Vec<OperationDto> });
 dto!(ChangeEvent { data_revision: Revision, affected_connection_ids: Vec<LocalId>, affected_scope_ids: Vec<LocalId> });

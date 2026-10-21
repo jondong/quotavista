@@ -54,6 +54,10 @@ pub fn parse_instant(value: &str) -> Result<DateTime<Utc>, RangeError> {
 pub fn valid_zone(value: &str) -> bool {
     value.parse::<Tz>().is_ok()
 }
+/// Parse an IANA zone name, rejecting the same inputs [`valid_zone`] does.
+pub fn parse_zone(value: &str) -> Result<Tz, RangeError> {
+    value.parse::<Tz>().map_err(|_| RangeError::UnknownZone)
+}
 pub fn parse_date(value: &str) -> Result<NaiveDate, RangeError> {
     if value.len() != 10 {
         return Err(RangeError::InvalidDate);

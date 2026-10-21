@@ -2,6 +2,12 @@
 //! behind restricted Tauri IPC. The renderer never touches storage, secrets,
 //! providers, or the coordinator directly; it sends a single validated
 //! [`quotavista_contracts::Request`] and receives an [`Envelope`].
+mod connections;
+mod identity;
+
+/// End-to-end flow tests for the P1-10 command surface.
+#[cfg(test)]
+mod connections_tests;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -151,7 +157,7 @@ pub struct AppState {
     /// The selected credential store. `None` while the composition runs
     /// degraded: the native store could not be opened, and the session store
     /// is never substituted for it.
-    pub secrets: Option<Arc<dyn SecretStore>>,
+    pub secrets: Option<Arc<connections::RoutingSecrets>>,
     /// Typed reason the composition runs degraded, if it does.
     pub degraded: Option<SafeError>,
     /// Lifecycle coordinator. It needs a credential reference store, so it is
@@ -234,19 +240,23 @@ pub async fn build_with_provider(
     .await
 }
 
-/// Open the chosen credential store. The in-memory session store is only
-/// reachable through an explicit choice; it is never a fallback.
-fn open_choice(choice: SecretChoice) -> Result<Arc<dyn SecretStore>, SecretError> {
+/// Open the chosen credential store as a routing composition: references
+/// tagged session-only go to the in-memory store, native tags to the
+/// platform-native store. The in-memory store is only reachable through an
+/// explicit choice or an explicit per-connection storage mode; it is never a
+/// fallback for a locked or missing native store.
+fn open_choice(choice: SecretChoice) -> Result<Arc<connections::RoutingSecrets>, SecretError> {
     match choice {
-        SecretChoice::SessionOnly => Ok(Arc::new(quotavista_core::secrets::SessionSecrets::new())),
-        SecretChoice::Native => open_native_secrets(),
+        SecretChoice::SessionOnly => Ok(Arc::new(connections::RoutingSecrets::session_only())),
+        SecretChoice::Native => open_native_secrets()
+            .map(|native| Arc::new(connections::RoutingSecrets::with_native(native))),
     }
 }
 
 async fn build_inner(
     root: PathBuf,
     changes: Arc<dyn ChangeSink>,
-    opened: Result<Arc<dyn SecretStore>, SecretError>,
+    opened: Result<Arc<connections::RoutingSecrets>, SecretError>,
     provider: SimulatedRouter,
 ) -> Result<AppState, SafeError> {
     std::fs::create_dir_all(&root).map_err(|_| safe(ErrorCode::InternalError))?;
@@ -260,10 +270,11 @@ async fn build_inner(
     // A credential store that could not be opened leaves the composition
     // degraded: the typed error is kept and reported, and the session store
     // is never substituted for it.
-    let (store, degraded): (Option<Arc<dyn SecretStore>>, Option<SafeError>) = match opened {
-        Ok(store) => (Some(store), None),
-        Err(error) => (None, Some(secret_error(&error))),
-    };
+    let (store, degraded): (Option<Arc<connections::RoutingSecrets>>, Option<SafeError>) =
+        match opened {
+            Ok(store) => (Some(store), None),
+            Err(error) => (None, Some(secret_error(&error))),
+        };
 
     let coordinator = match &store {
         Some(store) => {
@@ -282,6 +293,14 @@ async fn build_inner(
         }
         None => None,
     };
+
+    // Startup reconciliation: a session-only credential never survives a
+    // restart, so its connection reports `needs_credentials` in the first list
+    // the renderer reads, without any implicit credential collection. Locked
+    // or unavailable stores leave connections untouched.
+    if let Some(store) = &store {
+        connections::reconcile_startup_credentials(&database, store).await;
+    }
 
     let refresh = RefreshCoordinator::open(database.clone(), provider, durable.clone(), UtcClock)
         .map_err(|_| safe(ErrorCode::InternalError))?;
@@ -383,18 +402,71 @@ pub async fn dispatch(state: &AppState, request: Request) -> Result<CommandResul
         Command::ListConnections => list_connections(state)
             .await
             .map(CommandResult::ListConnections),
-        Command::ConnectProvider { .. } | Command::ReplaceCredentials { .. } => {
-            // The credential store is the only reason these two commands
-            // cannot be served yet, so a degraded composition reports that
-            // first instead of a generic "not implemented yet".
-            match &state.degraded {
-                Some(error) => Err(error.clone()),
-                None => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-            }
+        Command::ConnectProvider {
+            provider,
+            alias,
+            credential_kind,
+            secret,
+            storage_mode,
+        } => connections::connect_provider(
+            state,
+            provider,
+            &alias,
+            credential_kind,
+            &secret,
+            storage_mode,
+        )
+        .await
+        .map(CommandResult::ConnectProvider),
+        Command::ReplaceCredentials {
+            connection_id,
+            expected_config_revision,
+            credential_kind,
+            secret,
+            storage_mode,
+        } => connections::replace_credentials(
+            state,
+            &connection_id,
+            &expected_config_revision,
+            credential_kind,
+            &secret,
+            storage_mode,
+        )
+        .await
+        .map(CommandResult::ReplaceCredentials),
+        Command::UpdateConnection {
+            connection_id,
+            expected_config_revision,
+            alias,
+        } => {
+            connections::update_connection(state, &connection_id, &expected_config_revision, &alias)
+                .await
+                .map(CommandResult::UpdateConnection)
         }
-        Command::UpdateConnection { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-        Command::SetConnectionEnabled { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
-        Command::RemoveConnection { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
+        Command::SetConnectionEnabled {
+            connection_id,
+            expected_config_revision,
+            enabled,
+        } => connections::set_connection_enabled(
+            state,
+            &connection_id,
+            &expected_config_revision,
+            enabled,
+        )
+        .await
+        .map(CommandResult::SetConnectionEnabled),
+        Command::RemoveConnection {
+            connection_id,
+            expected_config_revision,
+            deletion_intent,
+        } => connections::remove_connection(
+            state,
+            &connection_id,
+            &expected_config_revision,
+            deletion_intent,
+        )
+        .await
+        .map(CommandResult::RemoveConnection),
         Command::RefreshConnections { target } => refresh_connections(state, target)
             .await
             .map(CommandResult::RefreshConnections),
@@ -404,7 +476,12 @@ pub async fn dispatch(state: &AppState, request: Request) -> Result<CommandResul
         Command::QueryStatistics { range } => statistics::query_statistics(state, range)
             .await
             .map(CommandResult::QueryStatistics),
-        Command::UpdateSettings { .. } => Err(safe(ErrorCode::UnsupportedInPhaseOne)),
+        Command::UpdateSettings {
+            expected_settings_revision,
+            changes,
+        } => connections::update_settings(state, &expected_settings_revision, &changes)
+            .await
+            .map(CommandResult::UpdateSettings),
         Command::GetOperation { operation_id } => get_operation(state, operation_id)
             .await
             .map(CommandResult::GetOperation),
@@ -472,7 +549,7 @@ async fn data_revision(state: &AppState) -> Result<Revision, SafeError> {
 /// `affected` names the connections the step committed for: the refresh request
 /// names the connections whose job completed in its batch, and the poll names
 /// the connections whose job completed during that poll.
-async fn publish_change(
+pub(crate) async fn publish_change(
     state: &AppState,
     revision_before: i64,
     affected: Vec<LocalId>,
@@ -1678,71 +1755,6 @@ mod tests {
         let (_dir, state, _sink) = fixture().await;
         let envelope = run_request(&state, Some(get_operation_request("missing"))).await;
         expect_error(&envelope, ErrorCode::Validation);
-    }
-
-    #[tokio::test]
-    async fn later_phase_commands_return_typed_unsupported_state() {
-        let (_dir, state, _sink) = fixture().await;
-        // Every command that a later phase owns, sent through the same
-        // validated request path the renderer uses.
-        let commands = [
-            serde_json::json!({
-                "command": "connect_provider",
-                "args": {
-                    "provider": "kimi",
-                    "alias": "Demo",
-                    "credential_kind": "api_key",
-                    "secret": "synthetic-fixture-only",
-                    "storage_mode": "session_only",
-                },
-            }),
-            serde_json::json!({
-                "command": "update_connection",
-                "args": {
-                    "connection_id": "synthetic-connection-0",
-                    "expected_config_revision": "1",
-                    "alias": "Demo",
-                },
-            }),
-            serde_json::json!({
-                "command": "replace_credentials",
-                "args": {
-                    "connection_id": "synthetic-connection-0",
-                    "expected_config_revision": "1",
-                    "credential_kind": "api_key",
-                    "secret": "synthetic-fixture-only",
-                    "storage_mode": "persistent",
-                },
-            }),
-            serde_json::json!({
-                "command": "set_connection_enabled",
-                "args": {
-                    "connection_id": "synthetic-connection-0",
-                    "expected_config_revision": "1",
-                    "enabled": true,
-                },
-            }),
-            serde_json::json!({
-                "command": "remove_connection",
-                "args": {
-                    "connection_id": "synthetic-connection-0",
-                    "expected_config_revision": "1",
-                    "deletion_intent": "credentials_history_and_managed_backups",
-                },
-            }),
-            serde_json::json!({
-                "command": "update_settings",
-                "args": {
-                    "expected_settings_revision": "1",
-                    "changes": {},
-                },
-            }),
-        ];
-        assert_eq!(commands.len(), 6, "every later-phase command is covered");
-        for command in commands {
-            let envelope = run_request(&state, Some(canonical(command))).await;
-            expect_error(&envelope, ErrorCode::UnsupportedInPhaseOne);
-        }
     }
 
     #[tokio::test]

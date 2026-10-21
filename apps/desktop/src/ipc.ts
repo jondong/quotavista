@@ -56,6 +56,12 @@ function makeIpcError(message: string, code: string, retryable: boolean, retryAt
   return error as IpcError;
 }
 
+
+/** Narrow an unknown thrown value to the typed IPC error shape. */
+export function isIpcError(error: unknown): error is IpcError {
+  return error instanceof Error && error.name === "QuotaVistaIpcError";
+}
+
 /** Map a non-`ok` envelope into a JS `Error` that callers can branch on. */
 export function envelopeToError(
   requestId: LocalId,

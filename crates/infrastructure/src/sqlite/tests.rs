@@ -166,7 +166,7 @@ async fn fresh_migration_reopen_settings_and_exact_values() {
             "SELECT count(*) FROM _sqlx_migrations WHERE success=1"
         )
         .await,
-        1
+        2
     );
     assert_eq!(
         sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
