@@ -140,6 +140,32 @@ describe("OverviewScreen", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
     expect(shownRevision()).toBe("2");
   });
+  it("keeps the newer view when an older read fails afterwards", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let rejectFirst: ((reason: unknown) => void) | undefined;
+    const first = new Promise((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    vi.mocked(invoke)
+      .mockReturnValueOnce(first as never)
+      .mockResolvedValueOnce(envelope("2"));
+    renderScreen();
+    await waitFor(() => expect(changeHandler).toBeDefined());
+
+    // The commit starts a second read that answers with the newer state.
+    await announce("2");
+    await waitFor(() => expect(shownRevision()).toBe("2"));
+
+    // The older read fails afterwards. Its error is obsolete and must not
+    // replace the newer view with the error state.
+    await act(async () => {
+      rejectFirst?.(new Error("the older read failed"));
+      await Promise.resolve();
+    });
+    expect(shownRevision()).toBe("2");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
 
   it("still shows the last known state when the change channel cannot be installed", async () => {
     const { invoke } = await import("@tauri-apps/api/core");

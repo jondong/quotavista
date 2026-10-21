@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ipc,
   isObsoleteResponse,
@@ -28,6 +28,9 @@ export default function OverviewScreen() {
   const { t, formatTokens, formatDecimal, formatDateTime } = useI18n();
   const [connections, setConnections] = useState<ConnectionList | null>(null);
   const [failed, setFailed] = useState(false);
+  // Generation of the newest read. A response or an error that belongs to an
+  // older read is obsolete and must not replace the newer view.
+  const generation = useRef(0);
 
   useEffect(() => {
     let disposed = false;
@@ -36,15 +39,23 @@ export default function OverviewScreen() {
     // A response older than the observed revision is obsolete: rendering it
     // would overwrite newer data, so it is discarded.
     const load = async (): Promise<void> => {
+      const request = generation.current + 1;
+      generation.current = request;
       try {
         const list = await ipc.listConnections();
         if (disposed) return;
+        // A response from an older read is obsolete: rendering it would
+        // overwrite newer data.
+        if (request !== generation.current) return;
         if (isObsoleteResponse(list.data_revision, revisionTracker.observed())) return;
         revisionTracker.observe(list.data_revision);
         setConnections(list);
         setFailed(false);
       } catch {
-        if (!disposed) setFailed(true);
+        // An error from an older read is obsolete as well: it must not replace
+        // the newer view with the error state.
+        if (disposed || request !== generation.current) return;
+        setFailed(true);
       }
     };
 

@@ -435,6 +435,67 @@ async fn data_revision(state: &AppState) -> Result<Revision, SafeError> {
     Revision::try_from(revision.max(0).to_string()).map_err(|_| safe(ErrorCode::InternalError))
 }
 
+/// Publish a change event when a mutating step advanced the store's commit
+/// counter. Every path that can commit goes through here - the refresh request
+/// and the poll that advances an unfinished job - so a view that settles after
+/// an event still learns about the commits that follow it.
+///
+/// `affected` names the connections the step committed for: the refresh request
+/// names the connections whose job completed in its batch, and the poll names
+/// the connections whose job completed during that poll.
+async fn publish_change(
+    state: &AppState,
+    revision_before: i64,
+    affected: Vec<LocalId>,
+) -> Result<(), SafeError> {
+    let revision_after = state
+        .repository
+        .data_revision()
+        .await
+        .map_err(storage_error)?;
+    if revision_after <= revision_before {
+        return Ok(());
+    }
+    let mut affected_scopes = Vec::new();
+    for connection in &affected {
+        for scope in state
+            .repository
+            .scope_ids(connection.as_str())
+            .await
+            .map_err(storage_error)?
+        {
+            if let Ok(scope) = LocalId::try_from(scope) {
+                affected_scopes.push(scope);
+            }
+        }
+    }
+    state.changes.emit(ChangeEvent {
+        data_revision: Revision::try_from(revision_after.max(0).to_string())
+            .map_err(|_| safe(ErrorCode::InternalError))?,
+        affected_connection_ids: affected,
+        affected_scope_ids: affected_scopes,
+    });
+    Ok(())
+}
+
+/// The connections of the given coordinator jobs, taken from the mapping the
+/// refresh request recorded when it admitted them.
+async fn job_connections(state: &AppState, jobs: &[String]) -> Vec<LocalId> {
+    let mapping = state.jobs.lock().await;
+    let mut connections: Vec<LocalId> = Vec::new();
+    for job in jobs {
+        if let Some(connection) = mapping
+            .get(job)
+            .and_then(|id| LocalId::try_from(id.clone()).ok())
+        {
+            if !connections.contains(&connection) {
+                connections.push(connection);
+            }
+        }
+    }
+    connections
+}
+
 /// Upper bound on the coordinator steps one refresh request drives. The
 /// synthetic provider needs eight; the bound only keeps a provider that never
 /// terminates from stalling the request.
@@ -510,7 +571,6 @@ async fn refresh_connections(
 
     let mut operations = Vec::with_capacity(admissions.len());
     let mut affected_connections: Vec<LocalId> = Vec::new();
-    let mut affected_scopes: Vec<LocalId> = Vec::new();
 
     for (admission, (connection_id, _)) in admissions.iter().zip(requests.iter()) {
         let local_id =
@@ -533,16 +593,6 @@ async fn refresh_connections(
                 )?);
                 if committed {
                     affected_connections.push(local_id);
-                    for scope in state
-                        .repository
-                        .scope_ids(connection_id)
-                        .await
-                        .map_err(storage_error)?
-                    {
-                        if let Ok(scope) = LocalId::try_from(scope) {
-                            affected_scopes.push(scope);
-                        }
-                    }
                 }
             }
             Admission::CooldownBlocked { until } => {
@@ -579,33 +629,41 @@ async fn refresh_connections(
 
     // The event is published only when a commit advanced the store revision,
     // so a refresh that failed or wrote nothing announces no change.
-    let revision_after = state
-        .repository
-        .data_revision()
-        .await
-        .map_err(storage_error)?;
-    if revision_after > revision_before {
-        state.changes.emit(ChangeEvent {
-            data_revision: Revision::try_from(revision_after.max(0).to_string())
-                .map_err(|_| safe(ErrorCode::InternalError))?,
-            affected_connection_ids: affected_connections,
-            affected_scope_ids: affected_scopes,
-        });
-    }
+    publish_change(state, revision_before, affected_connections).await?;
 
     Ok(OperationList { operations })
 }
 
 async fn get_operation(state: &AppState, operation_id: LocalId) -> Result<OperationDto, SafeError> {
     let target = operation_id.as_str().to_owned();
+    let revision_before = state
+        .repository
+        .data_revision()
+        .await
+        .map_err(storage_error)?;
+    let mut polled: Option<(Option<LocalId>, Option<Outcome>)> = None;
+    let mut committed_jobs: Vec<String> = Vec::new();
     {
         let mut refresh = state.refresh.lock().await;
-        if refresh.job_ids().iter().any(|job| job == &target) {
+        let job_ids = refresh.job_ids();
+        if job_ids.iter().any(|job| job == &target) {
+            // The jobs that are still running are the ones that can commit
+            // during this poll.
+            let running: Vec<String> = job_ids
+                .iter()
+                .filter(|job| refresh.outcome(job).is_none())
+                .cloned()
+                .collect();
             if refresh.outcome(&target).is_none() {
                 // A job that is still running is advanced by the poll itself, so
                 // polling is the continuation path for a job that outlived the
                 // refresh command's own step budget.
                 refresh.pump().await;
+            }
+            for job in running {
+                if matches!(refresh.outcome(&job), Some(Outcome::Completed { .. })) {
+                    committed_jobs.push(job);
+                }
             }
             let outcome = refresh.outcome(&target);
             let connection = state
@@ -615,8 +673,16 @@ async fn get_operation(state: &AppState, operation_id: LocalId) -> Result<Operat
                 .get(&target)
                 .cloned()
                 .and_then(|id| LocalId::try_from(id).ok());
-            return operation_dto(operation_id, connection, outcome.as_ref());
+            polled = Some((connection, outcome));
         }
+    }
+    if let Some((connection, outcome)) = polled {
+        // The poll advanced the coordinator and may have committed, so it
+        // announces its change like every other commit path. Without it a view
+        // that settles after the event would keep a stale revision.
+        let affected = job_connections(state, &committed_jobs).await;
+        publish_change(state, revision_before, affected).await?;
+        return operation_dto(operation_id, connection, outcome.as_ref());
     }
     // An admission without a coordinator job keeps its operation id pollable.
     if let Some(dto) = state.admissions.lock().await.get(&target).cloned() {
@@ -763,7 +829,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quotavista_contracts::{Alias, Provider, SecretInput, SettingsPatch};
+    use quotavista_contracts::{Alias, Provider, SecretInput};
     use quotavista_core::domain::Lifecycle;
     use quotavista_core::storage::{Connection, Scope};
     use quotavista_providers::simulated::Scenario;
@@ -1262,34 +1328,88 @@ mod tests {
     #[tokio::test]
     async fn later_phase_commands_return_typed_unsupported_state() {
         let (_dir, state, _sink) = fixture().await;
+        // Every command that a later phase owns, sent through the same
+        // validated request path the renderer uses.
         let commands = [
-            Command::ConnectProvider {
-                provider: Provider::Kimi,
-                alias: Alias::try_from("Demo".to_owned()).unwrap(),
-                credential_kind: quotavista_contracts::CredentialKind::ApiKey,
-                secret: SecretInput::try_from("synthetic-only".to_owned()).unwrap(),
-                storage_mode: quotavista_contracts::StorageMode::SessionOnly,
-            },
-            Command::UpdateSettings {
-                expected_settings_revision: revision(0),
-                changes: SettingsPatch {
-                    ui_locale: None,
-                    reporting_zone: None,
-                    display_currency: None,
-                    polling: None,
+            serde_json::json!({
+                "command": "connect_provider",
+                "args": {
+                    "provider": "kimi",
+                    "alias": "Demo",
+                    "credential_kind": "api_key",
+                    "secret": "synthetic-fixture-only",
+                    "storage_mode": "session_only",
                 },
-            },
+            }),
+            serde_json::json!({
+                "command": "update_connection",
+                "args": {
+                    "connection_id": "synthetic-connection-0",
+                    "expected_config_revision": "1",
+                    "alias": "Demo",
+                },
+            }),
+            serde_json::json!({
+                "command": "replace_credentials",
+                "args": {
+                    "connection_id": "synthetic-connection-0",
+                    "expected_config_revision": "1",
+                    "credential_kind": "api_key",
+                    "secret": "synthetic-fixture-only",
+                    "storage_mode": "persistent",
+                },
+            }),
+            serde_json::json!({
+                "command": "set_connection_enabled",
+                "args": {
+                    "connection_id": "synthetic-connection-0",
+                    "expected_config_revision": "1",
+                    "enabled": true,
+                },
+            }),
+            serde_json::json!({
+                "command": "remove_connection",
+                "args": {
+                    "connection_id": "synthetic-connection-0",
+                    "expected_config_revision": "1",
+                    "deletion_intent": "credentials_history_and_managed_backups",
+                },
+            }),
+            serde_json::json!({
+                "command": "update_settings",
+                "args": {
+                    "expected_settings_revision": "1",
+                    "changes": {},
+                },
+            }),
+            serde_json::json!({
+                "command": "get_overview",
+                "args": {
+                    "range": {
+                        "start_date": "2024-01-01",
+                        "end_date": "2024-01-07",
+                        "reporting_zone": "UTC",
+                        "scope_ids": null,
+                    },
+                },
+            }),
+            serde_json::json!({
+                "command": "query_statistics",
+                "args": {
+                    "range": {
+                        "start_date": "2024-01-01",
+                        "end_date": "2024-01-07",
+                        "reporting_zone": "UTC",
+                        "grain": "day",
+                        "scope_ids": null,
+                    },
+                },
+            }),
         ];
+        assert_eq!(commands.len(), 8, "every later-phase command is covered");
         for command in commands {
-            let request = Request {
-                contract_version: CONTRACT_VERSION,
-                request_id: local_id("fixture-request"),
-                command,
-            };
-            let error = dispatch(&state, request)
-                .await
-                .expect_err("later-phase command must fail");
-            assert_eq!(error.code(), ErrorCode::UnsupportedInPhaseOne);
+            let envelope = run_request(&state, Some(canonical(command))).await;
+            expect_error(&envelope, ErrorCode::UnsupportedInPhaseOne);
         }
     }
 
@@ -1485,7 +1605,7 @@ mod tests {
     /// with an operation that can no longer progress.
     #[tokio::test]
     async fn polling_finishes_a_job_that_outlived_the_refresh_budget() {
-        let (_dir, state, _sink) = fixture().await;
+        let (_dir, state, sink) = fixture().await;
         // The coordinator runs at most two jobs at a time, so more connections
         // than the budget can carry leave jobs behind.
         for index in 0..24 {
@@ -1505,33 +1625,149 @@ mod tests {
             },
             other => panic!("expected Envelope::Ok, got {other:?}"),
         };
-        let running: Vec<OperationDto> = operations
+        let mut pending: Vec<OperationDto> = operations
             .into_iter()
             .filter(|operation| operation.state == OperationState::Running)
             .collect();
         assert!(
-            !running.is_empty(),
+            !pending.is_empty(),
             "the refresh budget must leave a job running"
         );
 
-        let mut polled = running[0].clone();
+        // Polling is the continuation path: every poll advances the
+        // coordinator, so the jobs the refresh request could not carry finish
+        // here.
         for _ in 0..200 {
-            if polled.state != OperationState::Running {
+            if pending.is_empty() {
                 break;
             }
-            let envelope = run_request(
-                &state,
-                Some(get_operation_request(polled.operation_id.as_str())),
-            )
-            .await;
-            polled = match envelope {
-                Envelope::Ok { data, .. } => match *data {
-                    CommandResult::GetOperation(operation) => operation,
-                    other => panic!("expected GetOperation, got {other:?}"),
-                },
-                other => panic!("expected Envelope::Ok, got {other:?}"),
-            };
+            let mut still_running = Vec::new();
+            for operation in pending {
+                let envelope = run_request(
+                    &state,
+                    Some(get_operation_request(operation.operation_id.as_str())),
+                )
+                .await;
+                let polled = match envelope {
+                    Envelope::Ok { data, .. } => match *data {
+                        CommandResult::GetOperation(operation) => operation,
+                        other => panic!("expected GetOperation, got {other:?}"),
+                    },
+                    other => panic!("expected Envelope::Ok, got {other:?}"),
+                };
+                if polled.state == OperationState::Running {
+                    still_running.push(polled);
+                }
+            }
+            pending = still_running;
         }
-        assert_eq!(polled.state, OperationState::Succeeded);
+        assert!(
+            pending.is_empty(),
+            "every job must finish when it is polled"
+        );
+
+        // The polls made the commits the refresh request could not, and they
+        // announce them: the last announced revision is the committed one.
+        let events = sink.events();
+        assert!(
+            events.len() > 1,
+            "the polls must announce the commits they made"
+        );
+        let announced: Vec<u64> = events
+            .iter()
+            .map(|event| {
+                event
+                    .data_revision
+                    .as_str()
+                    .parse()
+                    .expect("a decimal revision")
+            })
+            .collect();
+        assert!(
+            announced.windows(2).all(|pair| pair[0] < pair[1]),
+            "announced revisions must move forward"
+        );
+        let committed = state
+            .repository
+            .data_revision()
+            .await
+            .expect("store revision");
+        let last = *announced.last().expect("at least one event");
+        assert_eq!(
+            last, committed as u64,
+            "the last announced revision must be the committed revision"
+        );
+    }
+
+    /// A commit the store refuses must not announce a revision, and the data
+    /// that is already committed must survive.
+    #[tokio::test]
+    async fn a_refused_commit_keeps_the_cached_data_and_announces_no_revision() {
+        let (_dir, state, sink) = fixture().await;
+        seed_connection(&state, Lifecycle::Active).await;
+        let scope_id = "synthetic-scope-synthetic-connection-0";
+
+        // Control: the refresh commits and announces the new revision.
+        let envelope = run_request(&state, Some(refresh_all_request())).await;
+        let operation = only_operation(&envelope);
+        assert_eq!(operation.state, OperationState::Succeeded);
+        let committed = state
+            .repository
+            .data_revision()
+            .await
+            .expect("store revision");
+        assert!(committed > 0, "the control refresh must commit");
+        let announced = sink.events().len();
+        assert_eq!(
+            announced, 1,
+            "the successful refresh announces one revision"
+        );
+
+        // A pending lifecycle operation makes the store refuse the next commit;
+        // the fence reports the refusal as a conflict.
+        state
+            .repository
+            .begin_operation(&quotavista_core::journal::OperationRecord {
+                operation_id: "synthetic-lifecycle-1".to_owned(),
+                connection_id: CONNECTION_ID.to_owned(),
+                kind: quotavista_core::journal::OperationKind::Delete,
+                phase: quotavista_core::journal::OperationPhase::Pending,
+                candidate_ref: None,
+                previous_ref: None,
+                generation: 0,
+            })
+            .await
+            .expect("the lifecycle operation must be recorded");
+
+        let envelope = run_request(&state, Some(refresh_all_request())).await;
+        let operation = only_operation(&envelope);
+        assert_eq!(operation.state, OperationState::Failed);
+        assert_eq!(
+            operation.error.expect("a typed error").code(),
+            ErrorCode::Conflict
+        );
+
+        // The committed data survives the refused commit, the store revision
+        // did not move, and no revision was announced.
+        let snapshot = state
+            .repository
+            .snapshot(scope_id, None, "tokens")
+            .await
+            .expect("the snapshot read must succeed");
+        assert!(snapshot.is_some(), "the cached data must survive");
+        assert_eq!(
+            state
+                .repository
+                .data_revision()
+                .await
+                .expect("store revision"),
+            committed,
+            "a refused commit must not advance the store revision"
+        );
+        assert_eq!(
+            sink.events().len(),
+            announced,
+            "a refused commit must not announce a revision"
+        );
     }
 }
