@@ -185,6 +185,8 @@ impl SettingsDto {
             reporting_zone: Zone(settings.reporting_zone.to_string()),
             display_currency: CurrencyDto(settings.currency.to_string()),
             polling: polling_dto(settings.refresh_minutes),
+            quota_threshold: RatioDto(settings.quota_threshold.to_string()),
+            balance_threshold: DecimalDto(settings.balance_threshold.to_string()),
         })
     }
 }

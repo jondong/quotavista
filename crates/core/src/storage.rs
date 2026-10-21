@@ -3,7 +3,7 @@ use crate::{
     calendar::Interval,
     domain::{Lifecycle, Provenance, Value},
     journal::OperationRecord,
-    number::Currency,
+    number::{Currency, Decimal, Ratio},
 };
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
@@ -27,6 +27,12 @@ pub struct Settings {
     pub currency: Currency,
     /// None disables automatic refresh; otherwise 1, 5, or 15 minutes.
     pub refresh_minutes: Option<u8>,
+    /// Low-quota alert threshold as a ratio of the plan size. Threshold
+    /// evaluation itself is later-phase work; Phase 1 persists the preference.
+    pub quota_threshold: Ratio,
+    /// Low-balance alert threshold in the display currency. Zero means no
+    /// balance threshold is configured.
+    pub balance_threshold: Decimal,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -151,6 +157,20 @@ pub trait Repository {
         context: &WriteContext,
         lifecycle: Lifecycle,
     ) -> Result<i64, StorageError>;
+
+    /// Rename a connection under a write context: the compare-and-swap
+    /// generation, lifecycle, and operation fence are re-checked, and the
+    /// generation advances so racing tasks cannot publish against stale state.
+    async fn set_alias(&self, context: &WriteContext, alias: &str) -> Result<i64, StorageError>;
+    /// Remove one connection's row; cascades take scopes, projections, and
+    /// usage data with it. Idempotent: an absent row is not an error.
+    async fn delete_connection(&self, connection_id: &str) -> Result<(), StorageError>;
+    /// Scopes of one connection, ordered by id, carrying the identity keys
+    /// credential rotation compares against.
+    async fn scopes(&self, connection_id: &str) -> Result<Vec<Scope>, StorageError>;
+    /// Advance the store-wide data revision for a committed change that does
+    /// not flow through snapshot publication, so change events stay honest.
+    async fn advance_data_revision(&self) -> Result<i64, StorageError>;
 
     /// Opaque scope identifiers of one connection, ordered. The deletion ledger
     /// fences every one of them because a managed backup manifest lists scopes.

@@ -4,6 +4,7 @@ import DesktopIntegration from "./components/DesktopIntegration";
 import { I18nProvider, useI18n, type MessageKey } from "./i18n";
 import OverviewScreen from "./screens/OverviewScreen";
 import StatisticsScreen from "./screens/StatisticsScreen";
+import { SettingsProvider } from "./SettingsContext";
 import ConnectionsScreen from "./screens/ConnectionsScreen";
 import SettingsScreen from "./screens/SettingsScreen";
 
@@ -83,7 +84,9 @@ function Shell() {
 export default function App() {
   return (
     <I18nProvider>
-      <Shell />
+      <SettingsProvider>
+        <Shell />
+      </SettingsProvider>
     </I18nProvider>
   );
 }

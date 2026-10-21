@@ -1,0 +1,92 @@
+# P1-10 validation record
+
+## Scope and prerequisites
+
+Connection and settings flows. P1-10 implements the six previously deferred mutation and settings commands (`connect_provider`, `update_connection`, `replace_credentials`, `set_connection_enabled`, `remove_connection`, `update_settings`) behind the existing P1-07 single-command IPC boundary, and replaces the P1-08 demo Connections/Settings screens with real IPC-driven views. Connection operations are modelled as backend operation state with safe progress and retry eligibility; the UI reflects operation status and never reports optimistic success. Settings (refresh interval including Off, reporting zone, UI locale, display currency, quota/balance thresholds) persist through the versioned backend settings row with optimistic revision checks.
+
+Prerequisite confirmed before starting: P1-07 is merged (PR #8, head `9188637`, merge commit `34fc4c3`) and archived at `.trellis/tasks/archive/2026-10/10-18-p1-07-ipc` by archive commit `44a0f33` (the branch base of this task). P1-08 is archived at `.trellis/tasks/archive/2026-10/10-18-p1-08-bilingual-shell` (archive commit `a54b56b`). Activation was recorded with `python3 .trellis/scripts/task.py start 10-18-p1-10-connections-settings`.
+
+Environment: macOS 27.0.1 arm64, Rust 1.99.1, Node 24.22.0, npm 11.19.1, Tauri 2.12.4, ts-rs generates `apps/desktop/src/generated/contracts.ts`.
+
+Every fixture is synthetic and throwaway: the desktop integration tests build the application over `tempfile::TempDir` roots with `SecretChoice::SessionOnly` (the in-memory fake) and the simulated providers; no real keychain entry, Secret Service bus, application data directory, production database, or business database was opened, read, or written. The renderer tests run in jsdom against mocked `invoke`/`listen`; no native window was driven.
+
+## Design decisions recorded during implementation
+
+- **Settings read path.** The reviewed eleven-command contract has no `get_settings` command. Reading settings uses `update_settings` with a canonical empty patch (all six fields `null`), which returns the current `SettingsDto` without touching the revision; a non-empty patch keeps the optimistic `expected_settings_revision` compare-and-swap and answers a stale revision with `conflict`. Omission and `null` both mean "leave unchanged", matching the frontend contract guidance.
+- **Thresholds.** The PRD deliverable "threshold preferences" added `quota_threshold` (`Ratio`, default `0.2`) and `balance_threshold` (`Decimal`, `0` = none) to the core `Settings`, the settings row (migration `0002_settings_thresholds.sql`, additive columns with defaults), `SettingsDto` (required), and `SettingsPatch` (optional). Evaluation of alerts stays later-phase; the values are stored, round-tripped, and surfaced only.
+- **Migration default repair.** `0002_settings_thresholds.sql` also sets `refresh_minutes = 5` on the never-saved seeded row only (`WHERE id = 1 AND revision = 0 AND refresh_minutes IS NULL`), so the requirements' 5-minute default applies to fresh databases while an explicitly saved `Off` survives.
+- **Synthetic identity.** Connection identity is derived from the submitted secret itself (SHA-256 of the value, self-contained implementation in `apps/desktop/src-tauri/src/identity.rs`, no new dependencies) and stored as the provider scope key. A same-scope rotation therefore preserves history under the same scope; a different secret is a different, unverified identity that is refused with a failed operation (`next_action: replace_connection`) instead of silently merging into the existing scope.
+- **One active connection per provider.** `connect_provider` refuses while an active connection for the provider exists (`conflict`), and the SQLite partial unique index `one_active_provider` (in place since P1-03) backs the pre-check against racing candidates: the loser's `create_connection` fails with `conflict` and its staged candidate reference is deleted.
+- **Store choice and session-only mode.** `RoutingSecrets` (`apps/desktop/src-tauri/src/connections.rs`) routes each secret operation by the reference's backend tag across the native store (when it opened) and an explicit process-memory `SessionSecrets`. References are minted per the requested `storage_mode`; a `persistent` request in a session-only composition answers `secret_store_unavailable` rather than silently downgrading. At startup every active connection is reconciled: a secret that no longer reads (session-only after restart) moves the connection to `needs_credentials` without collecting anything.
+- **Removal acknowledgement.** Removal follows the P1-04 ledger boundary: `begin_deletion` (ledger pending, lifecycle `deletion_pending`, generation bump) → delete the owed secret reference → acknowledge the ledger → delete the connection row (cascading scopes, projections, usage facts, and lifecycle operations). A cleanup failure leaves `deletion_pending` with a retryable operation that survives restart and can be retried from the UI. The `managed_backup_scopes` opaque membership survives live-row deletion by design; managed-backup purge/restore execution remains explicitly pending.
+- **Commit announcement.** Every connection-affecting mutation advances the store `data_revision` (new `Repository::advance_data_revision` port method) and then emits the revision-only `ChangeEvent` through the existing `publish_change` helper, so renderer lists invalidate exactly as they do for refreshes. Settings keep their own settings revision and do not announce connection events.
+
+## PRD criterion evidence
+
+Criterion, method, result. All Rust tests below live in `apps/desktop/src-tauri/src/connections_tests.rs` unless another path is named; all renderer tests live under `apps/desktop/src/`.
+
+### Criterion 1 — safe failures; secrets clear on submission and never enter browser storage
+
+- `invalid_aliases_and_secrets_fail_safely` (Rust): empty alias, 81-code-point alias, header-invalid secret (embedded `\n`), and a 65,537-byte secret each answer `Envelope::Error` with `code: "validation"` (safe message, no echo of the rejected value) and leave no connection row, scope, or staged reference behind.
+- `stale_revisions_fail_safely` (Rust): a rename with a stale `expected_config_revision` and a settings save with a stale `expected_settings_revision` both answer `code: "conflict"` without changing the stored alias or settings.
+- `secrets_never_leave_the_store` (Rust): after add and rotate, the serialized `Envelope::Ok` payloads of every command response and the emitted `ChangeEvent` payloads are searched for both secret plaintexts; neither appears.
+- `submits an add with the typed fields and clears the secret after success` (`screens/ConnectionsScreen.test.tsx`): the add form sends `connect_provider` with provider/alias/credential kind/secret/storage mode, the secret input is emptied after the response, and the `localStorage.setItem` spy is never called.
+- `clears the secret after a failed submission and shows the typed error` (same file): a typed validation envelope leaves the secret input cleared and renders the localized validation message.
+- `surfaces a stale-revision conflict, reloads, and never overwrites the newer choice` and `surfaces a validation failure without clobbering the drafts` (`screens/SettingsScreen.test.tsx`): conflict reloads and shows the newer stored values; validation keeps the drafts for correction.
+
+### Criterion 2 — same-scope rotation preserves history; different identity cannot merge; one active per provider
+
+- `same_identity_rotation_preserves_history` (Rust): a refresh commits facts, then rotation with the same secret re-uses the identical scope key (identity derived from the secret), preserves the committed history, and activates the new reference.
+- `different_identity_rotation_is_refused_without_merging` (Rust): rotation with a different secret returns a `failed` operation with `next_action: "replace_connection"` and `code: "conflict"`, the connection's generation and alias are unchanged, and the connection still has exactly one scope — no silent merge, the working credential untouched.
+- `racing_candidates_yield_one_active_connection_per_provider` (Rust): two `connect_provider` requests for the same provider race under `tokio::join!`; exactly one succeeds, the other answers `conflict`, and exactly one active connection row exists (pre-check plus the `one_active_provider` partial unique index).
+- `reflects a failed rotation without optimistic success` (`screens/ConnectionsScreen.test.tsx`): a failed `replace_credentials` operation renders the operation state as failed with the replace-connection hint; the row is not optimistically updated.
+
+### Criterion 3 — disable/remove fence late work; deletion pending survives restart; managed-backup guarantees explicitly pending
+
+- `disabling_fences_late_work` (Rust): after `set_connection_enabled(false)`, a stale `WriteContext` (old generation) cannot mutate the connection; re-enabling restores `active` through a fresh generation.
+- `removal_cleans_up_completely` (Rust): successful removal deletes the connection row and announces a `ChangeEvent` carrying the affected connection id.
+- `failed_cleanup_survives_restart_and_retries` (Rust): with reference deletions failing (injected store failure), removal reports a retryable `failed` operation, the connection stays `deletion_pending`; after a restart (fresh process over the same directory) the connection is still `deletion_pending`, and retrying removal completes it.
+- `renders the pending managed-backup note explicitly` (`screens/SettingsScreen.test.tsx`): the settings screen states that managed-backup deletion guarantees remain explicitly pending. The backend removal boundary likewise only acknowledges the artifacts that exist in this phase; managed-backup purge/restore stays pending and is not claimed anywhere.
+
+### Criterion 4 — locale and refresh-Off survive restart; session-only restart returns Needs credentials; locale switch preserves form state
+
+- `explicit_settings_survive_restart` (Rust): `ui_locale: zh-CN`, `polling: disabled` (Off), reporting zone `Asia/Shanghai`, currency `CNY`, and thresholds `0.5`/`10` persist across a restart of the same directory; the settings revision advanced exactly once.
+- `session_only_connection_needs_credentials_after_restart` (Rust): after a restart, the session-only connection reports `needs_credentials` (no implicit collection), and rotating with the same secret recovers it to `active`.
+- `empty_patch_reads_current_settings_without_bumping_the_revision` (Rust): the canonical empty patch returns the current settings (default polling `five_minutes`) without changing the revision.
+- `applies an explicitly saved backend locale over system detection` (`App.test.tsx`): a persisted non-default `ui_locale` overrides system detection, while `keeps first-launch system detection while the settings row is untouched` pins that the untouched seed row never overrides detection.
+- `switching language preserves the current screen, filter, and nonsecret input` (`App.test.tsx`), `preserves the alias draft across a language switch but clears the secret` (`screens/ConnectionsScreen.test.tsx`), and `preserves non-secret form drafts across a language switch` (`screens/SettingsScreen.test.tsx`): locale switches keep the active screen, statistics filter, and non-secret drafts, while secret input is always cleared and never persisted.
+- Bilingual coverage: the Connections and Settings flows assert both languages (English default and zh-CN strings after a switch), and `npm run i18n:check` enforces exact en/zh-CN parity (140 keys).
+
+### Extra coverage beyond the criteria
+
+- `malformed_settings_values_fail_safely` (Rust): an unparsable zone answers `validation` without side effects.
+- `undocumented_lifecycle_transitions_are_refused` (Rust): enabling an active connection answers `validation`.
+- `offers refresh Off explicitly alongside the intervals` (`screens/SettingsScreen.test.tsx`): the polling selector offers exactly `disabled`, `one_minute`, `five_minutes`, `fifteen_minutes` with Off labelled.
+- `shows the session-only note in needs credentials and offers rotation` and `offers retry removal and a recovery note in deletion pending` (`screens/ConnectionsScreen.test.tsx`): recovery states render notes and actions.
+
+## Validation commands (all run 2026-10-21, all exit 0)
+
+| Command | Result |
+| --- | --- |
+| `./scripts/check-core-boundaries.sh` | pass — core calendar-only dependency boundary OK |
+| `./scripts/test-check-core-boundaries.sh` | pass — boundary-gate regression checks passed |
+| `cargo fmt --all -- --check` | pass — no diff |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | pass — zero warnings |
+| `cargo test --locked --workspace` | pass — contracts 16, core 18, desktop 39 (14 new connection/settings tests + 25 P1-07), infrastructure 64 + 1 ignored, plus integration/doc suites; 0 failures |
+| `cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check` | pass — "TypeScript contract is current" |
+| `cargo build --locked -p quotavista-desktop` | pass |
+| `apps/desktop`: `npm ci` | pass |
+| `apps/desktop`: `npm run lint` | pass |
+| `apps/desktop`: `npm run i18n:check` | pass — "Catalog parity OK: 140 keys, placeholders matching in both catalogs" |
+| `apps/desktop`: `npm test` | pass — 60 tests (11 ConnectionsScreen + 8 SettingsScreen + 12 App + 12 ipc + i18n/Overview suites) |
+| `apps/desktop`: `npm run typecheck` | pass |
+| `apps/desktop`: `npm run build` | pass — Vite production build |
+
+Rust test names above are exactly as they appear in the suites; the renderer test names match the `it(...)` titles in the cited files.
+
+## Pending and not claimed
+
+- Native store smoke check (real macOS Keychain round trip through the new flows): pending — every fixture uses the session-only in-memory fake; no native credential or real keychain entry was touched, and the extra-rules native smoke option was not needed for the criteria. To be exercised in native validation (P1-13) or on explicit request with a disposable `quotavista-test-` service entry.
+- Native/WebView runtime behaviour (real window, real dialogs, tray): not claimed; renderer evidence is jsdom-only.
+- Real Kimi/OpenRouter validation, managed backup purge/restore, alert-episode evaluation, multiple simultaneous accounts per provider: out of scope by PRD; the UI states explicitly that no provider validation occurs.
+- P1-09 (overview/statistics) and P1-11 (desktop lifecycle) remain separate sibling tasks; nothing in their scope was implemented here.

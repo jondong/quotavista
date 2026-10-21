@@ -100,21 +100,12 @@ export function formatPercent(ratio: string): string {
   const frac = padded.slice(point).replace(/0+$/, "");
   return frac ? `${whole}.${frac}%` : `${whole}%`;
 }
-// shortcut: renderer-local persistence only; P1-10 moves this into the
-// versioned ui_locale setting with the shared optimistic revision check.
-const STORAGE_KEY = "quotavista.ui_locale";
 
-// Reads are failure-isolated: a broken storage engine falls back to system
-// detection instead of taking down the shell. Exported for the pre-paint
-// document language sync in main.tsx.
+// First-launch locale comes from the system; every later launch reads the
+// persisted `ui_locale` setting from the backend (P1-10), so the renderer
+// keeps no locale copy of its own. Exported for the pre-paint document
+// language sync in main.tsx.
 export function initialLocale(): Locale {
-  let stored: string | null = null;
-  try {
-    stored = window.localStorage.getItem(STORAGE_KEY);
-  } catch {
-    stored = null;
-  }
-  if (stored === "en" || stored === "zh-CN") return stored;
   return detectLocale(window.navigator.languages ?? [window.navigator.language]);
 }
 
@@ -132,14 +123,11 @@ const I18nContext = createContext<I18n | null>(null);
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(initialLocale);
+  // The interface locale is a versioned backend setting: `selectLocale` in
+  // the settings context applies the in-memory switch immediately and then
+  // persists it with the shared optimistic revision check.
   const setLocale = useCallback((next: Locale) => {
     setLocaleState(next);
-    // The in-memory switch always applies; a failed write must not block it.
-    try {
-      window.localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      // shortcut: silent until P1-10 persists via the versioned setting
-    }
   }, []);
   useEffect(() => {
     document.documentElement.lang = locale;

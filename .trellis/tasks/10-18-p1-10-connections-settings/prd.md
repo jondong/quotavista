@@ -8,7 +8,7 @@ Exercise local setup and preference flows safely using synthetic validation.
 
 [Requirements 0.9](../../../docs/requirements.md), [Architecture 0.4](../../../docs/architecture.md), [development plan](../../../docs/development-plan.md), and [traceability](../../../docs/traceability.md).
 
-Dependencies: [P1-07](../10-18-p1-07-ipc/prd.md), [P1-08](../10-18-p1-08-bilingual-shell/prd.md)
+Dependencies: [P1-07](../archive/2026-10/10-18-p1-07-ipc/prd.md), [P1-08](../archive/2026-10/10-18-p1-08-bilingual-shell/prd.md)
 
 Acceptance mapping: A07, A09, A10, A18, A21, A25. These are prototype contributions, not closure of full-release acceptance.
 
@@ -20,10 +20,10 @@ Acceptance mapping: A07, A09, A10, A18, A21, A25. These are prototype contributi
 
 ## Acceptance criteria
 
-- [ ] Empty/oversized aliases, empty/oversized/header-invalid secrets, and stale revisions fail safely; secret fields clear on submission and never enter browser storage.
-- [ ] Synthetic same-scope rotation preserves history; different/unverified identity cannot silently merge it. One active connection per provider is enforced even for racing candidates.
-- [ ] Disable/remove fence late work; cleanup failures show Deletion pending and survive restart. Unimplemented managed-backup guarantees stay explicitly pending.
-- [ ] Explicit locale and refresh-Off choices survive restart; session-only connections return Needs credentials without implicit collection. Locale changes preserve filters/form state.
+- [x] Empty/oversized aliases, empty/oversized/header-invalid secrets, and stale revisions fail safely; secret fields clear on submission and never enter browser storage.
+- [x] Synthetic same-scope rotation preserves history; different/unverified identity cannot silently merge it. One active connection per provider is enforced even for racing candidates.
+- [x] Disable/remove fence late work; cleanup failures show Deletion pending and survive restart. Unimplemented managed-backup guarantees stay explicitly pending.
+- [x] Explicit locale and refresh-Off choices survive restart; session-only connections return Needs credentials without implicit collection. Locale changes preserve filters/form state.
 
 ## Out of scope
 
@@ -31,4 +31,4 @@ No real Kimi/OpenRouter login, payment management, multiple simultaneous account
 
 ## Planning status
 
-Ready for task review against the baseline. No unresolved product decision blocks this plan. Check technical choices against current official documentation during implementation. All criteria remain pending; this task has not started.
+Implementation and validation complete on the task branch; per-criterion evidence is recorded in [validation.md](validation.md). Prototype contributions only; full-release acceptance stays pending.
