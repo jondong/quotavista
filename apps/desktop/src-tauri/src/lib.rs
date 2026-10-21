@@ -1063,7 +1063,9 @@ pub fn run() {
             let mut state = setup_runtime
                 .block_on(build_for_tauri(root.clone(), handle.clone()))
                 .expect("desktop composition must initialise");
-            if let Err(error) = runtime.block_on(seed_demo_connections(&state)) {
+            // `setup_runtime` is a handle to the same runtime; using it here
+            // keeps `runtime` itself free for the event-loop closure below.
+            if let Err(error) = setup_runtime.block_on(seed_demo_connections(&state)) {
                 // Seeding is best-effort: the shell still opens and shows the
                 // explicit no-data states.
                 eprintln!("quotavista: demo seeding failed: {}", error.message());

@@ -534,6 +534,7 @@ mod tests {
     use quotavista_contracts::ErrorCode;
     use quotavista_core::domain::Lifecycle;
     use quotavista_core::storage::Settings;
+    use quotavista_infrastructure::refresh::MAX_CONCURRENCY;
     use quotavista_providers::simulated::SimulatedAdapter;
     use quotavista_providers::synthetic_providers;
 

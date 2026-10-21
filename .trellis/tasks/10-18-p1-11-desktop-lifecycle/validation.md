@@ -9,27 +9,31 @@ existing `Request::validate` gate, and the existing sealed `Envelope`.
 
 New code:
 
-- `apps/desktop/src-tauri/src/lifecycle.rs` — close/wake/quit policy
+- `apps/desktop/src-tauri/src/lifecycle.rs` (1161 lines) — close/wake/quit policy
   (`CloseDecision`, `RefreshMode`, `WakeDecision`, `WakeGate`, `handle_wake`,
-  `shutdown`) plus 11 tests.
-- `apps/desktop/src-tauri/src/platform.rs` — tray and notification capability
-  adapters behind a `NotificationPort` (`PlatformState`, `render_notice`,
-  `detect_tray`, `tray_disabled`, `TauriNotifications`) plus 9 tests.
-- `apps/desktop/src-tauri/src/lib.rs` — two `dispatch` arms, one additive
-  `AppState.platform` field, and a rewritten `run()` that registers the tray,
-  the single-instance and notification plugins, and the close/reopen/quit/wake
-  event handling. Existing logic was not reordered or reformatted: the diff
-  against `origin/main` is 263 insertions and 9 deletions, and 5 of those 9
-  deletions are one-word visibility widenings (`pub(crate)`) on existing test
-  helpers so the new module tests reuse the P1-07 fixtures instead of
-  duplicating them.
-- `crates/contracts/src/lib.rs` — 1 new scalar, 3 new wire enums, 2 new DTOs, 2
+  `handle_gated_wake`, `shutdown`, `ShutdownSignal`, `ResumeMonitor`,
+  `drive_resume_monitor`) plus 21 tests.
+- `apps/desktop/src-tauri/src/platform.rs` (657 lines) — tray and notification
+  capability adapters behind a `NotificationPort` (`PlatformState`,
+  `render_notice`, `detect_tray`, `tray_disabled`, `capability_from_plugin`,
+  `delivery_from_plugin`, `TauriNotifications`) plus 13 tests.
+- `apps/desktop/src-tauri/src/lib.rs` — two `dispatch` arms, two additive
+  `AppState` fields (`platform`, `shutdown_signal`), a rewritten `run()` that
+  registers the tray, the single-instance and notification plugins, spawns the
+  resume monitor and handles close/reopen/quit/wake, plus the non-blocking
+  `wake`/`quit` callbacks and one new test. Existing logic was not reordered or
+  reformatted: the diff against `origin/main` is 398 insertions and 9 deletions,
+  and 5 of those 9 deletions are one-word visibility widenings (`pub(crate)`) on
+  existing test helpers so the new module tests reuse the P1-07 fixtures instead
+  of duplicating them.
+- `crates/contracts/src/lib.rs` — 1 new scalar, 4 new wire enums, 2 new DTOs, 2
   new `Command`/`CommandResult` variants, appended to the `typescript()` emit
-  list. `Request::validate` needed no change because its command match already
-  ends in a catch-all arm.
-- `apps/desktop/src/components/DesktopIntegration.tsx` (+ test) — the visible
-  capability region, mounted as a footer in `App.tsx`; 17 new i18n keys in both
-  catalogs; 2 new typed client methods in `ipc.ts`; 2 new compile fixtures in
+  list (72 insertions). `Request::validate` needed no change because its command
+  match already ends in a catch-all arm.
+- `apps/desktop/src/components/DesktopIntegration.tsx` (177 lines) and its test
+  (272 lines, 8 cases) — the visible capability region, mounted as a footer in
+  `App.tsx`; 19 `desktop.*` keys in both catalogs (122 keys each after P1-09's
+  merge); 2 new typed client methods in `ipc.ts`; 2 new compile fixtures in
   `contracts.typecheck.ts`; a scoped `.desktop-integration*` CSS block appended
   after the last existing rule.
 - `scripts/native-checks.sh` — the reproducible native procedure for this host
@@ -43,7 +47,9 @@ merge commit `34fc4c3`) and archived at
 archived at `.trellis/tasks/archive/2026-10/10-18-p1-08-bilingual-shell` by
 `a54b56b`. All four commits are ancestors of `HEAD`. The three stale links in
 this task's `prd.md`, `design.md` and `implement.md` were repointed at the
-archive paths.
+archive paths. The branch was later rebased onto `origin/main` at `60a4649`
+after P1-09 merged as `757facf`; both conflicts were additive and were resolved by
+keeping both sides, as recorded under Open items.
 
 Activation was recorded with
 `python3 .trellis/scripts/task.py start .trellis/tasks/10-18-p1-11-desktop-lifecycle`
@@ -69,7 +75,9 @@ directory removed.
 
 ## Repository validation
 
-All commands were run from the repository root unless stated, and all passed.
+All commands were run from the repository root unless stated, and all passed. The
+results below are the post-rebase measurement, taken on the branch head after the
+round-1 review fixes and the rebase onto P1-09.
 
 | Command | Result |
 | --- | --- |
@@ -77,16 +85,16 @@ All commands were run from the repository root unless stated, and all passed.
 | `./scripts/test-check-core-boundaries.sh` | exit 0, 5 × `ok`, `all boundary-gate regression checks passed` |
 | `cargo fmt --all -- --check` | exit 0, no diff |
 | `cargo clippy --locked --workspace --all-targets -- -D warnings` | exit 0, 0 errors |
-| `cargo test --locked --workspace` | exit 0, 163 passed, 0 failed, 1 ignored |
+| `cargo test --locked --workspace` | exit 0, 201 passed, 0 failed, 1 ignored |
 | `cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check` | exit 0, `TypeScript contract is current` |
 | `cargo build --locked -p quotavista-desktop` | exit 0, `Finished` |
 | `git diff --check` | exit 0, no whitespace errors |
 | `apps/desktop: npm ci` | exit 0 |
 | `apps/desktop: npm run lint` | exit 0, `ESLint: No issues found` |
-| `apps/desktop: npm run i18n:check` | exit 0, `Catalog parity OK: 75 keys, placeholders matching in both catalogs` |
-| `apps/desktop: npm test` | exit 0, 5 files passed, 47 tests passed |
+| `apps/desktop: npm run i18n:check` | exit 0, `Catalog parity OK: 122 keys, placeholders matching in both catalogs` |
+| `apps/desktop: npm test` | exit 0, 6 files passed, 57 tests passed |
 | `apps/desktop: npm run typecheck` | exit 0 |
-| `apps/desktop: npm run build` | exit 0, `✓ built`, `dist/assets/index-B84mkkpi.js 246.69 kB` |
+| `apps/desktop: npm run build` | exit 0, `✓ built`, `dist/assets/index-BEolSCxv.js 260.61 kB` |
 | `./scripts/native-checks.sh --environment` | exit 0, prints the host block quoted above |
 | `./scripts/native-checks.sh --automated` | exit 0, `AUTOMATED: PASS` |
 
@@ -95,13 +103,32 @@ spots in the new code. Clippy's only remaining output is the pre-existing
 ts-rs `failed to parse serde attribute` noise about `deny_unknown_fields`, which
 `-D warnings` does not promote and which is present on `origin/main` too.
 
-Test counts moved from 143 to 163 in Rust (desktop crate 22 → 42: 11 lifecycle
-plus 9 platform) and from 40 to 47 in the renderer (7 new
-`DesktopIntegration.test.tsx` cases). `./scripts/native-checks.sh --automated`
-reports three labelled steps, each from the real exit status of its command:
+These counts are measured on the rebased head, so they include the tests P1-09
+merged into `main`. The workspace runs 201 Rust tests: 16 in
+`contracts/tests/contracts.rs`, 31 in `quotavista_core`, 62 in
+`quotavista_desktop_lib`, 66 plus 1 ignored in `quotavista_infrastructure`, 13 in
+`quotavista_providers`, and 13 contract doc-tests. The desktop crate's 62 split
+into 21 `lifecycle::tests`, 13 `platform::tests` and 28 crate-root tests — 22
+inherited from P1-07, 5 from P1-09's statistics module, and one added by this
+task. The renderer runs 57 tests across 6 files, of which
+`DesktopIntegration.test.tsx` contributes 8.
+
+`./scripts/native-checks.sh --automated` reports three labelled steps, each from
+the real exit status of its command:
 `RESULT: PASS (lifecycle policy: close, wake, Off mode, quit)`,
 `RESULT: PASS (platform capability adapters: tray and notification detection)`,
 `RESULT: PASS (IPC boundary still sealed)`.
+
+Two regressions surfaced only when the rebased tree was compiled, and both are
+recorded here because a rebase that passes `git rebase --continue` can still fail
+to build. P1-09's `run()` calls `runtime.block_on(seed_demo_connections(&state))`
+inside the `setup` closure, which moved the owned runtime and left
+`app.run`'s closure referring to it (`error[E0382]: use of moved value:
+runtime`); the call now uses the `setup_runtime` handle clone that the same
+closure already uses for `build_for_tauri`, so `runtime` stays free for the event
+loop. Separately, a test-module import of `refresh::MAX_CONCURRENCY` was missing
+(`error[E0425]`); it is imported inside `mod tests` rather than at module level so
+a non-test build does not see an unused import.
 
 ## Criterion 1 — no tray means closing exits, with no orphan collector
 
@@ -373,9 +400,12 @@ byte-identical, and no event was published).
 
 ## Native checks observed on this host
 
-Three smoke runs of `target/debug/quotavista-desktop`, each with a fresh
-`mktemp -d` `TMPDIR` and `QUOTAVISTA_SECRET_STORE=session-only`. stderr is
-quoted verbatim.
+Two rounds of smoke runs of `target/debug/quotavista-desktop`, each with a fresh
+`mktemp -d` `TMPDIR` and `QUOTAVISTA_SECRET_STORE=session-only`. stderr is quoted
+verbatim. Round 1 was observed at commit `4045a2e`; round 2 was re-run after the
+review-round-1 fixes, which is why the notification capability reads differently.
+
+### Round 1 (commit `4045a2e`)
 
 1. **Default run.** `quotavista: capabilities tray=Available
    notification=Available`. The process stayed alive. The data directory
@@ -411,6 +441,51 @@ events via `src/manager/tray.rs:44`, and `WindowEvent`, `Reopen` and
 Using `tauri::async_runtime::spawn` instead was rejected because the SQLite pools
 in `AppState` are bound to the runtime built in `run()`.
 
+### Round 2 (after the review-round-1 fixes)
+
+4. **Default run.** `quotavista: capabilities tray=Available
+   notification=Unconfirmed`. The capability now says only what the pinned plugin
+   can prove: the channel exists, but neither permission nor delivery could be
+   confirmed. The process stayed alive, and the data directory again contained
+   only `quotavista-prototype/{journal, quotavista.sqlite, quotavista.sqlite-shm,
+   quotavista.sqlite-wal}`.
+5. **Second instance against the first instance's data directory.** The second
+   launch exited with status 0 and empty stderr while the first kept running, and
+   the first instance's stderr gained `quotavista: wake SingleInstanceActivation
+   mode Off permitted false merged 0 not-due 0`. No panic, so the
+   `run_on_main_thread` marshalling from round 1 still holds, and the handover
+   reaches the gated wake path with the shipped refresh-Off default.
+6. **No-tray run.** `QUOTAVISTA_TRAY=off` printed `quotavista: capabilities
+   tray=Unavailable notification=Unconfirmed`; the process launched and stayed
+   alive. `leftover=0` after cleanup in every round-2 run, and every round-2 run
+   used a fresh throwaway `TMPDIR`.
+
+A real machine suspend/resume cycle was **not** part of these runs: it needs a
+human at the machine, and it is `scripts/native-checks.sh --interactive` steps 14
+and 15.
+
+### Round 3 (after the rebase onto P1-09)
+
+7. **Default run.** `quotavista: capabilities tray=Available
+   notification=Unconfirmed`, and the process stayed alive. The data directory now
+   also contains `journal/refresh-counter.v1`, because P1-09's merged
+   `seed_demo_connections` performs an explicit manual refresh at startup; that
+   file is the persisted cooldown counter. Everything else is unchanged
+   (`quotavista-prototype/{quotavista.sqlite, quotavista.sqlite-shm,
+   quotavista.sqlite-wal}`), and no real application data directory was touched.
+8. **Second instance against the first instance's data directory.** Exit status 0,
+   zero bytes of stderr, first instance still alive, and its stderr gained
+   `quotavista: wake SingleInstanceActivation mode Off permitted false merged 0
+   not-due 0`. No panic, so the `run_on_main_thread` marshalling survived the
+   rebase and the handover still reaches the gated wake path.
+9. **No-tray run.** `QUOTAVISTA_TRAY=off` printed `quotavista: capabilities
+   tray=Unavailable notification=Unconfirmed`, with the same clean handover.
+   `leftover=0` after cleanup; every round-3 run used a fresh throwaway `TMPDIR`
+   and `QUOTAVISTA_SECRET_STORE=session-only`.
+
+The rebase did not change any observed behaviour: the only difference between
+round 2 and round 3 is P1-09's startup seeding and its counter file.
+
 ## Native targets recorded as pending
 
 GUI automation is **not** genuinely available in this environment, so the
@@ -421,13 +496,15 @@ with `-1719` (`无效的索引`); `{frontmost, visible}` was `{false, true}`;
 never reached the process. Process enumeration does work, so Apple Events are
 permitted but UI scripting of this application's windows is not.
 
-`./scripts/native-checks.sh --interactive` therefore reports 13 ×
+`./scripts/native-checks.sh --interactive` therefore reports 16 ×
 `OBSERVED: PENDING (no interactive terminal; run this step manually)` and never
 guesses a pass. The pending steps are: cold launch, in-app capability read,
 English notification banner, Simplified-Chinese notification banner, close with a
 tray hides, reopen from the tray, explicit quit from the tray, no-tray close
 exits, single instance, wake merges refresh, refresh-Off starts nothing, quit
-cancels in-flight work, restart keeps committed data.
+cancels in-flight work, restart keeps committed data, real suspend/resume with
+automatic refresh on, real suspend/resume with refresh off, and window
+responsiveness during a slow refresh.
 
 Also pending, with the reason:
 
@@ -444,13 +521,21 @@ Also pending, with the reason:
   a visible icon. Promoting Linux to `Available` needs a host probe validated by
   a native run, which is P1-13 work; until then the conservative answer keeps the
   no-tray close policy, which is the safe direction.
-- **Real sleep/wake.** No desktop wake event exists in Tauri 2.12, and a real
-  suspend/resume cycle cannot be observed from this session. The behaviour is
-  covered by the reactivation sources above and by the recorded native
-  single-instance wake.
-- **Notification permission state.** Not a detection on desktop: the plugin
-  always answers granted. `notification=Available` in the runs above means the
-  plugin is registered, nothing more.
+- **Real sleep/wake.** Tauri 2.12 has no desktop suspend or resume event, so
+  `ResumeMonitor` detects the gap itself by comparing a monotonic and a wall clock
+  every 30 seconds and treating an advance of at least 120 seconds as a resume.
+  The detection mechanism and its refresh-Off gating are unit-tested, but an
+  actual machine suspend cannot be observed from this session; it is interactive
+  steps 14 and 15, and the operator records the `wake ResumeAfterSuspend …`
+  diagnostic the run prints.
+- **Notification capability on Linux.** The pinned plugin's desktop
+  `permission_state()` always answers granted, so the adapter reports
+  `Unconfirmed` rather than `Available` — which is what the round-2 native runs
+  printed. `scripts/native-checks.sh --environment` probes
+  `org.freedesktop.Notifications.GetCapabilities` over the session bus on Linux so
+  a native run records whether a daemon is actually there; promoting the adapter
+  to a real detection needs that probe validated on the target, which is P1-13
+  work.
 - **macOS notification attribution.** In a dev build the plugin attributes
   notifications to `com.apple.Terminal` (`src/desktop.rs:518-524`), so a banner
   observed from `cargo run` is not attributed to QuotaVista. A bundled build is
@@ -460,6 +545,100 @@ Also pending, with the reason:
   settings-driven re-registration. The labels stay English and this is recorded
   rather than faked; the notification text *is* localized because it is rendered
   per request.
+
+## Review round 1
+
+An independent review of commit `164218d` returned CHANGES_REQUESTED with two
+blocking findings and one should-fix. All three are addressed on this branch. The
+reviewer's own reruns of the round-1 tree were green, so nothing below disputes
+them.
+
+**Blocking 1 — notification availability was assumed, and unconfirmed delivery was
+surfaced as acceptance.** The adapter mapped the plugin's desktop
+`permission_state()` to `Available` even though that call unconditionally returns
+`Granted`, and mapped `show() == Ok(())` to delivered even though the plugin
+spawns the delivery and never reads the operating-system result. An absent Linux
+notification service, or notifications disabled in System Settings, could
+therefore still produce "Available" and "The platform accepted the notification."
+
+Fix: `NotificationCapabilityDto` gained `Unconfirmed`, which is what the pinned
+plugin yields on desktop, and `Available` is now reserved for a channel whose
+delivery the platform confirmed. `NotificationPreviewDto.delivered: bool` became
+`delivery: NotificationDeliveryDto` with `Delivered`, `Queued` and `Refused`, so
+"handed over, result never observed" is a state of its own instead of a `true`.
+`PlatformState::preview` maps only a confirmed delivery to `Available`, so a
+queued one can never upgrade an unconfirmed channel, and it still returns the
+rendered text on every path. Both mappings of the real adapter are extracted into
+`capability_from_plugin` and `delivery_from_plugin`, so they are testable without a
+window server and without sending anything to the operating system. The renderer
+gained `desktop.notification.unconfirmed` and `desktop.notification.queued` in
+both catalogs and renders the delivery state through a key map instead of a
+boolean.
+
+Proof: `platform::tests::a_plugin_that_answers_granted_is_reported_as_unconfirmed`,
+`platform::tests::plugin_success_is_queued_because_the_os_result_is_never_read`,
+`platform::tests::a_queued_notification_stays_unconfirmed_and_keeps_its_text` (the
+regression the review asked for) and
+`platform::tests::only_a_confirmed_delivery_reports_delivered`; in the renderer,
+`reports a queued notification as unconfirmed rather than accepted`. Observed
+natively: round 2 printed `notification=Unconfirmed` where round 1 printed
+`notification=Available`. A real Linux daemon probe is recorded as pending rather
+than guessed.
+
+**Blocking 2 — reactivation is not a sleep/wake adapter.** The wake sources were
+window focus, the macOS reopen event and the second-instance handover, so a resume
+while the main window stayed hidden in the tray emitted none of them and the
+permitted post-wake refresh never ran. The review was right that the recorded
+single-instance handover is evidence of Off gating, not of a sleep cycle.
+
+Fix: `ResumeMonitor` is a suspend-gap mechanism independent of window activation.
+`run()` spawns `drive_resume_monitor` on the composition runtime; it samples a
+monotonic and a wall clock every `RESUME_TICK` and treats an advance of at least
+`RESUME_THRESHOLD` as a resume, reporting `WakeSource::ResumeAfterSuspend`. Both
+clocks are compared and either one advancing is enough, because Rust's `Instant`
+is `mach_absolute_time` on macOS and does not advance during sleep, while Linux
+`CLOCK_MONOTONIC` behaviour across suspend varies by kernel and the wall clock
+always advances. The resume path calls the same `handle_gated_wake` as every other
+source, so Off gating and deduplication are preserved by construction instead of
+being duplicated.
+
+Proof: `lifecycle::tests::a_suspend_gap_is_detected_from_either_clock`,
+`the_first_resume_sample_only_establishes_a_baseline`,
+`ordinary_ticks_and_a_backwards_clock_are_not_a_resume`,
+`a_detected_resume_merges_one_refresh_without_window_activation` and
+`a_detected_resume_starts_nothing_while_refresh_is_off`. A real machine suspend is
+still interactive steps 14 and 15.
+
+**Should-fix 3 — the refresh pipeline ran synchronously on the event-loop thread.**
+`wake` and `quit` called `runtime.block_on`, so with automatic refresh enabled a
+focus event waited for the settings read, the admission writes and the whole
+bounded pump loop before the window could respond — including to the user's Quit
+action. The pump-step bound caps the number of steps, not the duration of each
+one.
+
+Fix: both callbacks now only clone an `AppHandle` and `runtime.spawn`, so the
+event-loop thread keeps only window operations. `AppState.shutdown_signal` provides
+the coordination the review asked for: `shutdown` raises it before it waits for the
+refresh lock, `handle_gated_wake` checks it before the gate so a wake arriving
+while quitting neither consumes the gate's slot nor competes for that lock, and
+`handle_wake`'s pump loop checks it between steps so it releases the lock instead
+of running the remaining steps. `quit` exits the process from inside its own task,
+after cancellation and the pool close.
+
+Proof: `tests::the_wake_callback_returns_while_the_refresh_pipeline_is_still_busy`
+— the delayed synthetic-work test the review asked for. A holder task owns the
+refresh lock for 400ms; the real `wake` callback returns in under 100ms, and
+shutdown then completes with nothing running, nothing pending and no event
+published. Also
+`lifecycle::tests::the_pump_loop_releases_the_lock_when_quit_is_raised`,
+`every_wake_source_is_inert_once_quit_was_raised`,
+`a_resume_detected_after_quit_starts_no_work`,
+`the_resume_monitor_stops_itself_once_quit_was_raised` and
+`the_resume_monitor_keeps_sampling_until_quit`.
+
+The single-instance callback keeps its `run_on_main_thread` marshalling from round
+1, because the plugin dispatches it from its own async-runtime task; the marshalled
+closure now only shows the window and spawns.
 
 ## Technical choices checked against official documentation
 
@@ -512,35 +691,47 @@ still pass, so the IPC boundary is unchanged.
 
 ## Continuous integration
 
-Pull request #11 (`jondong/p1-11-desktop-lifecycle` → `main`) on commit
-`4045a2e`. Both required checks completed successfully, observed with
-`gh pr checks 11 --watch`:
+Pull request #11 (`jondong/p1-11-desktop-lifecycle` → `main`). Every push was
+watched with `gh pr checks 11 --watch`, and both required checks completed
+successfully on each head.
 
-| Check | Result | Duration |
+| Head | `workspace-checks` (ubuntu-latest) | `macos-desktop` (macos-latest) |
 | --- | --- | --- |
-| `workspace-checks` (ubuntu-latest) | `COMPLETED SUCCESS` | 1m25s |
-| `macos-desktop` (macos-latest) | `COMPLETED SUCCESS` | 3m22s |
+| `4045a2e` (round-1 implementation) | `COMPLETED SUCCESS`, 1m25s | `COMPLETED SUCCESS`, 3m22s |
+| `164218d` (round-1 validation record) | `COMPLETED SUCCESS`, 2m13s | `COMPLETED SUCCESS`, 4m25s |
 
-Run: <https://github.com/jondong/quotavista/actions/runs/39541645343>.
+Runs: <https://github.com/jondong/quotavista/actions/runs/39541645343> and
+<https://github.com/jondong/quotavista/actions/runs/39542209346>. Those two heads
+predate the rebase onto P1-09, so their SHAs are no longer on this branch; the
+observed results are kept because they are what actually ran. The post-rebase
+head's result is appended in a follow-up commit, since a commit cannot contain the
+SHA it is itself committed as.
 
-The ubuntu job excludes `quotavista-desktop` from Clippy and tests, so the two
-new desktop-only plugin dependencies are compiled only by the macOS job; that job
-runs the full workspace, including the 42 desktop tests, and the unsigned debug
-build. Per `.trellis/spec/backend/quality-guidelines.md` and the workflow's own
-comment, a green CI build is supplementary: it does not close G01, G02 or G04 and
-is not evidence of a native Linux or macOS run. The native observations above and
-the pending list below carry that evidence.
+The ubuntu job excludes `quotavista-desktop` from Clippy and tests, so the two new
+desktop-only plugin dependencies are compiled only by the macOS job; that job runs
+the full workspace, including the 62 desktop tests, and the unsigned debug build.
+Per `.trellis/spec/backend/quality-guidelines.md` and the workflow's own comment, a
+green CI build is supplementary: it does not close G01, G02 or G04 and is not
+evidence of a native Linux or macOS run. The native observations above and the
+pending list below carry that evidence.
 
 ## Open items
 
-- All 13 interactive native steps above, on macOS and on Ubuntu 26.04 GNOME.
+- All 16 interactive native steps above, on macOS and on Ubuntu 26.04 GNOME.
 - Linux tray detection stays conservatively `Unavailable` until a host probe is
   validated by a native run (P1-13).
-- `delivered: true` cannot mean the user saw a banner; a delivery receipt would
-  need the plugin's tracked-notification path and is out of scope.
+- `delivery: Queued` is the most the pinned desktop plugin can honestly report; a
+  real delivery receipt would need the plugin's tracked-notification path plus a
+  listener permission, which is out of scope for a prototype that must not widen
+  the renderer's capability allowlist.
 - Bilingual tray labels need settings-driven re-registration.
-- P1-09 and P1-10 own the overview, statistics, connections and settings screens.
-  This branch stays additive in the shared files (`lib.rs`, `ipc.ts`,
-  `contracts`, catalogs, `Cargo.lock`, `traceability.md`) so their merges stay
-  independent. `Cargo.lock` was resolved with `cargo fetch` rather than
-  `cargo generate-lockfile` to avoid bumping six unrelated packages.
+- P1-09 is merged into `main` (`757facf`, archived by `60a4649`) and this branch
+  was rebased onto it. Both conflicts were additive and were resolved by keeping
+  both sides: `mod statistics;` next to `mod lifecycle;`/`mod platform;` in
+  `apps/desktop/src-tauri/src/lib.rs`, and the `## P1-09 prototype evidence`
+  section next to `## P1-11 prototype evidence` in `docs/traceability.md`. P1-10
+  still owns the connections and settings screens, so this branch stays additive in
+  the shared files (`lib.rs`, `ipc.ts`, `contracts`, catalogs, `Cargo.lock`,
+  `traceability.md`) to keep that merge independent. `Cargo.lock` was resolved with
+  `cargo fetch` rather than `cargo generate-lockfile` to avoid bumping six
+  unrelated packages.
