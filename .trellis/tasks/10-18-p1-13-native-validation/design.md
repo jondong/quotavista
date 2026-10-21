@@ -6,7 +6,7 @@ Use the same prototype revision on each native target and disposable synthetic d
 
 ## Dependencies and contracts
 
-Use the baseline linked in [PRD](prd.md). Predecessors: [P1-12](../10-18-p1-12-integration-validation/prd.md) Update affected DTO mappings, migrations, and consumers together; preserve core dependency direction and synthetic provenance.
+Use the baseline linked in [PRD](prd.md). Predecessors: [P1-12](../archive/2026-10/10-18-p1-12-integration-validation/prd.md). Update affected DTO mappings, migrations, and consumers together; preserve core dependency direction and synthetic provenance.
 
 ## Compatibility and rollback
 

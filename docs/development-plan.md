@@ -18,7 +18,7 @@ The user confirmed both English and Simplified Chinese UI in P0. G03's product d
 
 Validate that the proposed stack runs in target environments and establish replaceable provider and persistence boundaries.
 
-The [Phase 1 task plan](phase-one-plan.md) breaks this work into a Trellis milestone and 13 dependency-aware child tasks. See [task management](task-management.md) for contributor setup and lifecycle commands. All implementation tasks are initially in planning; no application capability is claimed by this setup.
+The [Phase 1 task plan](phase-one-plan.md) breaks this work into a Trellis milestone and 13 dependency-aware child tasks. See [task management](task-management.md) for contributor setup and lifecycle commands. P1-01 through P1-12 are merged and archived; P1-13 is in progress and incomplete. No application capability beyond what those merged tasks record is claimed here.
 
 - Initialize Tauri 2, React, TypeScript, Vite, and the Rust workspace; pin dependencies.
 - Establish overview, statistics, connections, settings, and display contracts using clearly labeled simulated data.
@@ -30,6 +30,8 @@ The [Phase 1 task plan](phase-one-plan.md) breaks this work into a Trellis miles
 - Add meaningful Rust domain tests and TypeScript checks. Do not present simulated accounts as connected real accounts.
 
 Exit gate: The prototype runs on target macOS and Linux environments, credentials are not persisted in plaintext, and Linux remains usable without a tray. If Linux is unavailable for validation, identify that gap instead of claiming cross-platform completion.
+
+Exit-gate status (2026-10-21): **not met**. The [Phase 1 exit assessment](validation/phase-one-exit-assessment.md) records macOS non-interactive native checks as passing on the host that was available, the sixteen interactive desktop observations as pending a human operator, and every Linux row as unverified because no Ubuntu 26.04 GNOME x86_64 machine existed in this validation window. The gap is identified rather than covered by a cross-platform claim, exactly as this gate requires. G01, G02, and G04 remain open.
 
 Requirements covered: Foundations for A05, A07, A09, A10, A11, A12, and A18 through A25, as mapped in the acceptance matrix.
 
