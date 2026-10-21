@@ -156,16 +156,43 @@ identifier**, `com.quotavista.prototype.nativeprobe`, built by `TAURI_CONFIG` in
 a separate `CARGO_TARGET_DIR=target/native-probe`. That gives the run a disjoint
 channel and cannot activate an ordinary instance. The probe also:
 
-- fails closed before launching if either socket has a live holder or either
+- fails closed before launching if either channel has a live holder or either
   binary is already running (`qv_require_clear_host`), and refuses to run at all
-  when `lsof` is unavailable, because it could then not tell a live socket from a
-  stale one;
+  when the platform's inspection tool is missing — `lsof` on macOS, `gdbus` on
+  Linux — because it could then not tell an occupied channel from a free one;
+- inspects the channel that actually exists on the platform. On macOS that is the
+  Unix socket, read through `lsof` holders without connecting (connecting *is*
+  the activation being avoided). On Linux it is the session-bus name, read with
+  `org.freedesktop.DBus.NameHasOwner`, which does not claim the name. A state
+  that cannot be interpreted is reported as an incumbent, never as clear;
+- takes a run lock (`mkdir /tmp/quotavista-native-probe.lock`) before launching
+  and releases it on every exit path, including the refusals. The validation
+  identifier is a fixed constant, so two overlapping runs — two worktrees of this
+  repository share `/tmp` while having separate `target/native-probe`
+  directories — would otherwise share one channel;
 - records the ordinary socket's modification time before and during the run, so
-  the transcript shows it was never bound or activated (step 1b);
-- removes only the validation socket on cleanup, never the ordinary one.
+  the transcript shows no recorded change to it (step 1b). That is a
+  point-in-time observation, not proof of "no activation": connecting to an
+  existing socket need not change its mtime. The substantive guarantee is the
+  disjoint identifier, which makes the two channels different by construction;
+- verifies the identifier by reading it back out of the binary before launching,
+  so `--skip-build` cannot reuse a cached artifact built for the ordinary
+  identity;
+- removes only the validation socket on cleanup, never the ordinary one, and only
+  when it is demonstrably stale rather than held.
 
 Manual runs must respect the same boundary: use the validation identity, or accept
 explicitly that a second launch activates whatever is already up on this machine.
+A checklist cannot gate what an operator pastes into their own shell, so
+`native-checks.sh --interactive` prints the check as a runnable command rather
+than as advice:
+
+```sh
+bash -c '. ./scripts/native-launch-lib.sh && qv_detect_incumbents'
+```
+
+Empty output means the host is clear. Run it in the shell that will launch the
+app, after the mandatory session block and before the first launch.
 
 To verify what a run committed, read the store back read-only (it never contains
 credential values — see `crates/infrastructure/migrations/0001_persistence.sql`,
@@ -203,6 +230,16 @@ target is:
 | published_partitions / sync_runs | `2` / `2` | the seeded refresh published one partition per scope |
 | settings | `en/UTC/USD` | the migration's seed row |
 
+
+Counts are necessary but not sufficient: a corruption that preserves every
+aggregate could still attach facts to the wrong scope or flatten their values.
+The probe therefore also asserts relationships and content on the same rows —
+scope identities, facts joined to a partition of a *different* scope, published
+partitions pointing at another partition's run, facts and partitions per scope,
+fact kinds, and that each scope's amounts are distinct, numeric, positive and
+contiguous (the shape `simulated::history_facts` writes, `token_total + day`).
+`scripts/test-native-launch-probe.sh` carries six count-preserving corruptions
+that keep the aggregate at `8|2|2|6|2|2|en/UTC/USD` and must still be rejected.
 `scripts/native-launch-probe.sh` asserts all of these per launch and fails the run
 on any mismatch, and it fails on the stderr diagnostics `demo seeding failed` and
 `credential store unavailable` instead of merely printing them.
@@ -247,10 +284,10 @@ It launches the built binary up to three times, each in its own throwaway
 
 | Step | What it proves |
 | --- | --- |
-| 0a incumbent gate | Nothing already holds either single-instance socket and neither binary is running, checked without connecting to the socket. The probe **refuses to run** (`PROBE: REFUSED`, exit 2) when `lsof` is unavailable, because it could then not distinguish a live socket from a stale one. |
-| 0b isolated build | The validation-only binary exists and actually carries the identifier `com.quotavista.prototype.nativeprobe`. |
+| 0a incumbent gate and run lock | Nothing already holds the platform's single-instance channel (a Unix socket read through `lsof` on macOS, a session-bus name read through `gdbus` on Linux) and neither binary is running — checked without connecting, because connecting is the activation being avoided. A channel state that cannot be interpreted counts as an incumbent. The probe **refuses to run** (`PROBE: REFUSED`, exit 2) when the platform's inspection tool is missing, and takes `mkdir /tmp/quotavista-native-probe.lock` so two overlapping runs cannot share the fixed validation identifier; the lock is released on every exit path. |
+| 0b isolated build | The validation-only binary exists and actually carries the identifier `com.quotavista.prototype.nativeprobe`, read back out of the file rather than assumed from the build command. `--skip-build` does not weaken this: a cached artifact built for the ordinary identity is refused before anything is launched, because a post-launch identity check cannot undo an activation. |
 | 1 cold launch | The binary starts, the composition initialises, and the tray/notification adapters report their detections. Time from `exec` to the capabilities line is measured, so a launch that never arrived cannot look fast. Reaching that line is a startup milestone of the process, not evidence that a usable window was rendered. |
-| 1b isolation held | The ordinary socket's modification time is unchanged across the run and the validation socket appeared, so no launch bound or activated the ordinary channel. |
+| 1b no recorded change | The ordinary socket's stamp is unchanged across the run and the validation socket appeared. The unchanged stamp supports "no recorded change", not "no activation" — connecting to an existing socket need not change its mtime. The substantive isolation is the disjoint identifier named in the header. |
 | 2 single instance | A second launch exits early while the first keeps running and logs the handover wake. Process-level only. |
 | 3–4 terminate and validate cold | The process stops on `SIGTERM` with a real exit status, and the committed synthetic state is validated field by field against the fixture table above — not merely read back. |
 | 5–7 warm launch | The same directory restarts, does not reseed, keeps the identical aggregate, and shows both demo connections at `needs_credentials` as the startup credential reconciliation requires. |
@@ -267,10 +304,19 @@ real migrations and asserts that the validator accepts a known-good store and
 rejects a schema-only store, a seed without committed facts, a seed without
 published partitions, wrong connection identities, an orphan scope, a persisted
 credential reference, an off-fixture scope key, a wrong lifecycle, a wrong data
-revision, and wrong settings. It also asserts the single-instance isolation logic
-against a synthetic incumbent, a stale socket, and the three spellings of a binary
-path that `ps` can show. Run it after changing either script.
-
+revision, and wrong settings — plus six **count-preserving corruptions** that
+leave the aggregate row identical and are still rejected: facts moved to another
+scope's partition, a partition moved to another scope, a published partition
+pointing at the wrong run, flattened amounts, a zero amount, and a non-numeric
+amount. It also asserts the single-instance isolation logic against a synthetic
+incumbent, a live socket, a stale socket, a socket whose state cannot be
+inspected (which must fail closed rather than read as clear), a validation socket
+another process holds (which cleanup must refuse to unlink), and the three
+spellings of a binary path that `ps` can show; the run lock against a live owner,
+a dead owner, and a release attempted by a shell that does not own it; and the
+Linux session-bus branch — an owned name is an incumbent, a bus that will not
+answer fails closed, a free name reports a clear host, and a missing `gdbus`
+reports unknown rather than free. Run it after changing either script.
 
 Two manually gated checks complete the automated set:
 

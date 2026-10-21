@@ -188,6 +188,16 @@ run_interactive() {
   echo
   qv_session_setup_block | sed 's/^/    /'
   echo
+  echo "Then check for an incumbent before launching. Empty output means the host"
+  echo "is clear; anything printed means something is already running, and a second"
+  echo "launch would hand the activation to it instead of starting a new one:"
+  echo
+  echo "    bash -c '. ./scripts/native-launch-lib.sh && qv_detect_incumbents'"
+  echo
+  echo "That is the same fail-closed logic scripts/native-launch-probe.sh applies at"
+  echo "its step 0a; printing it here because a checklist cannot gate what a human"
+  echo "pastes into their own shell."
+  echo
   echo "The validation identity (recommended; keeps this run off the ordinary"
   echo "application's single-instance channel):"
   echo

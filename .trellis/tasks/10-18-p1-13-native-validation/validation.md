@@ -115,18 +115,30 @@ Safety boundary actually observed:
    validation-only binary with `TAURI_CONFIG='{"identifier":"com.quotavista.prototype.nativeprobe"}'`
    into `CARGO_TARGET_DIR=target/native-probe`, giving it the disjoint channel
    `/tmp/com_quotavista_prototype_nativeprobe_si.sock`; step 1b records that the
-   ordinary socket's mtime is unchanged across the run. Detection uses `lsof`
-   holders and `ps` argv matching rather than connecting to the socket, because
-   connecting *is* the activation being avoided. A loose `pgrep -f quotavista`
-   was rejected after it matched the agent process itself, whose environment
-   merely contains the worktree path.
-9. **The probe fails closed on an incumbent and refuses to guess.** Before any
-   launch, `qv_require_clear_host` requires that neither socket has a live holder
-   and that neither binary is running; when `lsof` is unavailable the probe exits
-   2 with `PROBE: REFUSED` rather than proceeding, because it could then not
-   distinguish a live socket from a stale one. It removes only the validation
-   socket on cleanup and never the ordinary one, even when the ordinary one is
-   stale.
+   ordinary socket's recorded stamp is unchanged across the run — a point-in-time
+   observation that supports "no recorded change", not "no activation", since
+   connecting to an existing socket need not change its mtime. Detection inspects
+   the channel that actually exists on the platform — `lsof` holders of the Unix
+   socket on macOS, `org.freedesktop.DBus.NameHasOwner` for
+   `<identifier>.SingleInstance` on Linux — plus `ps` argv matching, and it never
+   connects to the socket, because connecting *is* the activation being avoided.
+   A channel state that cannot be interpreted is reported as an incumbent rather
+   than as clear. A loose `pgrep -f quotavista` was rejected after it matched the
+   agent process itself, whose environment merely contains the worktree path.
+9. **The probe fails closed on an incumbent, on a missing inspection tool, and on
+   an unverifiable binary.** Before any launch, `qv_require_clear_host` requires
+   that neither channel has a live holder and that neither binary is running; when
+   the platform's inspection tool is absent — `lsof` on macOS, `gdbus` on Linux —
+   the probe exits 2 with `PROBE: REFUSED` rather than proceeding, because it
+   could then not distinguish an occupied channel from a free one. It also takes
+   `mkdir /tmp/quotavista-native-probe.lock`, released on every exit path
+   including the refusals: the validation identifier is a fixed constant, so two
+   overlapping runs would share one channel, and a pre-flight check is not a lock.
+   The identifier is read back out of the binary before launching, so
+   `--skip-build` cannot reuse a cached artifact built for the ordinary identity —
+   a post-launch identity check could not undo an activation. Cleanup removes only
+   the validation socket, and only when it is demonstrably stale rather than held;
+   the ordinary socket is never touched, even when it is stale.
 10. **A store inspection that only compares aggregates accepts an empty store.**
     The review demonstrated `PROBE: PASS` against a disposable test double that
     read back `0|0|0|0|0|0|zh-CN/UTC/USD`, because "cold equals warm and non-empty"
@@ -137,8 +149,15 @@ Safety boundary actually observed:
     2 sync runs, `en/UTC/USD`), treats a readable store and a *valid* store as
     separate judgements, and fails on the `demo seeding failed` and
     `credential store unavailable` diagnostics instead of only printing them.
-    `scripts/test-native-launch-probe.sh` carries 15 store fixtures including the
-    reviewer's exact false-pass shape.
+    `scripts/test-native-launch-probe.sh` carries the store fixtures, including the
+   reviewer's exact false-pass shape. Counts alone do not establish that the
+   fixture is the fixture, so the validator also checks relationships and content:
+   scope identities, facts joined to a partition of a *different* scope, published
+   partitions pointing at another partition's run, facts and partitions per scope,
+   fact kinds, and that each scope's amounts are distinct, numeric, positive and
+   contiguous (which is the shape `simulated::history_facts` writes). Six
+   count-preserving corruptions in the self-test keep the aggregate row at
+   `8|2|2|6|2|2|en/UTC/USD` and are still rejected.
 11. **The warm launch's `needs_credentials` lifecycle is expected, and naming it
     was the point.** The first validator run rejected the warm store with
     `found 'needs_credentials ', expected 'active '`. That is not a regression:
@@ -197,37 +216,66 @@ The bullets above came from the probe as it stood at `1afa2a8`. An independent
 review then found two defects in that probe (B1: `TMPDIR` does not isolate the
 single-instance channel; B2: the store inspection accepted any identical
 non-empty aggregate), so the probe was rewritten — see design decisions 8 to 12.
-The rewritten probe was run against the same prototype at `10dc053` on
-2026-10-21 15:16:55 UTC, with the rewrite itself still in the working tree, and
-it printed `PROBE: PASS`:
+A follow-up review of that fix hardened three further edges: a run lock, the
+Linux session-bus branch of the incumbent detector, and reading the identifier
+back out of the binary. The current probe was run against the same prototype at
+`83ca94a` on 2026-10-21 16:29:15 UTC, with these last edits still in the working
+tree, and it printed `PROBE: PASS`:
 
 ```text
 Binary                     target/native-probe/debug/quotavista-desktop
 Application identifier     com.quotavista.prototype.nativeprobe (validation only)
 Ordinary identifier unused com.quotavista.prototype
+Host platform              darwin (so the channel inspected is a Unix socket,
+                           and lsof is the tool that proves a holder)
 Validation channel         /tmp/com_quotavista_prototype_nativeprobe_si.sock
-Ordinary channel           /tmp/com_quotavista_prototype_si.sock (never bound)
-Cold launch                pid 48546, exec→capabilities 1164 ms, rss 123376 KiB
+Ordinary channel           /tmp/com_quotavista_prototype_si.sock — present and
+                           stale at pre-flight, deliberately left in place
+Run lock                   /tmp/quotavista-native-probe.lock taken before the
+                           first launch, released on cleanup
+Cold launch                pid 88938, exec→capabilities 1195 ms, rss 122672 KiB
                            quotavista: capabilities tray=Available notification=Unconfirmed
-Isolation held (step 1b)   ordinary channel before=1792591131 during=1792591131
-                           validation channel before=absent during=1792595817
-Second launch              pid 48744, exited status 0 after 119 ms; first survived
+Step 1b                    ordinary channel stamp before=1792591131 during=1792591131
+                           validation channel before=absent during=1792600156
+                           (an unchanged stamp supports "no recorded change",
+                           not "no activation": connecting to an existing socket
+                           need not change its mtime. The substantive guarantee
+                           is the disjoint identifier above.)
+Second launch              pid 89144, exited status 0 after 119 ms; first survived
                            and logged the SingleInstanceActivation wake
-Warm launch                pid 48885, exec→capabilities 450 ms, rss 122416 KiB
-No-tray launch             pid 49071, QUOTAVISTA_TRAY=off, 441 ms,
+Warm launch                pid 89362, exec→capabilities 441 ms, rss 122256 KiB
+No-tray launch             pid 89572, QUOTAVISTA_TRAY=off, 443 ms,
                            quotavista: capabilities tray=Unavailable notification=Unconfirmed
 Cold fixture               8|2|2|6|2|2|en/UTC/USD, ids synthetic-kimi-demo
                            synthetic-openrouter-demo, lifecycles `active `
+                           facts per scope 3,3 | partitions per scope 1,1
 Warm fixture               8|2|2|6|2|2|en/UTC/USD, same ids, lifecycles
-                           `needs_credentials ` — every field (as expected)
+                           `needs_credentials ` — all 22 fields (as expected),
+                           including every relationship and content check
 Termination                SIGTERM, status 143 for cold, warm and no-tray
 Cleanup                    default prototype directory untouched; no
-                           target/native-probe/debug/quotavista-desktop remains
+                           target/native-probe/debug/quotavista-desktop remains;
+                           stale validation socket removed; run lock released
 ```
 
+The stale ordinary socket, recorded explicitly rather than left implicit: before
+launch, `/tmp/com_quotavista_prototype_si.sock` existed with mtime epoch
+`1792591131` (2026-10-21 21:58:51 local). `lsof` reported no holder at every
+recorded check, so the probe treated it as stale — the shape a socket takes when
+its process is terminated by a signal, because the plugin removes it only on
+`RunEvent::Exit`. The pathname was deliberately left untouched: cleanup removes
+only the validation identity's socket, never the ordinary one, even when that one
+is stale. Its recorded mtime was still `1792591131` after the run, and
+`/tmp/com_quotavista_prototype_nativeprobe_si.sock` was absent after cleanup —
+a statement about the recorded checks, not about ownership during execution.
+These are point-in-time observations and do not independently prove absence of
+activation. The file was first observed after the reviewer's cross-directory
+reproduction; this record does not attribute its origin further than that.
+
 Every capability line and every fixture field agrees with the pre-review run;
-what changed is that the run is now isolated from any ordinary instance and the
-fixture is validated field by field instead of compared as an aggregate. The
+what changed is that the run now uses a disjoint single-instance identity and
+the fixture is validated field by field — including relationships and content,
+not only counts — instead of compared as an aggregate. The
 `active ` → `needs_credentials ` lifecycle transition on restart is new
 *observable* evidence for the promise `lib.rs` makes about session-only
 credentials (design decision 11). Where this subsection and the bullets above
@@ -394,7 +442,7 @@ node ./scripts/check-catalog-parity.mjs                                       rc
 cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check rc=0 (TypeScript contract is current)
 ./scripts/native-checks.sh --environment                                      rc=0
 ./scripts/native-checks.sh --automated                                        rc=0 (AUTOMATED: PASS — 21 + 13 + 2 tests)
-./scripts/test-native-launch-probe.sh                                         rc=0 (49 regression checks)
+./scripts/test-native-launch-probe.sh                                         rc=0 (82 regression checks)
 ./scripts/native-launch-probe.sh                                              rc=0 (PROBE: PASS)
 sh -c './scripts/native-checks.sh --interactive < /dev/null'                   rc=0 (16 × OBSERVED: PENDING, 0 passes)
 (cd apps/desktop && npm ci)                                                   rc=0
@@ -563,8 +611,16 @@ step 13 still reports `OBSERVED: PENDING` sixteen times with no passes.
   fresh `TMPDIR` did not isolate the single-instance channel (B1), and its store
   inspection accepted any identical non-empty aggregate (B2) — the reviewer
   demonstrated `PROBE: PASS` against a disposable double that read back
-  `0|0|0|0|0|0|zh-CN/UTC/USD`. Both are fixed, with a 49-case regression suite
-  (`scripts/test-native-launch-probe.sh`) that reproduces each failure shape. Two
+  `0|0|0|0|0|0|zh-CN/UTC/USD`. Both are fixed, with an 82-check regression suite
+  (`scripts/test-native-launch-probe.sh`) that reproduces each failure shape. A
+  follow-up review of that fix hardened three further edges: a run lock, so two
+  overlapping probes cannot share the fixed validation identifier; the Linux
+  session-bus branch of the incumbent detector, because a socket-only detector
+  reports "clear" on Linux no matter what is running; and reading the identifier
+  back out of the binary, so `--skip-build` cannot reuse an artifact built for the
+  ordinary identity. It also corrected an overstatement in this record — an
+  unchanged socket stamp supports "no recorded change", not "no activation" — and
+  narrowed the claims the exit assessment made about the PASS rows. Two
   further findings were documentation scope (S1: the interactive checklist printed
   bare `cargo run` commands that would select the native store; S2: "no plaintext
   credential persistence" claimed more than the inspection showed) plus a nit

@@ -96,6 +96,17 @@ EXPECTED_FACTS=6
 EXPECTED_PARTITIONS=2
 EXPECTED_SYNC_RUNS=2
 EXPECTED_SETTINGS="en/UTC/USD"
+# Relational and content shape, measured from a real launch and derived from
+# seed_demo_connections() plus simulated::history_facts(). These exist because
+# aggregate counts alone cannot distinguish the fixture from a corruption that
+# preserves them: facts moved to the wrong scope, a published partition pointing
+# at another run's partition, or six facts whose values were all flattened still
+# read back as 8|2|2|6|2|2|en/UTC/USD.
+EXPECTED_SCOPE_IDS="synthetic-kimi-demo-account synthetic-openrouter-demo-account"
+EXPECTED_FACTS_PER_SCOPE="3,3"
+EXPECTED_PARTITIONS_PER_SCOPE="1,1"
+EXPECTED_AMOUNT_VARIANTS_PER_SCOPE="3,3"
+EXPECTED_FACT_KINDS="bucket"
 
 # The lifecycle differs between the first launch and every later one, and the
 # reason is behaviour worth asserting rather than tolerating: a demo connection is
@@ -183,6 +194,10 @@ store_snapshot() {
   snap_partitions="" snap_sync_runs="" snap_settings=""
   snap_connection_ids="" snap_scope_orphans="" snap_scope_keys=""
   snap_credential_refs="" snap_lifecycles="" snap_row=""
+  snap_scope_ids="" snap_fact_scope_mismatch="" snap_run_chain_breaks=""
+  snap_facts_per_scope="" snap_partitions_per_scope=""
+  snap_amount_variants_per_scope="" snap_amount_bad="" snap_amount_gaps=""
+  snap_fact_kinds=""
 
   if ! command -v sqlite3 >/dev/null 2>&1; then
     not_observed "${label}: sqlite3 is not installed, so committed state was not inspected"
@@ -220,14 +235,44 @@ store_snapshot() {
   snap_credential_refs="$(store_query "$db" 'SELECT COUNT(*) FROM connections WHERE credential_ref IS NOT NULL;')"
   snap_scope_orphans="$(store_query "$db" 'SELECT COUNT(*) FROM provider_scopes s
       WHERE NOT EXISTS (SELECT 1 FROM connections c WHERE c.id = s.connection_id);')"
+  # The NULL guards matter: `x <> 'literal'` is NULL, not true, when x is NULL,
+  # so an unguarded comparison would silently pass a row the schema forbids.
   snap_scope_keys="$(store_query "$db" "SELECT COUNT(*) FROM provider_scopes
-      WHERE scope_key <> '${EXPECTED_SCOPE_KEY}' OR scope_type <> '${EXPECTED_SCOPE_TYPE}';")"
+      WHERE scope_key IS NULL OR scope_type IS NULL
+         OR scope_key <> '${EXPECTED_SCOPE_KEY}' OR scope_type <> '${EXPECTED_SCOPE_TYPE}';")"
+  snap_scope_ids="$(store_query "$db" 'SELECT id FROM provider_scopes ORDER BY id;' | tr '\n' ' ')"
+  # Counts alone do not establish that the fixture is the fixture: a corruption
+  # that preserves every aggregate could still attach facts to the wrong scope or
+  # flatten their values. These are relational and content checks on the same rows.
+  snap_fact_scope_mismatch="$(store_query "$db" 'SELECT COUNT(*) FROM usage_facts f
+      JOIN partitions p ON p.id = f.partition_id WHERE p.scope_id <> f.scope_id;')"
+  snap_run_chain_breaks="$(store_query "$db" 'SELECT COUNT(*) FROM published_partitions pp
+      JOIN sync_runs r ON r.id = pp.run_id WHERE r.partition_id <> pp.partition_id;')"
+  snap_facts_per_scope="$(store_query "$db" "SELECT COALESCE(group_concat(c, ','), '')
+      FROM (SELECT COUNT(*) AS c FROM usage_facts GROUP BY scope_id ORDER BY scope_id);")"
+  snap_partitions_per_scope="$(store_query "$db" "SELECT COALESCE(group_concat(c, ','), '')
+      FROM (SELECT COUNT(*) AS c FROM partitions GROUP BY scope_id ORDER BY scope_id);")"
+  snap_amount_variants_per_scope="$(store_query "$db" "SELECT COALESCE(group_concat(c, ','), '')
+      FROM (SELECT COUNT(DISTINCT amount) AS c FROM usage_facts GROUP BY scope_id ORDER BY scope_id);")"
+  snap_amount_bad="$(store_query "$db" "SELECT COUNT(*) FROM usage_facts
+      WHERE amount IS NULL OR amount GLOB '*[^0-9]*' OR CAST(amount AS INTEGER) <= 0;")"
+  # history_facts() writes token_total + day for three consecutive days, so each
+  # scope's amounts are a contiguous run of distinct integers. Provider-specific
+  # constants are deliberately not hardcoded; the shape is.
+  snap_amount_gaps="$(store_query "$db" 'SELECT COUNT(*) FROM (SELECT scope_id FROM usage_facts
+      GROUP BY scope_id
+      HAVING COUNT(DISTINCT amount) <> COUNT(*)
+          OR (MAX(CAST(amount AS INTEGER)) - MIN(CAST(amount AS INTEGER)) + 1) <> COUNT(*));')"
+  snap_fact_kinds="$(store_query "$db" "SELECT COALESCE(group_concat(DISTINCT kind), '') FROM usage_facts;")"
   snap_readable=1
 
   note "- ${label} store_state.data_revision | connections | provider_scopes | usage_facts | published_partitions | sync_runs | settings(locale/zone/currency):"
   note "    ${snap_row}"
   note "- ${label} connection ids: ${snap_connection_ids:-<none>}"
   note "- ${label} connection lifecycles: ${snap_lifecycles:-<none>}"
+  note "- ${label} scope ids: ${snap_scope_ids:-<none>}"
+  note "- ${label} facts per scope: ${snap_facts_per_scope:-<none>} | partitions per scope: ${snap_partitions_per_scope:-<none>}"
+  note "- ${label} fact kinds: ${snap_fact_kinds:-<none>} | distinct amounts per scope: ${snap_amount_variants_per_scope:-<none>}"
   return 0
 }
 
@@ -266,6 +311,28 @@ validate_snapshot() {
   expect "$label" "scopes off the ${EXPECTED_SCOPE_KEY}/${EXPECTED_SCOPE_TYPE} fixture" \
     "$snap_scope_keys" "0" || ok=1
   expect "$label" "connection lifecycles" "$snap_lifecycles" "$expected_lifecycles" || ok=1
+
+  # Relational and content invariants. Every one of these still holds for a
+  # corruption that keeps the aggregate counts identical, which is exactly the
+  # hole the count-and-compare version of this validator left open.
+  local scope_ids_sorted expected_scope_ids_sorted
+  scope_ids_sorted="$(printf '%s\n' $snap_scope_ids | sort | tr '\n' ' ')"
+  expected_scope_ids_sorted="$(printf '%s\n' $EXPECTED_SCOPE_IDS | sort | tr '\n' ' ')"
+  expect "$label" "scope ids" "$scope_ids_sorted" "$expected_scope_ids_sorted" || ok=1
+  expect "$label" "facts attached to a partition of another scope" \
+    "$snap_fact_scope_mismatch" "0" || ok=1
+  expect "$label" "published partitions pointing at another partition's run" \
+    "$snap_run_chain_breaks" "0" || ok=1
+  expect "$label" "facts per scope" "$snap_facts_per_scope" "$EXPECTED_FACTS_PER_SCOPE" || ok=1
+  expect "$label" "partitions per scope" \
+    "$snap_partitions_per_scope" "$EXPECTED_PARTITIONS_PER_SCOPE" || ok=1
+  expect "$label" "fact kinds" "$snap_fact_kinds" "$EXPECTED_FACT_KINDS" || ok=1
+  expect "$label" "distinct fact amounts per scope" \
+    "$snap_amount_variants_per_scope" "$EXPECTED_AMOUNT_VARIANTS_PER_SCOPE" || ok=1
+  expect "$label" "fact amounts null, non-numeric, or non-positive" \
+    "$snap_amount_bad" "0" || ok=1
+  expect "$label" "scopes whose fact amounts are not a contiguous distinct run" \
+    "$snap_amount_gaps" "0" || ok=1
 
   # Seeding ends with one refresh of every connection, so committed facts and a
   # published partition per connection are what "the seed completed" means. A
@@ -458,6 +525,14 @@ cleanup() {
   if [ -n "$removed" ]; then
     note "- cleanup: removed the stale validation socket ${removed}"
   fi
+  # The lock is taken after `pids=()` and released here, so every exit path —
+  # including the refusals that exit 2 — hands `/tmp` back to the next run.
+  # `qv_release_lock` only removes a lock this shell owns.
+  local released
+  released="$(qv_release_lock "$QV_LOCK_DIR")"
+  if [ -n "$released" ]; then
+    note "- cleanup: released the run lock ${released}"
+  fi
 }
 
 # -------------------------------------------------------------------- main
@@ -490,6 +565,15 @@ main() {
 
   failures=0
   pids=()
+  # The validation identifier is a fixed constant and `/tmp` is shared across
+  # worktrees, so two overlapping runs would share one single-instance channel.
+  # The incumbent gate below is a check, not a lock; this is the lock.
+  local lock_reason
+  if ! lock_reason="$(qv_acquire_lock "$QV_LOCK_DIR")"; then
+    printf -- '- refusing to run: %s\n' "$lock_reason"
+    printf '\nPROBE: REFUSED (another native-check run holds %s)\n' "$QV_LOCK_DIR"
+    exit 2
+  fi
   trap cleanup EXIT
 
   printf '## Native launch probe (non-interactive)\n'
@@ -507,9 +591,22 @@ main() {
   printf -- "- Default prototype directory left alone: %s\n" "$DEFAULT_DATA_DIR"
 
   step "0a. Fail closed before launching: is the host clear of incumbents?"
-  if ! command -v lsof >/dev/null 2>&1; then
-    note "- lsof is unavailable, so a live single-instance socket cannot be distinguished from a stale one"
-    note "- refusing to launch: install lsof and re-run (this is a refusal, not a prototype failure)"
+  local host_os detection_tool
+  host_os="$(qv_host_os)"
+  note "- host platform: ${host_os}"
+  # The channel that has to be inspectable differs by platform: a Unix socket on
+  # macOS, a session-bus name on Linux. Requiring the wrong tool would either
+  # refuse a runnable host or, worse, let an uninspectable one through.
+  if [ "$host_os" = "linux" ]; then
+    detection_tool="gdbus"
+    note "- the single-instance channel on Linux is a session-bus name, not a socket in /tmp"
+  else
+    detection_tool="lsof"
+    note "- the single-instance channel here is a Unix socket, so lsof is what proves a holder"
+  fi
+  if ! command -v "$detection_tool" >/dev/null 2>&1; then
+    note "- ${detection_tool} is unavailable, so a live channel cannot be distinguished from a free or stale one"
+    note "- refusing to launch: install ${detection_tool} and re-run (this is a refusal, not a prototype failure)"
     printf '\nPROBE: REFUSED (cannot detect incumbents)\n'
     exit 2
   fi
@@ -518,6 +615,26 @@ main() {
   probe_before="$(socket_stamp "$PROBE_SOCKET")"
   note "- ordinary channel ${ORDINARY_SOCKET}: ${ordinary_before}"
   note "- validation channel ${PROBE_SOCKET}: ${probe_before}"
+  local ordinary_state
+  ordinary_state="$(qv_socket_state "$ORDINARY_SOCKET")"
+  note "- ordinary channel state: ${ordinary_state}"
+  note "- validation channel state: $(qv_socket_state "$PROBE_SOCKET")"
+  case "$ordinary_state" in
+    absent) ;;
+    stale)
+      # Recorded explicitly rather than left implicit: a stale socket from an
+      # earlier signal-terminated run is expected, and this script never removes
+      # another identity's socket (see qv_remove_stale_probe_socket).
+      note "- the ordinary channel exists but no process holds it, so this run treats it as stale"
+      note "- it is deliberately left untouched, and its recorded stamp is compared again at step 1b"
+      ;;
+    live:*)
+      note "- the ordinary channel is LIVE; the gate below must refuse to launch"
+      ;;
+    *)
+      note "- the ordinary channel state ${ordinary_state} cannot be shown to be clear; the gate below must refuse"
+      ;;
+  esac
   if ! qv_require_clear_host; then
     note "- refusing to launch while an incumbent is detectable; quit it and re-run"
     note "- this is a refusal to run, not a prototype failure"
@@ -530,6 +647,9 @@ main() {
   step "0b. Validation binary with an isolated single-instance identity"
   if [ "$SKIP_BUILD" -eq 1 ]; then
     note "- --skip-build: using the existing ${BIN}"
+    note "- provenance is still verified below: the identifier is read back out of"
+    note "  the binary before anything is launched, so a cached artifact built for"
+    note "  the ordinary identity is rejected rather than activated"
   else
     note "- Command: TAURI_CONFIG='{\"identifier\":\"${QV_PROBE_IDENTIFIER}\"}' CARGO_TARGET_DIR=${QV_PROBE_TARGET_DIR} cargo build --locked -p ${QV_CRATE}"
     # cargo reprints the same ts-rs attribute warning once per affected type,
@@ -608,7 +728,7 @@ main() {
     fail "cold launch reached composition readiness with clean diagnostics"
   fi
 
-  step "1b. Isolation held: the ordinary single-instance channel was untouched"
+  step "1b. Isolation: no recorded change to the ordinary single-instance channel"
   local ordinary_during probe_during
   ordinary_during="$(socket_stamp "$ORDINARY_SOCKET")"
   probe_during="$(socket_stamp "$PROBE_SOCKET")"
@@ -616,13 +736,17 @@ main() {
   note "- validation channel ${PROBE_SOCKET}: before=${probe_before} during=${probe_during}"
   local isolation_ok=0
   if [ "$ordinary_before" = "$ordinary_during" ]; then
-    note "- the ordinary channel is unchanged, so no validation launch bound or activated it"
+    note "- the ordinary channel's recorded stamp is unchanged"
+    note "- that is a point-in-time observation only: connecting to an existing socket need"
+    note "  not change its mtime, so this supports 'no recorded change', not 'no activation'"
+    note "- the substantive isolation guarantee is the disjoint application identifier named"
+    note "  in the header, which gives this run a different channel by construction"
   else
     note "- the ordinary channel CHANGED during a validation launch; isolation did not hold"
     isolation_ok=1
   fi
   if [ -e "$PROBE_SOCKET" ]; then
-    note "- the running instance owns the validation channel, as intended"
+    note "- a validation socket appeared, so the validation identity registered its own channel"
   else
     note "- no validation socket appeared, so single-instance registration is unconfirmed"
     isolation_ok=1

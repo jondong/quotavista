@@ -124,23 +124,46 @@ FIXTURE_REVISION="UPDATE store_state SET data_revision = 8 WHERE id = 1;"
 # event_id empty, and key_start/key_end equal to start_at/end_at.
 fix_facts() {
     local db="$1"
-    local partition scope day start end
+    local partition scope day start end base amount
     for partition in 1 2; do
         if [ "$partition" -eq 1 ]; then
             scope="synthetic-kimi-demo-account"
+            base=1000
         else
             scope="synthetic-openrouter-demo-account"
+            base=9000
         fi
         for day in 18 19 20; do
             start="2026-10-${day}T00:00:00Z"
             end="2026-10-$((day + 1))T00:00:00Z"
+            # simulated::history_facts() writes token_total + day, so a real store
+            # holds three distinct, contiguous amounts per scope. The fixture
+            # reproduces that shape (not the providers' own constants) so the
+            # validator's distinctness and contiguity checks have something to
+            # bite on, and a flattened-value corruption becomes detectable.
+            amount=$((base + day - 18))
             sql "$db" "INSERT INTO usage_facts
                 (partition_id, scope_id, dataset, metric, kind, event_id, key_start, key_end,
                  start_at, end_at, value_kind, amount, unit_detail, source_revision)
                 VALUES (${partition}, '${scope}', 'usage', 'tokens', 'bucket', '',
-                        '${start}', '${end}', '${start}', '${end}', 'tokens', '100', 'total', 'synthetic-revision');"
+                        '${start}', '${end}', '${start}', '${end}', 'tokens', '${amount}', 'total', 'synthetic-revision');"
         done
     done
+}
+
+# seed_good <db-path>
+# The full, valid startup fixture. The count-preserving corruption variants
+# below build on it and then change exactly one thing, so a failure names the
+# check that bit rather than the whole fixture.
+seed_good() {
+    local db="$1"
+    sql "$db" "$FIXTURE_CONNECTIONS"
+    sql "$db" "$FIXTURE_SCOPES"
+    sql "$db" "$FIXTURE_PARTITIONS"
+    sql "$db" "$FIXTURE_RUNS"
+    sql "$db" "$FIXTURE_PUBLISHED"
+    fix_facts "$db"
+    sql "$db" "$FIXTURE_REVISION"
 }
 
 # build_fixture <name> <variant>
@@ -254,6 +277,47 @@ build_fixture() {
             # report needs_credentials after a restart rather than staying Active.
             sql "$db" "UPDATE connections SET lifecycle = 'needs_credentials';"
             ;;
+        # ---- count-preserving corruptions --------------------------------
+        # Every variant below leaves the aggregate row at
+        # 8|2|2|6|2|2|en/UTC/USD. They exist because a validator that only
+        # compares counts and identities cannot see them, which is the hole an
+        # independent review pointed at.
+        fact-scope-mismatch)
+            seed_good "$db"
+            # One scope's facts now claim the other scope. Total facts still 6.
+            sql "$db" "UPDATE usage_facts SET scope_id = 'synthetic-openrouter-demo-account'
+                WHERE partition_id = 1;"
+            ;;
+        partition-scope-moved)
+            seed_good "$db"
+            # The partition moves to the other scope; product_key changes so the
+            # table's UNIQUE tuple does not reject the row. Counts unchanged.
+            sql "$db" "UPDATE partitions
+                SET scope_id = 'synthetic-openrouter-demo-account', product_key = 'tokens-moved'
+                WHERE id = 1;"
+            ;;
+        chain-break)
+            seed_good "$db"
+            # Both published rows still exist and still name a real run, but one
+            # now names the run that published a different partition.
+            sql "$db" "UPDATE published_partitions SET run_id = 'run-2' WHERE partition_id = 1;"
+            ;;
+        flattened-amounts)
+            seed_good "$db"
+            # Same six facts, same scopes, same partitions: only the values were
+            # flattened, so every distinct-value and contiguity check must bite.
+            sql "$db" "UPDATE usage_facts SET amount = '1000';"
+            ;;
+        zero-amount)
+            seed_good "$db"
+            sql "$db" "UPDATE usage_facts SET amount = '0'
+                WHERE partition_id = 1 AND start_at = '2026-10-18T00:00:00Z';"
+            ;;
+        nonnumeric-amount)
+            seed_good "$db"
+            sql "$db" "UPDATE usage_facts SET amount = '12ab'
+                WHERE partition_id = 1 AND start_at = '2026-10-18T00:00:00Z';"
+            ;;
         revision-9)
             sql "$db" "$FIXTURE_CONNECTIONS"
             sql "$db" "$FIXTURE_SCOPES"
@@ -345,6 +409,27 @@ run_validator "a restarted store is accepted by the restart expectation" 0 \
     "$restarted_dir" "$EXPECTED_LIFECYCLES_RESTARTED"
 run_validator "unexpected data revision is rejected" 1 "$(build_fixture revision-9 revision-9)"
 run_validator "unexpected settings are rejected" 1 "$(build_fixture zh-cn zh-cn-settings)"
+
+# Count-preserving corruptions. Each of these reads back as the very same
+# aggregate row the known-good fixture does, so a validator that compared counts
+# and identities only would pass all six. Asserting the aggregate is identical is
+# what makes these cases prove that point rather than merely fail for some
+# unrelated reason.
+echo
+echo "== count-preserving corruptions =="
+good_row="$(store_snapshot good-compare "$good_dir" >/dev/null 2>&1; printf '%s' "$snap_row")"
+for variant in fact-scope-mismatch partition-scope-moved chain-break \
+    flattened-amounts zero-amount nonnumeric-amount; do
+    corrupt_dir="$(build_fixture "$variant" "$variant")"
+    corrupt_row="$(store_snapshot "$variant" "$corrupt_dir" >/dev/null 2>&1; printf '%s' "$snap_row")"
+    if [ "$corrupt_row" != "$good_row" ]; then
+        tfail "$variant preserves the aggregate" \
+            "expected '$good_row', got '$corrupt_row'"
+        continue
+    fi
+    tok "$variant preserves the aggregate row ${corrupt_row}"
+    run_validator "$variant is rejected despite the identical aggregate" 1 "$corrupt_dir"
+done
 
 missing_dir="$tmp/no-store-here"
 mkdir -p "$missing_dir"
@@ -508,6 +593,19 @@ time.sleep(60)
         else
             tok "incumbent detection names the socket that is held"
         fi
+        # The state vocabulary the probe records, checked while the holder lives.
+        state="$(qv_socket_state "$fake_ordinary")"
+        if [ "$state" = "live:$listener" ]; then
+            tok "qv_socket_state reports live:<pid> for a held socket"
+        else
+            tfail "qv_socket_state reports live:<pid> for a held socket" "got '$state'"
+        fi
+        if [ "$(qv_socket_state "$tmp/no-such-socket")" = "absent" ]; then
+            tok "qv_socket_state reports absent for a path that does not exist"
+        else
+            tfail "qv_socket_state reports absent for a path that does not exist" \
+                "got '$(qv_socket_state "$tmp/no-such-socket")'"
+        fi
     fi
     kill "$listener" 2>/dev/null
     wait "$listener" 2>/dev/null
@@ -529,6 +627,13 @@ s.bind(sys.argv[1])
             tfail "a stale socket with no holder does not block the gate" \
                 "holders='$holders'"
         fi
+        state="$(qv_socket_state "$fake_probe")"
+        if [ "$state" = "stale" ]; then
+            tok "qv_socket_state reports stale for an existing socket nothing holds"
+        else
+            tfail "qv_socket_state reports stale for an existing socket nothing holds" \
+                "got '$state'"
+        fi
         removed="$(qv_remove_stale_probe_socket)"
         if [ "$removed" = "$fake_probe" ] && [ ! -e "$fake_probe" ]; then
             tok "the stale validation socket is removed by name"
@@ -539,6 +644,81 @@ s.bind(sys.argv[1])
         tskip "a stale socket with no holder does not block the gate" \
             "python3 could not bind $fake_probe"
     fi
+
+    # A LIVE validation socket must never be unlinked. The validation identifier
+    # is a fixed constant, so two overlapping runs would share this channel, and
+    # the preflight gate is a check, not a lock.
+    rm -f "$fake_probe"
+    python3 -c '
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(sys.argv[1])
+s.listen(1)
+time.sleep(30)
+' "$fake_probe" >/dev/null 2>&1 &
+    live_probe=$!
+    cleanup_pids+=("$live_probe")
+    waited=0
+    while [ ! -S "$fake_probe" ] && [ "$waited" -lt 50 ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    if [ -S "$fake_probe" ]; then
+        removed="$(qv_remove_stale_probe_socket)"
+        if [ -z "$removed" ] && [ -e "$fake_probe" ]; then
+            tok "cleanup refuses to unlink a validation socket another process holds"
+        else
+            tfail "cleanup refuses to unlink a validation socket another process holds" \
+                "returned '$removed'; still exists: $([ -e "$fake_probe" ] && echo yes || echo no)"
+        fi
+        if qv_probe_socket_is_clear >/dev/null 2>&1; then
+            tfail "the clear-channel check rejects a held validation socket" "it returned 0"
+        else
+            tok "the clear-channel check rejects a held validation socket"
+        fi
+        if out="$(qv_detect_incumbents 2>&1)" && ! printf '%s' "$out" | grep -q "$fake_probe"; then
+            tfail "incumbent detection names a held validation socket" \
+                "output did not mention $fake_probe" "$out"
+        else
+            tok "incumbent detection names a held validation socket"
+        fi
+    else
+        tskip "cleanup refuses to unlink a validation socket another process holds" \
+            "python3 could not bind $fake_probe"
+    fi
+    kill "$live_probe" 2>/dev/null
+    wait "$live_probe" 2>/dev/null
+    rm -f "$fake_probe"
+
+    # Fail closed on an inspection we cannot interpret. lsof exits 1 both when
+    # nothing matched and when it could not inspect, so "no holders found" and
+    # "inspection failed" are indistinguishable from the outside; the state
+    # vocabulary makes that explicit and every consumer must treat it as blocked.
+    touch "$fake_probe"
+    saved_state_fn="$(declare -f qv_socket_state)"
+    qv_socket_state() { printf 'unknown:test-failure\n'; }
+    if out="$(qv_detect_incumbents 2>&1)" && [ -z "$out" ]; then
+        tfail "an uninterpretable socket state is treated as an incumbent" \
+            "detection printed nothing"
+    elif printf '%s' "$out" | grep -q 'cannot be shown to be clear'; then
+        tok "an uninterpretable socket state is treated as an incumbent"
+    else
+        tfail "an uninterpretable socket state is treated as an incumbent" \
+            "unexpected output" "$out"
+    fi
+    removed="$(qv_remove_stale_probe_socket)"
+    if [ -z "$removed" ] && [ -e "$fake_probe" ]; then
+        tok "an uninterpretable socket state is never unlinked"
+    else
+        tfail "an uninterpretable socket state is never unlinked" "returned '$removed'"
+    fi
+    if qv_probe_socket_is_clear >/dev/null 2>&1; then
+        tfail "the clear-channel check fails closed on an uninterpretable state" "it returned 0"
+    else
+        tok "the clear-channel check fails closed on an uninterpretable state"
+    fi
+    eval "$saved_state_fn"
+    rm -f "$fake_probe"
 fi
 
 # The ordinary socket must survive cleanup even when it is stale: it is not this
@@ -621,6 +801,118 @@ if qv_probe_binary_is_isolated "$tmp/does-not-exist"; then
     tfail "a missing binary is refused" "returned 0"
 else
     tok "a missing binary is refused"
+fi
+
+# ---- the run lock ----
+# Two agents in different worktrees share `/tmp` but not `target/native-probe`,
+# so they would share one single-instance channel. The incumbent gate is a
+# check, not a lock; these cases pin the lock's behaviour.
+lock_dir="$tmp/qv-selftest.lock"
+rm -rf "$lock_dir"
+if qv_acquire_lock "$lock_dir" >/dev/null 2>&1; then
+    tok "an unheld lock directory is acquired"
+else
+    tfail "an unheld lock directory is acquired" "qv_acquire_lock returned non-zero"
+fi
+if [ "$(cat "$lock_dir/owner" 2>/dev/null)" = "$$" ]; then
+    tok "the lock records the acquiring shell's pid"
+else
+    tfail "the lock records the acquiring shell's pid" \
+        "owner file holds '$(cat "$lock_dir/owner" 2>/dev/null)'"
+fi
+lock_reason="$(qv_acquire_lock "$lock_dir" 2>&1)" && lock_rc=0 || lock_rc=1
+if [ "$lock_rc" -ne 0 ] && [ "${lock_reason#another native-check run}" != "$lock_reason" ]; then
+    tok "a second acquisition is refused while the owner is alive"
+else
+    tfail "a second acquisition is refused while the owner is alive" \
+        "rc=${lock_rc} reason='${lock_reason}'"
+fi
+# A dead owner makes the lock stale, and stale is reported, never auto-removed:
+# deciding that belongs to the operator, not to a script that might be wrong.
+sleep 0.2 &
+dead_pid=$!
+wait "$dead_pid" 2>/dev/null
+printf '%s\n' "$dead_pid" >"$lock_dir/owner"
+lock_reason="$(qv_acquire_lock "$lock_dir" 2>&1)" && lock_rc=0 || lock_rc=1
+if [ "$lock_rc" -ne 0 ] && [ "${lock_reason#stale lock}" != "$lock_reason" ]; then
+    tok "a lock whose recorded owner has exited is reported stale, not taken over"
+else
+    tfail "a lock whose recorded owner has exited is reported stale, not taken over" \
+        "rc=${lock_rc} reason='${lock_reason}'"
+fi
+if [ "$(qv_release_lock "$lock_dir" 2>/dev/null)" = "" ] && [ -d "$lock_dir" ]; then
+    tok "release refuses to remove a lock owned by another pid"
+else
+    tfail "release refuses to remove a lock owned by another pid" \
+        "the lock directory was removed or release printed something"
+fi
+printf '%s\n' "$$" >"$lock_dir/owner"
+if [ "$(qv_release_lock "$lock_dir" 2>/dev/null)" = "$lock_dir" ] && [ ! -d "$lock_dir" ]; then
+    tok "release removes a lock this shell owns"
+else
+    tfail "release removes a lock this shell owns" "directory still present or nothing printed"
+fi
+
+# ---- the Linux channel is a bus name, not a socket ----
+# On Linux the plugin claims `<identifier>.SingleInstance` on the session bus and
+# never creates `/tmp/..._si.sock`, so a detector that only looks at sockets
+# reports "clear" no matter what is running. These cases pin the bus branch.
+host_os="$(qv_host_os)"
+case "$host_os" in
+    linux | darwin | other) tok "qv_host_os reports a known platform (${host_os})" ;;
+    *) tfail "qv_host_os reports a known platform" "printed '${host_os}'" ;;
+esac
+# Run this in a subshell with an empty PATH so the case is deterministic on a
+# host that does have gdbus (this one does, via Homebrew) as well as one that
+# does not. `command -v` is a builtin, so the guard still evaluates correctly.
+# bash is named by absolute path ($BASH) because `env` cannot resolve a program
+# through an empty PATH; naming it lets the subshell start with nothing findable.
+mkdir -p "$tmp/emptybin"
+no_gdbus="$(env -i PATH="$tmp/emptybin" "$BASH" -c \
+    ". '$root/scripts/native-launch-lib.sh'; qv_dbus_state com.quotavista.prototype")"
+if [ "$no_gdbus" = "unknown:no-gdbus" ]; then
+    tok "a missing gdbus reports unknown rather than free"
+else
+    tfail "a missing gdbus reports unknown rather than free" "printed '${no_gdbus}'"
+fi
+saved_dbus_fn="$(declare -f gdbus 2>/dev/null || true)"
+gdbus() { printf '(true,)\n'; }
+if [ "$(qv_dbus_state com.quotavista.prototype)" = "owned" ]; then
+    tok "an owned session-bus name is reported as owned"
+else
+    tfail "an owned session-bus name is reported as owned" \
+        "printed '$(qv_dbus_state com.quotavista.prototype)'"
+fi
+saved_host_fn="$(declare -f qv_host_os)"
+qv_host_os() { printf 'linux\n'; }
+incumbents="$(qv_detect_incumbents)"
+if [ "${incumbents#*is owned, so an instance may already be running}" != "$incumbents" ]; then
+    tok "on Linux an owned bus name is reported as an incumbent"
+else
+    tfail "on Linux an owned bus name is reported as an incumbent" "detection printed:
+${incumbents}"
+fi
+gdbus() { printf 'gdbus: no such bus\n' >&2; return 1; }
+incumbents="$(qv_detect_incumbents)"
+if [ "${incumbents#*cannot be shown to be clear}" != "$incumbents" ]; then
+    tok "on Linux a bus that will not answer fails closed"
+else
+    tfail "on Linux a bus that will not answer fails closed" "detection printed:
+${incumbents}"
+fi
+gdbus() { printf '(false,)\n'; }
+incumbents="$(qv_detect_incumbents)"
+if [ "$incumbents" = "" ]; then
+    tok "on Linux a free bus name and no socket reports a clear host"
+else
+    tfail "on Linux a free bus name and no socket reports a clear host" "detection printed:
+${incumbents}"
+fi
+eval "$saved_host_fn"
+if [ -n "$saved_dbus_fn" ]; then
+    eval "$saved_dbus_fn"
+else
+    unset -f gdbus
 fi
 
 echo

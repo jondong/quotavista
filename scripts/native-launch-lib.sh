@@ -124,14 +124,153 @@ qv_socket_holders() {
   lsof -Fp -- "$sock" 2>/dev/null | sed -n 's/^p//p'
 }
 
+# qv_socket_state <path>
+# Prints exactly one word describing a single-instance socket:
+#   absent          no such path
+#   stale           the path exists and no process holds it
+#   live:<pids>     at least one process holds it (space-free, comma-joined)
+#   unknown:no-lsof the path exists but lsof is unavailable, so a live socket
+#                   cannot be told from a stale one
+# Callers must treat `unknown:*` as NOT clear. Detection is best-effort: lsof
+# exits 1 both when nothing matched and when it could not inspect, so an
+# internal lsof failure is indistinguishable from "no holder". That is why the
+# probe refuses to run at all without lsof, and why the substantive isolation
+# guarantee is the disjoint application identifier, never this detection.
+qv_socket_state() {
+  local sock="$1"
+  [ -e "$sock" ] || { printf 'absent\n'; return 0; }
+  if ! command -v lsof >/dev/null 2>&1; then
+    printf 'unknown:no-lsof\n'
+    return 0
+  fi
+  local holders
+  holders="$(lsof -Fp -- "$sock" 2>/dev/null | sed -n 's/^p//p' | tr '\n' ',' | sed 's/,$//')"
+  if [ -n "$holders" ]; then
+    printf 'live:%s\n' "$holders"
+  else
+    printf 'stale\n'
+  fi
+  return 0
+}
+
+
+# qv_acquire_lock / qv_release_lock
+# The validation identifier is a fixed constant, so two overlapping runs — for
+# example two agents in different worktrees of this repository, whose
+# `target/native-probe` directories are separate but whose `/tmp` is not — would
+# share one single-instance channel and could activate each other. The incumbent
+# gate above narrows that window but is a check, not a lock. `mkdir` is atomic on
+# every platform this runs on, so it makes a real one.
+QV_LOCK_DIR="${QV_LOCK_DIR:-/tmp/quotavista-native-probe.lock}"
+
+# Prints a reason on failure and returns 1; silent and returns 0 when acquired.
+qv_acquire_lock() {
+  local dir="$1" owner
+  if mkdir "$dir" 2>/dev/null; then
+    printf '%s\n' "$$" > "$dir/owner" 2>/dev/null
+    return 0
+  fi
+  owner="$(cat "$dir/owner" 2>/dev/null)"
+  if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+    printf 'another native-check run (pid %s) holds %s\n' "$owner" "$dir"
+    return 1
+  fi
+  # The recorded owner is gone, so this is a leftover from a killed run.
+  printf 'stale lock %s (recorded owner %s is not running); remove it and retry\n' \
+    "$dir" "${owner:-unknown}"
+  return 1
+}
+
+# Removes the lock only when this shell owns it, so a run that lost the race
+# never releases somebody else's lock.
+qv_release_lock() {
+  local dir="$1" owner
+  owner="$(cat "$dir/owner" 2>/dev/null)"
+  if [ "$owner" = "$$" ]; then
+    rm -rf "$dir"
+    printf '%s\n' "$dir"
+  fi
+}
+
+# qv_host_os
+# Prints `linux`, `darwin`, or `other`. The single-instance channel differs by
+# platform, so detection has to know which one it is looking for.
+qv_host_os() {
+  case "$(uname -s 2>/dev/null)" in
+    Linux) printf 'linux\n' ;;
+    Darwin) printf 'darwin\n' ;;
+    *) printf 'other\n' ;;
+  esac
+}
+
+# qv_dbus_state <identifier>
+# On Linux the plugin claims the session-bus name `<identifier>.SingleInstance`
+# instead of a socket, so ownership — not a filesystem stamp — is the evidence.
+# Prints `free`, `owned`, or `unknown:<reason>`. Asking `NameHasOwner` on the
+# bus daemon does not claim the name and does not activate anything.
+qv_dbus_state() {
+  local name out
+  name="$(qv_dbus_name "$1")"
+  if ! command -v gdbus >/dev/null 2>&1; then
+    printf 'unknown:no-gdbus\n'
+    return 0
+  fi
+  if ! out="$(gdbus call --session --dest org.freedesktop.DBus \
+    --object-path /org/freedesktop/DBus \
+    --method org.freedesktop.DBus.NameHasOwner "$name" 2>&1)"; then
+    # No session bus, or a bus that would not answer. Either way this is an
+    # inspection we cannot interpret, and callers must not read it as clear.
+    printf 'unknown:query-failed\n'
+    return 0
+  fi
+  case "$out" in
+    *true*) printf 'owned\n' ;;
+    *false*) printf 'free\n' ;;
+    *) printf 'unknown:unparsed\n' ;;
+  esac
+  return 0
+}
+
 # qv_detect_incumbents
 # Prints one line per detected incumbent. Empty output means the host is clear.
 qv_detect_incumbents() {
-  local pid sock
-  for sock in "$(qv_ordinary_socket)" "$(qv_probe_socket)"; do
-    for pid in $(qv_socket_holders "$sock"); do
-      printf 'process %s holds the single-instance socket %s\n' "$pid" "$sock"
+  local pid sock state
+  local id dstate
+  # Linux ownership lives on the session bus, not in /tmp: the plugin claims
+  # `<identifier>.SingleInstance` there and never creates a socket. Checking the
+  # macOS socket path on Linux would report "clear" no matter what was running,
+  # so the platform decides which channel is evidence.
+  if [ "$(qv_host_os)" = "linux" ]; then
+    for id in "$QV_ORDINARY_IDENTIFIER" "$QV_PROBE_IDENTIFIER"; do
+      dstate="$(qv_dbus_state "$id")"
+      case "$dstate" in
+        free) ;;
+        owned)
+          printf 'session bus name %s is owned, so an instance may already be running\n' \
+            "$(qv_dbus_name "$id")"
+          ;;
+        *)
+          # Fail closed: an inspection we cannot interpret is an incumbent.
+          printf 'session bus name %s reports state %s, which cannot be shown to be clear\n' \
+            "$(qv_dbus_name "$id")" "$dstate"
+          ;;
+      esac
     done
+  fi
+  for sock in "$(qv_ordinary_socket)" "$(qv_probe_socket)"; do
+    state="$(qv_socket_state "$sock")"
+    case "$state" in
+      absent | stale) ;;
+      live:*)
+        for pid in $(printf '%s' "${state#live:}" | tr ',' ' '); do
+          printf 'process %s holds the single-instance socket %s\n' "$pid" "$sock"
+        done
+        ;;
+      *)
+        # Fail closed: an inspection we cannot interpret is an incumbent.
+        printf 'socket %s reports state %s, which cannot be shown to be clear\n' "$sock" "$state"
+        ;;
+    esac
   done
   for pid in $(qv_instances_of "$QV_ORDINARY_BIN"); do
     printf 'process %s is running the ordinary binary %s\n' "$pid" "$QV_ORDINARY_BIN"
@@ -161,14 +300,20 @@ qv_require_clear_host() {
 # safe, because the plugin removes it and rebinds when `connect` answers
 # `ECONNREFUSED` (macos.rs:init). Returns 0 when clear.
 qv_probe_socket_is_clear() {
-  local sock holders
+  local sock state
   sock="$(qv_probe_socket)"
-  holders="$(qv_socket_holders "$sock" | tr '\n' ' ')"
-  if [ -n "${holders// /}" ]; then
-    printf '    the validation socket %s is held by: %s\n' "$sock" "$holders"
-    return 1
-  fi
-  return 0
+  state="$(qv_socket_state "$sock")"
+  case "$state" in
+    absent | stale) return 0 ;;
+    live:*)
+      printf '    the validation socket %s is held by: %s\n' "$sock" "${state#live:}"
+      return 1
+      ;;
+    *)
+      printf '    the validation socket %s reports state %s, which cannot be shown to be clear\n' "$sock" "$state"
+      return 1
+      ;;
+  esac
 }
 
 # qv_remove_stale_probe_socket
@@ -178,7 +323,10 @@ qv_probe_socket_is_clear() {
 qv_remove_stale_probe_socket() {
   local sock
   sock="$(qv_probe_socket)"
-  if [ -e "$sock" ] && [ -z "$(qv_socket_holders "$sock")" ]; then
+  # Only a socket that is *demonstrably* stale is removed. `live:*` would mean a
+  # concurrent validation run is still using this shared identifier, and
+  # `unknown:*` means the state could not be inspected; neither may be unlinked.
+  if [ "$(qv_socket_state "$sock")" = "stale" ]; then
     rm -f "$sock" && printf '%s\n' "$sock"
   fi
 }
