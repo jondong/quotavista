@@ -34,10 +34,13 @@ evidence below).
   → publish); measured queries go through the same validated `run_request`
   wire path the renderer uses. The artifact is written outside application
   state and the committed copy is `benchmark.json` in this directory.
-- Cancellation evidence is measured honestly: no mid-aggregation cancellation
-  token exists (see "Pending and not claimed"), so the benchmark aborts the
-  heaviest query's tokio task mid-flight and proves store consistency
-  afterwards.
+- Cancellation evidence is measured honestly: the harness runs on a
+  multi-thread runtime with start synchronization, rejects attempts that
+  finished before the abort, asserts the join resolves as a real task
+  cancellation inside the enforced 5,000 ms deadline, and proves store
+  consistency by comparing the exact totals and series values before and
+  after the aborts. The 5-second query-work bound is recorded as unverified
+  in the artifact, with its owning follow-up under "Pending and not claimed".
 
 ## PRD criterion evidence
 
@@ -68,24 +71,42 @@ The committed artifact is [benchmark.json](benchmark.json), produced by
 `benchmark::statistics_query_mix_benchmark`
 (`apps/desktop/src-tauri/src/benchmark.rs`):
 
-- Seed: one synthetic connection/scope, ninety settled UTC days
-  (2026-07-01..2026-09-28) of event-grain history, exactly 100,000 facts — the
-  storage bound a single query may read (`MAX_STATISTICS_FACTS`).
+- Seed: one synthetic connection/scope holding fourteen weekly partitions
+  (Mon 2026-06-29 .. Mon 2026-10-05) of event-grain history whose facts each
+  span exactly one UTC day, covering ninety settled days
+  (2026-07-01..2026-09-28) — exactly 100,000 facts, the storage bound a single
+  query may read (`MAX_STATISTICS_FACTS`). Every fact is compatible with the
+  UTC reporting zone, so each measured query aggregates the real workload; the
+  artifact records this under `seed.fact_shape`.
+- Correctness gate: before any timing, every mix must reproduce the known
+  exact values computed from the seed — range totals (399,570 tokens over 90
+  days; 133,170 over the 30-day query), every series point's exact value and
+  coverage row (day grain: 90 Complete points; week grain: 12 interior
+  Complete plus 2 clipped edges Partial/`BucketBoundaryMismatch`), and an
+  empty exclusion set. Recorded per mix under `correctness` in the artifact.
 - Protocol: 5 warmups, then 30 measured queries through `run_request`:
   A statistics 90-day/day-grain ×10, B statistics 90-day/week-grain ×8,
   C statistics 30-day/day-grain ×6, D overview 90-day ×6. Failures: 0.
-- Result: overall p50 745.7 ms, **p95 760.6 ms, max 767.9 ms against the
-  1,000 ms P95 target — within target** (`within_p95_target: true`). Mix A/B/D
-  each ~744–763 ms (dominated by the bounded 100k-row read); mix C p95
-  262.1 ms. The target is met on this machine; it is recorded, not redefined,
-  and remains a per-machine measurement, not a cross-platform guarantee.
-- Cancellation: five attempts abort the tokio task 100 ms into the heaviest
-  query (~760 ms); every abort lands mid-flight and the task joins in
-  0.3–0.6 ms — orders of magnitude inside the 5-second deadline — and the
-  follow-up query over the same store returns unchanged totals. Caveat
-  recorded in the artifact: a query already inside the synchronous
-  aggregation runs to completion (max 767.9 ms here), because no
-  mid-aggregation token exists.
+- Result (values copied from the artifact, one decimal): overall p50 845.7 ms,
+  **p95 866.6 ms, max 868.6 ms against the 1,000 ms P95 target — within
+  target** (`within_p95_target: true`). Per mix (p50/p95/max ms): A
+  849.5/868.6/868.6, B 784.9/799.8/799.8, C 318.0/318.8/318.8, D
+  858.7/866.6/866.6. Mixes A/B/D are dominated by the bounded 100k-row read
+  plus the real aggregation of 100,000 compatible facts; mix C reads a third
+  of the range. The target is met on this machine; it is recorded, not
+  redefined, and remains a per-machine measurement, not a cross-platform
+  guarantee.
+- Cancellation: five valid attempts on a multi-thread runtime abort the
+  heaviest query task 100 ms after a synchronized start; no attempt finished
+  before its abort (such attempts are rejected, not counted), every abort
+  lands mid-flight and the join resolves as a real task cancellation
+  (`JoinError::is_cancelled`) in 0.7–2.3 ms (max 2.3 ms) under the enforced
+  5,000 ms deadline, and no cancelled query ran to completion. A fresh query
+  afterwards reproduces the exact pre-abort totals and every series value.
+  The artifact additionally records `query_work_cancellation_bound` as
+  **unverified**: abort-to-join measures consumer-facing responsiveness, and
+  an abort landing inside the synchronous aggregation cannot stop that work —
+  the owning follow-up is listed under "Pending and not claimed".
 
 ### Criterion 3 — evidence distinguishes implemented behavior, synthetic tests, native checks, and provider/release work; A01–A04 and G01/G02 remain unverified
 
@@ -129,14 +150,21 @@ The committed artifact is [benchmark.json](benchmark.json), produced by
   `SettingsScreen.test.tsx` — `preserves non-secret form drafts across a
   language switch`, `an older in-flight locale write never overwrites a newer
   committed choice`.
-- Exact statistics in both locales: `StatisticsScreen.test.tsx` — `renders the
+- Exact statistics transport (asserted in the English-forced statistics
+  suite): `StatisticsScreen.test.tsx` forces English
+  (`quotavista.ui_locale = "en"` in `beforeEach`) and asserts `renders the
   exact backend totals and per-point values`, `shows the explicit range dates,
   zone, and provisional marker`, `shows unavailable buckets as unknown, never
   as zero`, `lists excluded scopes with their reason`, `renders per-plan rows
   with native units and percentages`, `marks partial buckets instead of
-  presenting them as final`; `i18n.test.ts` — `groups token counts exactly
+  presenting them as final`. Both-locale coverage is at the formatter level:
+  `i18n.test.ts` — `groups token counts exactly
   without Number rounding`, `keeps every fractional digit of money amounts`,
-  `formats the same instant in the independent reporting zone`.
+  `formats the same instant in the independent reporting zone` — plus the
+  locale-switch state-preservation tests above. The full zh-CN
+  failure-scenario matrix (exact values, ranges, zones, and partial buckets
+  rendered in zh-CN) is not asserted today; it stays pending with the P1-13
+  native/runtime checks (see "Pending and not claimed").
 - Catalog parity: `npm run i18n:check` passes (en/zh-CN key parity gate).
 - Safe recovery across restart and lifecycle: `connections_tests.rs` —
   `explicit_settings_survive_restart`, `failed_cleanup_survives_restart_and_retries`,
@@ -196,13 +224,25 @@ cargo test --locked -p quotavista-infrastructure macos_keychain_synthetic_roundt
 - **Mid-aggregation cancellation token — owned follow-up.** Architecture's
   bounded-work table asks long local aggregations to check a cancellation
   token between bounded batches; the aggregation engine is currently
-  synchronous with no token. Measured impact is bounded (max 767.9 ms for the
-  worst legal query vs the 5-second failure bound), so this is recorded as a
-  gap with an owning follow-up (Phase 2 bounded-work hardening), not silently
-  redefined or claimed as done.
+  synchronous with no token, so the artifact records
+  `query_work_cancellation_bound` as unverified. What is verified: consumer-
+  facing cancellation — aborting the in-flight query task resolves the join
+  as a real cancellation in 0.7–2.3 ms under the enforced 5,000 ms deadline,
+  and a query already inside the synchronous aggregation would run to
+  completion (max 868.6 ms for the worst legal query here, vs the 5-second
+  failure bound). Owning follow-up: Phase 2 bounded-work hardening
+  (cooperative cancellation token through `query_statistics` into
+  `statistics::aggregate`).
 - A01–A04 (provider integrations) and G01/G02 remain unverified by design;
   G04 stays open. Linux native evidence (Secret Service, tray behavior) was
   not collected on this macOS-only host and keeps its pending status.
+- **zh-CN failure-scenario matrix — owned follow-up.** The exact statistics
+  assertions (exact totals and per-point values, explicit range dates and
+  zones, partial buckets, excluded scopes, failed reloads) run in the
+  English-forced `StatisticsScreen.test.tsx` suite; both-locale coverage is
+  formatter-level (`i18n.test.ts`) plus locale-switch state preservation.
+  Rendering the full failure-scenario matrix in zh-CN stays pending with the
+  P1-13 native/runtime checks.
 - CI has not run on this branch (local commits only, per the coordinator);
   the green local battery above uses the same commands CI runs.
 - Prototype benchmark results are single-machine measurements; they are not

@@ -1,202 +1,244 @@
 {
   "benchmark": "p1-12-local-query-mix",
   "budget": {
-    "cancellation_deadline_ms": 5000.0,
+    "cancellation_deadline_ms": 5000,
     "p95_target_ms": 1000.0
   },
   "cancellation": {
     "attempts": [
       {
-        "abort_to_join_ms": 0.591333,
-        "attempt": 0,
-        "cancelled_mid_flight": true
-      },
-      {
-        "abort_to_join_ms": 0.47800000000000004,
+        "abort_to_join_ms": 0.703666,
         "attempt": 1,
-        "cancelled_mid_flight": true
+        "cancelled_mid_flight": true,
+        "deadline_ms": 5000
       },
       {
-        "abort_to_join_ms": 0.280542,
+        "abort_to_join_ms": 1.1183750000000001,
         "attempt": 2,
-        "cancelled_mid_flight": true
+        "cancelled_mid_flight": true,
+        "deadline_ms": 5000
       },
       {
-        "abort_to_join_ms": 0.283792,
+        "abort_to_join_ms": 0.751625,
         "attempt": 3,
-        "cancelled_mid_flight": true
+        "cancelled_mid_flight": true,
+        "deadline_ms": 5000
       },
       {
-        "abort_to_join_ms": 0.299416,
+        "abort_to_join_ms": 2.34425,
         "attempt": 4,
-        "cancelled_mid_flight": true
+        "cancelled_mid_flight": true,
+        "deadline_ms": 5000
+      },
+      {
+        "abort_to_join_ms": 0.709959,
+        "attempt": 5,
+        "cancelled_mid_flight": true,
+        "deadline_ms": 5000
       }
     ],
-    "mechanism": "tokio task abort at the next await point",
-    "note": "No mid-aggregation cancellation token exists; a query already inside the synchronous aggregation runs to completion. Measured p95 shows how far that worst case sits from the 5-second deadline."
+    "cancelled_queries_that_completed": 0,
+    "deadline_enforced": true,
+    "deadline_ms": 5000,
+    "max_abort_to_join_ms": 2.34425,
+    "mechanism": "tokio JoinHandle::abort on the wire-path query task (multi-thread test runtime)",
+    "query_work_cancellation_bound": {
+      "follow_up": "Phase 2 bounded-work hardening: cooperative cancellation token through query_statistics into statistics::aggregate",
+      "reason": "the statistics path has no cooperative cancellation token: abort stops the task only at the next await point, and a query already inside the synchronous aggregation runs to completion before the runtime drops it. Abort-to-join latency measures consumer-facing responsiveness, not stopped work.",
+      "status": "unverified"
+    },
+    "store_consistency": "fresh query after the aborts reproduces the exact pre-abort totals and series values",
+    "valid_attempts": 5
   },
+  "correctness": [
+    {
+      "asserted": true,
+      "expected_totals": "399570",
+      "query": "A-statistics-90d-day",
+      "series_points": 90
+    },
+    {
+      "asserted": true,
+      "expected_totals": "399570",
+      "query": "B-statistics-90d-week",
+      "series_points": 14
+    },
+    {
+      "asserted": true,
+      "expected_totals": "133170",
+      "query": "C-statistics-30d-day",
+      "series_points": 30
+    },
+    {
+      "asserted": true,
+      "expected_totals": "399570",
+      "query": "D-overview-90d",
+      "series_points": 90
+    }
+  ],
   "failures": 0,
-  "machine": "Apple M6, 32 GB, macOS 27.0.1 (26A434), arm64",
+  "machine": "Apple M6, 32 GB, macOS 27.0.1 (26A434)",
   "measured": [
     {
-      "ms": 751.4952910000001,
+      "ms": 868.554125,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 737.609417,
+      "ms": 846.9317090000001,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 737.775125,
+      "ms": 845.720125,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 758.069,
+      "ms": 849.506042,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 750.3696669999999,
+      "ms": 849.120083,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 737.667875,
+      "ms": 845.996666,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 740.410958,
+      "ms": 856.3149159999999,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 747.779583,
+      "ms": 864.1027919999999,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 738.527375,
+      "ms": 851.3909170000001,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 741.748083,
+      "ms": 850.486625,
       "query": "A-statistics-90d-day"
     },
     {
-      "ms": 759.667583,
+      "ms": 784.927083,
       "query": "B-statistics-90d-week"
     },
     {
-      "ms": 760.618417,
+      "ms": 792.071875,
       "query": "B-statistics-90d-week"
     },
     {
-      "ms": 751.636167,
+      "ms": 783.0545840000001,
       "query": "B-statistics-90d-week"
     },
     {
-      "ms": 747.33825,
+      "ms": 786.1505,
       "query": "B-statistics-90d-week"
     },
     {
-      "ms": 752.800583,
+      "ms": 799.75175,
       "query": "B-statistics-90d-week"
     },
     {
-      "ms": 751.988208,
+      "ms": 781.416625,
       "query": "B-statistics-90d-week"
     },
     {
-      "ms": 767.9189170000001,
+      "ms": 779.506709,
       "query": "B-statistics-90d-week"
     },
     {
-      "ms": 743.12025,
+      "ms": 785.7532080000001,
       "query": "B-statistics-90d-week"
     },
     {
-      "ms": 250.508708,
+      "ms": 318.65920800000004,
       "query": "C-statistics-30d-day"
     },
     {
-      "ms": 252.909459,
+      "ms": 318.00812499999995,
       "query": "C-statistics-30d-day"
     },
     {
-      "ms": 256.152625,
+      "ms": 318.770916,
       "query": "C-statistics-30d-day"
     },
     {
-      "ms": 254.972459,
+      "ms": 318.446667,
       "query": "C-statistics-30d-day"
     },
     {
-      "ms": 251.16216699999998,
+      "ms": 317.92350000000005,
       "query": "C-statistics-30d-day"
     },
     {
-      "ms": 246.699375,
+      "ms": 317.821375,
       "query": "C-statistics-30d-day"
     },
     {
-      "ms": 753.3375,
+      "ms": 860.657375,
       "query": "D-overview-90d"
     },
     {
-      "ms": 752.713459,
+      "ms": 866.597792,
       "query": "D-overview-90d"
     },
     {
-      "ms": 744.6475,
+      "ms": 861.936,
       "query": "D-overview-90d"
     },
     {
-      "ms": 747.626208,
+      "ms": 857.371041,
       "query": "D-overview-90d"
     },
     {
-      "ms": 755.006667,
+      "ms": 858.731584,
       "query": "D-overview-90d"
     },
     {
-      "ms": 745.719292,
+      "ms": 855.73575,
       "query": "D-overview-90d"
     }
   ],
   "overall": {
     "count": 30,
-    "max_ms": 767.9189170000001,
-    "p50_ms": 745.719292,
-    "p95_ms": 760.618417
+    "max_ms": 868.554125,
+    "p50_ms": 845.720125,
+    "p95_ms": 866.597792
   },
   "per_mix": {
     "A-statistics-90d-day": {
       "count": 10,
-      "max_ms": 758.069,
-      "p50_ms": 740.410958,
-      "p95_ms": 758.069
+      "max_ms": 868.554125,
+      "p50_ms": 849.506042,
+      "p95_ms": 868.554125
     },
     "B-statistics-90d-week": {
       "count": 8,
-      "max_ms": 767.9189170000001,
-      "p50_ms": 751.988208,
-      "p95_ms": 767.9189170000001
+      "max_ms": 799.75175,
+      "p50_ms": 784.927083,
+      "p95_ms": 799.75175
     },
     "C-statistics-30d-day": {
       "count": 6,
-      "max_ms": 256.152625,
-      "p50_ms": 251.16216699999998,
-      "p95_ms": 256.152625
+      "max_ms": 318.770916,
+      "p50_ms": 318.00812499999995,
+      "p95_ms": 318.770916
     },
     "D-overview-90d": {
       "count": 6,
-      "max_ms": 755.006667,
-      "p50_ms": 747.626208,
-      "p95_ms": 755.006667
+      "max_ms": 866.597792,
+      "p50_ms": 858.731584,
+      "p95_ms": 866.597792
     }
   },
   "platform": "macos/aarch64",
   "seed": {
     "connections": 1,
+    "fact_shape": "each fact spans exactly one UTC day (compatible with the UTC reporting zone)",
     "facts": 100000,
-    "partitions": 90,
     "scopes": 1,
+    "weekly_partitions": 14,
     "window": {
       "end_date": "2026-09-28",
       "start_date": "2026-07-01",
