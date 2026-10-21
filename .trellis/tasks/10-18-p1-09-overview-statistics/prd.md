@@ -8,7 +8,7 @@ Let users inspect clearly simulated remaining resources and period consumption w
 
 [Requirements 0.9](../../../docs/requirements.md), [Architecture 0.4](../../../docs/architecture.md), [development plan](../../../docs/development-plan.md), and [traceability](../../../docs/traceability.md).
 
-Dependencies: [P1-07](../10-18-p1-07-ipc/prd.md), [P1-08](../10-18-p1-08-bilingual-shell/prd.md)
+Dependencies: [P1-07](../archive/2026-10/10-18-p1-07-ipc/prd.md), [P1-08](../archive/2026-10/10-18-p1-08-bilingual-shell/prd.md)
 
 Acceptance mapping: A05, A13, A14, A15, A17, A22, A25. These are prototype contributions, not closure of full-release acceptance.
 
@@ -20,10 +20,10 @@ Acceptance mapping: A05, A13, A14, A15, A17, A22, A25. These are prototype contr
 
 ## Acceptance criteria
 
-- [ ] A fixture with known tokens/money/quota produces exact expected totals and distinct units; cached/reasoning subcounts and account/key representations are not added twice.
-- [ ] Missing Kimi tokens exclude that scope from Recorded tokens while its native quota consumption remains visible; unavailable history is never a zero line.
-- [ ] Range filters show explicit dates/zone, enforce 366 days/future-date rules, ignore obsolete responses, and preserve selection during language switching.
-- [ ] UTC-only buckets remain in an explicit compatible lane and excluded edge buckets leave partial coverage. Current-day results are clipped at as-of and marked provisional.
+- [x] A fixture with known tokens/money/quota produces exact expected totals and distinct units; cached/reasoning subcounts and account/key representations are not added twice.
+- [x] Missing Kimi tokens exclude that scope from Recorded tokens while its native quota consumption remains visible; unavailable history is never a zero line.
+- [x] Range filters show explicit dates/zone, enforce 366 days/future-date rules, ignore obsolete responses, and preserve selection during language switching.
+- [x] UTC-only buckets remain in an explicit compatible lane and excluded edge buckets leave partial coverage. Current-day results are clipped at as-of and marked provisional.
 
 ## Out of scope
 

@@ -90,6 +90,20 @@ Scope: the P1-06 task branch on macOS arm64, Rust 1.99.1, SQLx 0.9.0, bundled SQ
 - A18: a synthetic response arriving after the connection is disabled or moved to `deletion_pending` is fenced by the generation re-check inside the write transaction and ends the job without overwriting committed values.
 - A22: page staging enforces the P1-03 bounds (previous cursor must differ, at most 1,000 facts per page and 100,000 per candidate) and cooldown records fail closed on corrupt input; bounded history (100 pages / 30 seconds) caps provider-driven work per job.
 
+## P1-09 prototype evidence
+
+Scope: the P1-09 task branch on macOS arm64, Rust 1.99.1, Node 24, SQLx 0.9.0, bundled SQLite 3.51.3. Every fixture is synthetic: throwaway `TempDir` SQLite databases, the in-repo simulated adapters behind a routing `SimulatedRouter`, session-only secrets, and recorded change sinks. No real endpoint, credential, account, keychain entry, or application data directory was touched. Commands, per-criterion evidence, and remaining gaps are recorded in [the task validation record](../.trellis/tasks/10-18-p1-09-overview-statistics/validation.md).
+
+- A05: real zero, unknown (missing), stale, unsupported, and collection-gap states stay distinct end to end — a fixture with a `Zero` scenario snapshot renders `0` while a missing snapshot renders as `unknown` text with its reason, an unsupported Kimi-style quota on OpenRouter renders as `not supported by this source` in both locales, and an empty series draws an explanation instead of an all-zero line.
+- A13: the aggregation engine derives Monday-start weeks and half-open day/week buckets from the P1-02 calendar helpers; range validation rejects reversed, overlong (> 366 days), and future ranges with typed errors before any read; the current period is clipped at a single captured as-of and marked provisional; UTC-only source buckets render in their own labeled lane and are never split into local-zone days.
+- A14: recorded totals sum only published usage facts through checked `u128` arithmetic; current snapshots never enter range totals (account/key representations are not added twice), and `TokenFact::recorded_total()` adds only `Additional` subcounts, never `Included` or `Unknown` ones. When no compatible fact exists the recorded total is null, not zero.
+- A15: the deterministic two-provider fixture yields exact expected sums (1,234,567,890,123 + … and 9,876,543,210,987 + … bucket series) per scope, Kimi's shared-quota ratio/percentage-point metrics stay visible next to OpenRouter's Credits-style spend, and each plan row carries its native unit with its own source timestamps.
+- A17: per-bucket coverage distinguishes complete, not-yet-settled (provisional current period), outside-lookback, and collection-gap; history holes render as gaps, never as a zero line, and the renderer's empty chart shows an explanation.
+- A22: invalid dates, reversed ranges, unknown zones, overlong ranges, and future end dates fail with the sealed validation error before any side effect; the statistics read pre-counts facts and fails with `ResourceLimit` above the 100,000-fact bound instead of truncating.
+- A25: both catalogs carry the 99 keys with matching placeholders (`npm run i18n:check`), the statistics screen keeps the selected preset, grain, and custom dates across a language switch (state is not keyed by locale), and range totals format through BigInt grouping in the display locale while boundaries stay in the reporting zone.
+
+Remaining gaps: no live usage totals, no estimation from balance/quota differences, no provider completeness claims, and no retention/backfill engine (all out of scope by design); the 100,000-fact throughput benchmark remains pending for P1-12; native GUI behavior of the seeded demo window was not exercised in this round.
+
 ## Release evidence rules
 
 - A01 and A03 require real-account reconciliation; fixtures alone cannot pass them.

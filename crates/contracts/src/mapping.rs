@@ -257,3 +257,107 @@ fn parse_locale(value: &str) -> Result<Locale, SafeError> {
         _ => Err(SafeError::new(ErrorCode::InternalError, None)),
     }
 }
+
+// Statistics and overview wire assembly. The desktop layer supplies the store
+// revision so a renderer can discard responses older than an observed change.
+use quotavista_core::statistics as stats;
+
+fn metric_entry(entry: stats::MetricEntry) -> Result<MetricDto, SafeError> {
+    MetricDto::from_domain(entry.metric, entry.query_kind)
+}
+
+impl StatisticsDto {
+    pub fn from_domain(value: stats::Statistics, revision: u64) -> Result<Self, SafeError> {
+        Ok(Self {
+            requested_interval: value.requested.try_into()?,
+            effective_intervals: value
+                .effective
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            reporting_zone: value
+                .zone
+                .name()
+                .to_string()
+                .try_into()
+                .map_err(|_| invalid())?,
+            grain: value.grain.into(),
+            as_of: Instant(value.as_of.to_rfc3339().replace("+00:00", "Z")),
+            provisional: value.provisional,
+            coverage: value
+                .coverage
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            excluded_scopes: value
+                .excluded
+                .into_iter()
+                .map(|excluded| {
+                    Ok(ExcludedScope {
+                        scope_id: excluded.scope_id.try_into().map_err(|_| invalid())?,
+                        metric_id: excluded.metric_id.try_into().map_err(|_| invalid())?,
+                        reason: excluded.reason.into(),
+                    })
+                })
+                .collect::<Result<_, SafeError>>()?,
+            totals: value
+                .totals
+                .into_iter()
+                .map(metric_entry)
+                .collect::<Result<_, _>>()?,
+            series: value
+                .series
+                .into_iter()
+                .map(|point| {
+                    Ok(StatisticsPoint {
+                        interval: point.interval.try_into()?,
+                        zone: point
+                            .zone
+                            .name()
+                            .to_string()
+                            .try_into()
+                            .map_err(|_| invalid())?,
+                        metrics: vec![metric_entry(point.metric)?],
+                        coverage: point
+                            .coverage
+                            .into_iter()
+                            .map(TryInto::try_into)
+                            .collect::<Result<_, _>>()?,
+                    })
+                })
+                .collect::<Result<_, SafeError>>()?,
+            plans: value
+                .plans
+                .into_iter()
+                .map(|plan| {
+                    Ok(PlanRow {
+                        scope_id: plan.scope_id.try_into().map_err(|_| invalid())?,
+                        product_id: plan.product_id.try_into().map_err(|_| invalid())?,
+                        period: None,
+                        metrics: plan
+                            .metrics
+                            .into_iter()
+                            .map(metric_entry)
+                            .collect::<Result<_, _>>()?,
+                    })
+                })
+                .collect::<Result<_, SafeError>>()?,
+            data_revision: Revision(revision.to_string()),
+        })
+    }
+}
+
+impl OverviewDto {
+    pub fn from_domain(
+        metrics: Vec<stats::MetricEntry>,
+        summary: StatisticsDto,
+    ) -> Result<Self, SafeError> {
+        Ok(Self {
+            metrics: metrics
+                .into_iter()
+                .map(metric_entry)
+                .collect::<Result<_, _>>()?,
+            summary,
+        })
+    }
+}

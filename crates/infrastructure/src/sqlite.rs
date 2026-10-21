@@ -2,7 +2,7 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use quotavista_core::{
     calendar::Interval,
-    domain::{Lifecycle, Provenance, Value},
+    domain::{CoverageStatus, Lifecycle, Provenance, Reason, Value},
     journal::{OperationKind, OperationPhase, OperationRecord},
     number::{Money, TokenTotal},
     storage::*,
@@ -20,6 +20,10 @@ pub const SQLITE_VERSION: &str = "3.51.3";
 pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub const READ_CONNECTIONS: u32 = 3;
 pub static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
+
+/// Maximum facts a single statistics read may touch; larger stores answer with
+/// `StorageError::ResourceLimit` instead of an unbounded scan.
+pub const MAX_STATISTICS_FACTS: i64 = 100_000;
 
 #[derive(Clone)]
 pub struct SqliteRepository {
@@ -52,6 +56,23 @@ fn time(row: &SqliteRow, column: &str) -> Result<DateTime<Utc>, StorageError> {
 fn text<'a>(row: &'a SqliteRow, column: &str) -> Result<&'a str, StorageError> {
     row.try_get(column).map_err(db_error)
 }
+fn decode_reason(value: &str) -> Result<Reason, StorageError> {
+    match value {
+        "permission_required" => Ok(Reason::PermissionRequired),
+        "not_yet_settled" => Ok(Reason::NotYetSettled),
+        "outside_lookback" => Ok(Reason::OutsideLookback),
+        "truncated" => Ok(Reason::Truncated),
+        "bucket_boundary_mismatch" => Ok(Reason::BucketBoundaryMismatch),
+        "collection_gap" => Ok(Reason::CollectionGap),
+        "sync_pending" => Ok(Reason::SyncPending),
+        "unsupported" => Ok(Reason::Unsupported),
+        "no_data" => Ok(Reason::NoData),
+        "incompatible_unit" => Ok(Reason::IncompatibleUnit),
+        "unknown_scope" => Ok(Reason::UnknownScope),
+        _ => Err(StorageError::Unavailable),
+    }
+}
+
 fn nonempty(value: &str) -> Result<(), StorageError> {
     if value.is_empty() || value.len() > 4096 {
         Err(StorageError::Validation)
@@ -588,6 +609,132 @@ impl Repository for SqliteRepository {
                 })
             })
             .transpose()
+    }
+
+    async fn snapshots(&self, scope_ids: &[String]) -> Result<Vec<CurrentValue>, StorageError> {
+        // Static SQL per scope: the caller caps scope counts, and dynamic SQL
+        // fails the sqlx safe-string audit.
+        let mut out = Vec::new();
+        for scope_id in scope_ids {
+            let rows =
+                sqlx::query("SELECT * FROM snapshots WHERE scope_id=? ORDER BY product_key,metric")
+                    .bind(scope_id)
+                    .fetch_all(&self.readers)
+                    .await
+                    .map_err(db_error)?;
+            for r in &rows {
+                out.push(CurrentValue {
+                    snapshot: Snapshot {
+                        scope_id: text(r, "scope_id")?.into(),
+                        product_id: r.try_get("product_id").map_err(db_error)?,
+                        metric: text(r, "metric")?.into(),
+                        value: decode_value(r)?,
+                        provenance: provenance(text(r, "provenance")?)?,
+                        observed_at: time(r, "observed_at")?,
+                        source_as_of: r
+                            .try_get::<Option<String>, _>("source_as_of")
+                            .map_err(db_error)?
+                            .map(|s| s.parse().map_err(|_| StorageError::Unavailable))
+                            .transpose()?,
+                    },
+                    successful_sync_at: time(r, "successful_sync_at")?,
+                    data_revision: r.try_get("data_revision").map_err(db_error)?,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    async fn published_partitions(
+        &self,
+        scope_ids: &[String],
+        range: &Interval,
+    ) -> Result<Vec<StoredPartition>, StorageError> {
+        if scope_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Header, facts, and coverage must come from one read snapshot so a
+        // replacement publish can never split the view.
+        let mut tx = self.readers.begin().await.map_err(db_error)?;
+        let mut total: i64 = 0;
+        for scope_id in scope_ids {
+            total += sqlx::query_scalar::<_, i64>("SELECT count(*) FROM usage_facts u JOIN partitions p ON p.id=u.partition_id WHERE p.scope_id=? AND p.start_at<? AND p.end_at>?")
+                .bind(scope_id)
+                .bind(timestamp(range.end)?)
+                .bind(timestamp(range.start)?)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db_error)?;
+        }
+        if total > MAX_STATISTICS_FACTS {
+            return Err(StorageError::ResourceLimit);
+        }
+        let mut out = Vec::new();
+        for scope_id in scope_ids {
+            let headers = sqlx::query("SELECT p.id,p.scope_id,p.product_key,p.dataset,p.metric,p.start_at,p.end_at,p.grain,p.dimensions,p.authority,pp.data_revision,pp.successful_sync_at,pp.watermark FROM published_partitions pp JOIN partitions p ON p.id=pp.partition_id WHERE p.scope_id=? AND p.start_at<? AND p.end_at>? ORDER BY p.dataset,p.metric,p.start_at")
+                .bind(scope_id)
+                .bind(timestamp(range.end)?)
+                .bind(timestamp(range.start)?)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            for row in headers {
+                let id: i64 = row.try_get("id").map_err(db_error)?;
+                let partition = Partition {
+                    scope_id: text(&row, "scope_id")?.into(),
+                    product_key: text(&row, "product_key")?.into(),
+                    dataset: text(&row, "dataset")?.into(),
+                    metric: text(&row, "metric")?.into(),
+                    interval: Interval::new(time(&row, "start_at")?, time(&row, "end_at")?)
+                        .map_err(|_| StorageError::Unavailable)?,
+                    grain: text(&row, "grain")?.into(),
+                    dimensions: text(&row, "dimensions")?.into(),
+                    authority: provenance(text(&row, "authority")?)?,
+                };
+                let facts = sqlx::query("SELECT * FROM usage_facts WHERE partition_id=? ORDER BY kind,event_id,key_start,key_end")
+                    .bind(id)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(db_error)?
+                    .into_iter()
+                    .map(fact)
+                    .collect::<Result<_, _>>()?;
+                let coverage = sqlx::query("SELECT * FROM coverage_intervals WHERE partition_id=?")
+                    .bind(id)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(db_error)?
+                    .iter()
+                    .map(|r| {
+                        Ok(CoverageRow {
+                            interval: partition.interval,
+                            status: match text(r, "status")? {
+                                "complete" => CoverageStatus::Complete,
+                                "partial" => CoverageStatus::Partial,
+                                "missing" => CoverageStatus::Missing,
+                                "unsupported" => CoverageStatus::Unsupported,
+                                _ => return Err(StorageError::Unavailable),
+                            },
+                            reason: r
+                                .try_get::<Option<String>, _>("reason")
+                                .map_err(db_error)?
+                                .map(|s| decode_reason(&s))
+                                .transpose()?,
+                            zone: text(r, "source_zone")?.into(),
+                        })
+                    })
+                    .collect::<Result<_, StorageError>>()?;
+                out.push(StoredPartition {
+                    partition,
+                    facts,
+                    coverage,
+                    data_revision: row.try_get("data_revision").map_err(db_error)?,
+                    successful_sync_at: time(&row, "successful_sync_at")?,
+                    watermark: text(&row, "watermark")?.into(),
+                });
+            }
+        }
+        Ok(out)
     }
     async fn begin_candidate(
         &self,

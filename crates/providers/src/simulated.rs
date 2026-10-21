@@ -12,7 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use quotavista_core::{
     calendar::Interval,
     domain::{Availability, Provenance, QueryKind, Reason, Value},
-    number::{Decimal, Money, TokenTotal},
+    number::{Decimal, Money, Ratio, TokenTotal},
     provider::{
         CurrentMetric, DatasetCurrent, DatasetResult, HistoryPage, HistoryPartition, ProviderError,
         ProviderPort, ProviderRequest,
@@ -62,6 +62,10 @@ struct Capability {
     money_dataset: &'static str,
     token_total: u128,
     spend: &'static str,
+    /// Shared-quota fixture (remaining ratio, consumed percentage points).
+    /// Kimi exposes it; OpenRouter plans do not, which the overview must show
+    /// as an explicit unsupported state rather than a missing value.
+    quota: Option<(&'static str, &'static str)>,
 }
 
 const KIMI: Capability = Capability {
@@ -69,6 +73,7 @@ const KIMI: Capability = Capability {
     money_dataset: "topups",
     token_total: 1_234_567_890_123,
     spend: "42.50",
+    quota: Some(("0.70", "30")),
 };
 
 const OPENROUTER: Capability = Capability {
@@ -76,7 +81,20 @@ const OPENROUTER: Capability = Capability {
     money_dataset: "prepaid-credits",
     token_total: 9_876_543_210_987,
     spend: "1200.00",
+    quota: None,
 };
+
+/// Native token dataset and shared-quota support of a synthetic provider id.
+/// The desktop composition uses this to label plan rows; Phase 2 real
+/// providers will carry their own capability descriptors.
+pub fn synthetic_capability(provider_id: &str) -> (&'static str, bool) {
+    let capability = if provider_id.contains("kimi") {
+        KIMI
+    } else {
+        OPENROUTER
+    };
+    (capability.token_dataset, capability.quota.is_some())
+}
 
 /// Network-disabled adapter for one synthetic provider.
 ///
@@ -197,6 +215,41 @@ impl SimulatedAdapter {
         }
     }
 
+    /// Shared-quota metrics of the token dataset, when the plan exposes them.
+    /// They stay available in the missing-tokens scenario so the prototype
+    /// shows native quota consumption while token reads are missing.
+    fn quota_metrics(&self, request: &ProviderRequest) -> Vec<CurrentMetric> {
+        let Some((remaining, consumed)) = self.capability.quota else {
+            return Vec::new();
+        };
+        let base = CurrentMetric {
+            dataset: self.capability.token_dataset.into(),
+            metric: String::new(),
+            product_key: None,
+            value: None,
+            availability: Availability::Available,
+            reason: None,
+            query_kind: QueryKind::Unvalidated,
+            provenance: Provenance::Synthetic,
+            observed_at: request.as_of,
+            source_as_of: Some(request.as_of),
+        };
+        vec![
+            CurrentMetric {
+                metric: "quota_remaining".into(),
+                value: Some(Value::Ratio(remaining.parse::<Ratio>().unwrap())),
+                ..base.clone()
+            },
+            CurrentMetric {
+                metric: "quota_consumed".into(),
+                value: Some(Value::PercentagePoints(
+                    consumed.parse::<Decimal>().unwrap(),
+                )),
+                ..base
+            },
+        ]
+    }
+
     /// Shared history partition: UTC day buckets of the token dataset.
     pub fn token_partition(&self, request: &ProviderRequest) -> HistoryPartition {
         HistoryPartition {
@@ -247,9 +300,11 @@ impl ProviderPort for SimulatedAdapter {
         }
         let token = self.token_metric(request);
         let money = self.money_metric(request);
+        let mut token_metrics = vec![token];
+        token_metrics.extend(self.quota_metrics(request));
         let token_result = match self.scenario() {
             Scenario::PartialPermission => DatasetResult::Failed(ProviderError::PermissionRequired),
-            _ => DatasetResult::Metrics(vec![token]),
+            _ => DatasetResult::Metrics(token_metrics),
         };
         Ok(vec![
             DatasetCurrent {
@@ -328,6 +383,81 @@ impl ProviderPort for SimulatedAdapter {
             Some(TERMINAL_CURSOR) => Ok(None),
             Some(_) => Err(ProviderError::InvalidResponse),
         }
+    }
+}
+
+/// Routes each synthetic connection to the matching single-provider adapter.
+/// The desktop demo seeds one Kimi and one OpenRouter connection; the router
+/// keeps the refresh coordinator generic over one provider handle.
+#[derive(Clone)]
+pub struct SimulatedRouter {
+    kimi: SimulatedAdapter,
+    openrouter: SimulatedAdapter,
+    single: bool,
+}
+
+impl SimulatedRouter {
+    /// Router over the two demo adapters from [`crate::synthetic_providers`].
+    pub fn new() -> Self {
+        let providers = crate::synthetic_providers();
+        Self {
+            kimi: SimulatedAdapter::new(providers[0]),
+            openrouter: SimulatedAdapter::new(providers[1]),
+            single: false,
+        }
+    }
+
+    /// Router that answers every connection with one adapter; hermetic tests
+    /// use it to keep a single scenario cell authoritative.
+    pub fn single(adapter: SimulatedAdapter) -> Self {
+        Self {
+            kimi: adapter,
+            openrouter: SimulatedAdapter::new(crate::synthetic_providers()[1]),
+            single: true,
+        }
+    }
+
+    /// Kimi adapter, for deterministic scenario switching in demos and tests.
+    pub fn kimi(&self) -> &SimulatedAdapter {
+        &self.kimi
+    }
+
+    /// OpenRouter adapter, for deterministic scenario switching in demos and tests.
+    pub fn openrouter(&self) -> &SimulatedAdapter {
+        &self.openrouter
+    }
+
+    fn route(&self, connection_id: &str) -> &SimulatedAdapter {
+        if self.single || connection_id.contains("kimi") {
+            &self.kimi
+        } else {
+            &self.openrouter
+        }
+    }
+}
+
+impl Default for SimulatedRouter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProviderPort for SimulatedRouter {
+    async fn current(
+        &self,
+        request: &ProviderRequest,
+    ) -> Result<Vec<DatasetCurrent>, ProviderError> {
+        self.route(&request.connection_id).current(request).await
+    }
+
+    async fn history_page(
+        &self,
+        request: &ProviderRequest,
+        cursor: Option<&str>,
+    ) -> Result<Option<HistoryPage>, ProviderError> {
+        self.route(&request.connection_id)
+            .history_page(request, cursor)
+            .await
     }
 }
 
@@ -553,5 +683,99 @@ mod tests {
             adapter.history_page(&request(), Some("not-a-cursor")).await,
             Err(ProviderError::InvalidResponse)
         );
+    }
+
+    #[tokio::test]
+    async fn kimi_exposes_shared_quota_but_openrouter_does_not() {
+        let datasets = kimi().current(&request()).await.unwrap();
+        let DatasetResult::Metrics(metrics) = datasets
+            .iter()
+            .find(|d| d.dataset == "shared-pool")
+            .unwrap()
+            .clone()
+            .result
+        else {
+            panic!();
+        };
+        let remaining = metrics
+            .iter()
+            .find(|m| m.metric == "quota_remaining")
+            .expect("quota_remaining metric");
+        assert_eq!(
+            remaining.value,
+            Some(Value::Ratio("0.70".parse::<Ratio>().unwrap()))
+        );
+        assert_eq!(remaining.availability, Availability::Available);
+        let consumed = metrics
+            .iter()
+            .find(|m| m.metric == "quota_consumed")
+            .expect("quota_consumed metric");
+        assert_eq!(
+            consumed.value,
+            Some(Value::PercentagePoints("30".parse::<Decimal>().unwrap()))
+        );
+        assert!(metrics.iter().all(|m| m.validate().is_ok()));
+
+        let datasets = openrouter().current(&request()).await.unwrap();
+        let DatasetResult::Metrics(metrics) = datasets
+            .iter()
+            .find(|d| d.dataset == "key-budget")
+            .unwrap()
+            .clone()
+            .result
+        else {
+            panic!();
+        };
+        assert!(metrics.iter().all(|m| !m.metric.starts_with("quota_")));
+    }
+
+    #[tokio::test]
+    async fn missing_tokens_keep_native_quota_visible() {
+        let adapter = kimi();
+        adapter.set_scenario(Scenario::MissingTokens);
+        let datasets = adapter.current(&request()).await.unwrap();
+        let DatasetResult::Metrics(metrics) = datasets
+            .iter()
+            .find(|d| d.dataset == "shared-pool")
+            .unwrap()
+            .clone()
+            .result
+        else {
+            panic!();
+        };
+        let quota = metrics
+            .iter()
+            .find(|m| m.metric == "quota_remaining")
+            .unwrap();
+        assert_eq!(quota.availability, Availability::Available);
+        assert_eq!(quota.source_as_of, Some(request().as_of));
+    }
+
+    #[tokio::test]
+    async fn router_sends_each_connection_to_its_own_adapter() {
+        let router = SimulatedRouter::new();
+        let kimi_request = ProviderRequest {
+            connection_id: "synthetic-kimi-demo".into(),
+            ..request()
+        };
+        let datasets = router.current(&kimi_request).await.unwrap();
+        assert!(datasets.iter().any(|d| d.dataset == "shared-pool"));
+
+        let openrouter_request = ProviderRequest {
+            connection_id: "synthetic-openrouter-demo".into(),
+            ..request()
+        };
+        let datasets = router.current(&openrouter_request).await.unwrap();
+        assert!(datasets.iter().any(|d| d.dataset == "key-budget"));
+        assert!(datasets.iter().all(|d| d.dataset != "shared-pool"));
+
+        router.openrouter().set_scenario(Scenario::RateLimited);
+        assert_eq!(
+            router.current(&openrouter_request).await.unwrap_err(),
+            ProviderError::RateLimited {
+                retry_after: RATE_LIMIT_RETRY
+            }
+        );
+        assert!(router.current(&kimi_request).await.is_ok());
     }
 }

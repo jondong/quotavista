@@ -804,3 +804,113 @@ async fn independent_writers_race_publications_without_mixing_revisions() {
     second.close().await;
     first.close().await;
 }
+
+#[tokio::test]
+async fn statistics_reads_round_trip_snapshots_and_published_partitions() {
+    let (_dir, repo) = fixture().await;
+    repo.save_snapshot(&context(), &snapshot(Value::Tokens(TokenTotal(7))), at(2))
+        .await
+        .unwrap();
+    let p = Partition {
+        grain: "P1D".into(),
+        interval: Interval::new(at(0), at(0) + chrono::Duration::days(2)).unwrap(),
+        ..partition()
+    };
+    let facts = vec![
+        Fact {
+            identity: FactIdentity::Bucket,
+            interval: Interval::new(at(0), at(0) + chrono::Duration::days(1)).unwrap(),
+            value: Value::Tokens(TokenTotal(41)),
+            source_revision: "synthetic-v1".into(),
+        },
+        Fact {
+            identity: FactIdentity::Bucket,
+            interval: Interval::new(
+                at(0) + chrono::Duration::days(1),
+                at(0) + chrono::Duration::days(2),
+            )
+            .unwrap(),
+            value: Value::Tokens(TokenTotal(42)),
+            source_revision: "synthetic-v1".into(),
+        },
+    ];
+    complete(&repo, "synthetic-stats", &p, &facts).await;
+    let revision = repo
+        .publish(&context(), "synthetic-stats", at(3), "synthetic-wm")
+        .await
+        .unwrap();
+
+    let snapshots = repo.snapshots(&[scope().id]).await.unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(
+        snapshots[0].snapshot,
+        snapshot(Value::Tokens(TokenTotal(7)))
+    );
+    assert_eq!(snapshots[0].data_revision, 1);
+
+    let read = repo
+        .published_partitions(
+            &[scope().id],
+            &Interval::new(
+                at(0) - chrono::Duration::days(1),
+                at(0) + chrono::Duration::days(3),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.len(), 1);
+    let stored = &read[0];
+    assert_eq!(stored.partition, p);
+    assert_eq!(stored.facts, facts);
+    assert_eq!(stored.data_revision, revision);
+    assert_eq!(stored.successful_sync_at, at(3));
+    assert_eq!(stored.watermark, "synthetic-wm");
+    assert_eq!(stored.coverage.len(), 1);
+    assert_eq!(stored.coverage[0].zone, "UTC");
+    assert_eq!(stored.coverage[0].status, CoverageStatus::Complete);
+    assert_eq!(stored.coverage[0].reason, None);
+    assert_eq!(stored.coverage[0].interval, p.interval);
+
+    // Ranges that do not overlap the published partition read nothing.
+    let outside = repo
+        .published_partitions(
+            &[scope().id],
+            &Interval::new(
+                at(0) + chrono::Duration::days(30),
+                at(0) + chrono::Duration::days(31),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(outside.is_empty());
+    // Empty scope lists short-circuit without touching the store.
+    assert!(repo.snapshots(&[]).await.unwrap().is_empty());
+    assert!(repo
+        .published_partitions(&[], &p.interval)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn statistics_read_refuses_an_unbounded_fact_scan() {
+    let (_dir, repo) = fixture().await;
+    let p = Partition {
+        grain: "P1D".into(),
+        ..partition()
+    };
+    complete(&repo, "synthetic-bulk", &p, &[]).await;
+    repo.publish(&context(), "synthetic-bulk", at(3), "synthetic-wm")
+        .await
+        .unwrap();
+    // Bulk-insert 100'001 synthetic bucket facts with distinct key bounds.
+    execute(
+        &repo,
+        "INSERT INTO usage_facts WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<100001) SELECT 1,'synthetic-scope','synthetic-usage','tokens','bucket','',printf('%06d',n),printf('%06d',n),'2026-01-01T00:00:00Z','2026-01-01T01:00:00Z','tokens','5','','synthetic-v1' FROM seq",
+    )
+    .await;
+    let result = repo.published_partitions(&[scope().id], &p.interval).await;
+    assert_eq!(result, Err(StorageError::ResourceLimit));
+}

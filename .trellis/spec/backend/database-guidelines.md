@@ -56,3 +56,11 @@ Run `cargo test --locked -p quotavista-infrastructure` for temporary-file migrat
 - History is bounded per job (100 pages / 30 seconds, measured on the injected UTC `RefreshClock`). Hitting the bound ends the job `Completed { history: Incomplete }`: the partial candidate stays in staging under the run id, the published partition is untouched, and nothing claims completeness. Only the terminal page's `complete` attestation plus a matching cursor CAS may publish — a later truncated page withdraws an earlier attestation. A provider that serves no history at all ends `Completed { history: Skipped }`.
 
 Run `cargo test --locked -p quotavista-infrastructure -p quotavista-providers -p quotavista-core` for fake-clock scheduling, coalescing, cooldown, cancellation, fencing, per-dataset isolation, and partial-history fixtures. These tests never resolve or read an application data directory, a native secret store, or a keychain.
+
+## P1-09 statistics read contract
+
+- Reads for overview and statistics go through two bounded `Repository` ports added in P1-09: `snapshots(scope_ids)` returns the current committed value per (scope, product, metric) for the selected scopes only, and `published_partitions(scope_ids, range)` returns every published partition whose interval overlaps the half-open range, with its facts, coverage rows, publication revision, success time, and watermark in one read transaction.
+- `published_partitions` pre-counts matching facts and fails with `StorageError::ResourceLimit` above 100,000 rather than streaming an unbounded result; the command surfaces that as the sealed `ResourceLimit` error, never as an empty or partial series.
+- Coverage rows are lane-qualified: a row only "covers" a reporting-zone series point when its stored `source_zone` equals the reporting zone. A UTC coverage row must never mark a local-zone bucket complete, because UTC-day facts are excluded from that lane's totals.
+- Snapshots (current values) never enter range totals; only published usage facts do. A current snapshot and a history bucket are two representations of possibly the same usage, and adding both would double-count.
+- `TokenFact::recorded_total()` is the only subcount rule: subcounts marked `Additional` are added to the base total; `Included` and `Unknown` never are. Aggregation sums base totals and runs through checked `u128` arithmetic.

@@ -5,6 +5,7 @@ pub mod journal;
 pub mod number;
 pub mod provider;
 pub mod secrets;
+pub mod statistics;
 pub mod storage;
 
 pub use domain::Provenance;

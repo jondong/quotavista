@@ -642,7 +642,8 @@ impl From<StorageError> for JournalError {
             StorageError::Unavailable => Self::Unavailable,
             StorageError::Validation
             | StorageError::Migration
-            | StorageError::IncompatibleVersion => Self::Validation,
+            | StorageError::IncompatibleVersion
+            | StorageError::ResourceLimit => Self::Validation,
         }
     }
 }

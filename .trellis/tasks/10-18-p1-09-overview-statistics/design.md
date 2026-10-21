@@ -6,7 +6,7 @@ Implement the minimum backend aggregation necessary for seeded compatible facts 
 
 ## Dependencies and contracts
 
-Use the baseline linked in [PRD](prd.md). Predecessors: [P1-07](../10-18-p1-07-ipc/prd.md), [P1-08](../10-18-p1-08-bilingual-shell/prd.md) Update affected DTO mappings, migrations, and consumers together; preserve core dependency direction and synthetic provenance.
+Use the baseline linked in [PRD](prd.md). Predecessors: [P1-07](../archive/2026-10/10-18-p1-07-ipc/prd.md), [P1-08](../archive/2026-10/10-18-p1-08-bilingual-shell/prd.md) Update affected DTO mappings, migrations, and consumers together; preserve core dependency direction and synthetic provenance.
 
 ## Compatibility and rollback
 

@@ -15,6 +15,8 @@ pub enum StorageError {
     Unavailable,
     Migration,
     IncompatibleVersion,
+    /// A bounded read refused because the result would exceed its cap.
+    ResourceLimit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,6 +109,25 @@ pub struct PublishedPartition {
     pub watermark: String,
 }
 
+/// A persisted coverage row: the interval plus the zone its boundaries follow.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoverageRow {
+    pub interval: Interval,
+    pub status: crate::domain::CoverageStatus,
+    pub reason: Option<crate::domain::Reason>,
+    pub zone: String,
+}
+
+/// A published partition with its facts, coverage rows, and publication metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredPartition {
+    pub partition: Partition,
+    pub facts: Vec<Fact>,
+    pub coverage: Vec<CoverageRow>,
+    pub data_revision: i64,
+    pub successful_sync_at: DateTime<Utc>,
+    pub watermark: String,
+}
 /// Generic async port; the adapter owns transaction and connection management.
 #[allow(async_fn_in_trait)]
 pub trait Repository {
@@ -207,4 +228,16 @@ pub trait Repository {
         &self,
         partition: &Partition,
     ) -> Result<Option<PublishedPartition>, StorageError>;
+    /// Every snapshot of the given scopes, ordered by scope then metric.
+    /// An empty scope list returns an empty result without touching the store.
+    async fn snapshots(&self, scope_ids: &[String]) -> Result<Vec<CurrentValue>, StorageError>;
+    /// Published partitions of the given scopes whose interval intersects
+    /// `range`, each with its facts and coverage rows. The read is bounded:
+    /// it fails with `StorageError::ResourceLimit` instead of returning a
+    /// truncated result once the fact or partition cap is exceeded.
+    async fn published_partitions(
+        &self,
+        scope_ids: &[String],
+        range: &Interval,
+    ) -> Result<Vec<StoredPartition>, StorageError>;
 }
