@@ -429,6 +429,27 @@ still pass, so the IPC boundary is unchanged.
 - No other spec, requirement or architecture document was changed, and no sibling
   task directory was touched.
 
+## Continuous integration
+
+Pull request #11 (`jondong/p1-11-desktop-lifecycle` → `main`) on commit
+`4045a2e`. Both required checks completed successfully, observed with
+`gh pr checks 11 --watch`:
+
+| Check | Result | Duration |
+| --- | --- | --- |
+| `workspace-checks` (ubuntu-latest) | `COMPLETED SUCCESS` | 1m25s |
+| `macos-desktop` (macos-latest) | `COMPLETED SUCCESS` | 3m22s |
+
+Run: <https://github.com/jondong/quotavista/actions/runs/39541645343>.
+
+The ubuntu job excludes `quotavista-desktop` from Clippy and tests, so the two
+new desktop-only plugin dependencies are compiled only by the macOS job; that job
+runs the full workspace, including the 42 desktop tests, and the unsigned debug
+build. Per `.trellis/spec/backend/quality-guidelines.md` and the workflow's own
+comment, a green CI build is supplementary: it does not close G01, G02 or G04 and
+is not evidence of a native Linux or macOS run. The native observations above and
+the pending list below carry that evidence.
+
 ## Open items
 
 - All 13 interactive native steps above, on macOS and on Ubuntu 26.04 GNOME.
