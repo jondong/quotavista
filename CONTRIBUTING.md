@@ -52,6 +52,29 @@ cargo run -p quotavista-contracts --bin generate-contracts -- --check  # Rust/Ty
 
 CI (`.github/workflows/ci.yml`) runs these checks without credentials. A green CI build is not evidence of a native Linux run; platform behavior needs separate validation evidence.
 
+### Native desktop validation (P1-13)
+
+The checks above are host-independent. Native desktop behavior is validated by a
+separate set of scripts, all of which use synthetic data only and never touch a
+real credential or the real application data directory:
+
+```sh
+./scripts/native-checks.sh --environment    # host, toolchain, session type, tray/notification probes
+./scripts/native-checks.sh --automated      # lifecycle, platform adapters, sealed IPC
+./scripts/test-native-launch-probe.sh       # regression suite for the two below
+./scripts/native-launch-probe.sh            # real launches under an isolated identity
+./scripts/native-checks.sh --interactive    # sixteen steps needing a human at the desktop
+```
+
+`native-launch-probe.sh` builds a validation-only binary with the application
+identifier `com.quotavista.prototype.nativeprobe` so its single-instance channel
+cannot activate an ordinary running instance, and it refuses to start if anything
+already holds either channel. The full procedure, the safety rules, and what each
+step can and cannot prove are in
+[docs/validation/native-target-procedure.md](docs/validation/native-target-procedure.md).
+A green probe is not desktop usability: the sixteen interactive observations still
+need a human, on each target.
+
 ### Local query benchmark (P1-12)
 
 The integration benchmark seeds ninety settled days of synthetic usage history — exactly 100,000 facts, the storage bound for one query — and measures the statistics/overview query mix through the same validated request path the renderer uses. It is env-gated so the default suite stays fast:

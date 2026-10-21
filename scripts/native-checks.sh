@@ -20,7 +20,11 @@
 # Safety: the prototype reads and writes only the throwaway directory
 # $TMPDIR/quotavista-prototype, uses synthetic providers, and never touches a
 # real credential store entry. The synthetic notification carries no account
-# data. Set QUOTAVISTA_SECRET_STORE=session-only to keep credentials in memory.
+# data. Every launch below exports QUOTAVISTA_SECRET_STORE=session-only, because
+# omitting it makes lib.rs select the platform store and the real service name is
+# `quotavista` (crates/infrastructure/src/secrets.rs). That is not optional and
+# not a style preference: without it a copied command reaches the operator's own
+# login keychain or Secret Service.
 
 set -uo pipefail
 
@@ -29,6 +33,11 @@ cd "$REPO_ROOT" || exit 1
 
 CRATE="quotavista-desktop"
 DATA_DIR="${TMPDIR:-/tmp}/quotavista-prototype"
+
+# Shared with scripts/native-launch-probe.sh: the isolated validation identity,
+# the mandatory session-setup block, and launch commands that cannot drop it.
+# shellcheck source=scripts/native-launch-lib.sh
+. "$REPO_ROOT/scripts/native-launch-lib.sh"
 
 # ---------------------------------------------------------------- environment
 
@@ -169,9 +178,33 @@ run_interactive() {
   echo
   echo "## Interactive checks (require a desktop session)"
   echo
-  echo "Build first: cargo build --locked -p ${CRATE}"
-  echo "Run with:    cargo run --locked -p ${CRATE}"
-  echo "No tray:     QUOTAVISTA_TRAY=off cargo run --locked -p ${CRATE}"
+  # Every command an operator copies out of this transcript has to carry the
+  # session boundary with it. Printing a bare `cargo run` here would select the
+  # platform secret store in a clean shell, and the ordinary identifier's
+  # single-instance channel could hand the activation to an unrelated running
+  # instance. Both are prevented by printing the setup block and by building the
+  # commands through qv_launch_command, which cannot omit either export.
+  echo "Before anything else, run this block in the shell that will launch the app:"
+  echo
+  qv_session_setup_block | sed 's/^/    /'
+  echo
+  echo "The validation identity (recommended; keeps this run off the ordinary"
+  echo "application's single-instance channel):"
+  echo
+  echo "    TAURI_CONFIG='{\"identifier\":\"${QV_PROBE_IDENTIFIER}\"}' CARGO_TARGET_DIR=${QV_PROBE_TARGET_DIR} cargo build --locked -p ${CRATE}"
+  qv_launch_command "$QV_PROBE_BIN" | sed 's/^/    /'
+  qv_launch_command "$QV_PROBE_BIN" QUOTAVISTA_TRAY=off | sed 's/^/    /'
+  echo
+  echo "The ordinary identity (only if this machine has no QuotaVista running and"
+  echo "you accept that a second launch activates whatever is already up):"
+  echo
+  echo "    cargo build --locked -p ${CRATE}"
+  qv_launch_command "$QV_ORDINARY_BIN" | sed 's/^/    /'
+  qv_launch_command "$QV_ORDINARY_BIN" QUOTAVISTA_TRAY=off | sed 's/^/    /'
+  echo
+  echo "State directory for this session: \$TMPDIR/quotavista-prototype inside the"
+  echo "throwaway directory the setup block created. Never the real application data"
+  echo "directory, and never delete a real one to reset a run."
 
   observe "1. Cold launch" \
     "the main window opens and the four screens are reachable from it"

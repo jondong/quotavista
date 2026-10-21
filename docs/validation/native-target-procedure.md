@@ -41,10 +41,16 @@ another platform.
   procedure overrides `TMPDIR` to a fresh throwaway directory so the default
   location is never created, read, modified, or deleted.
 - Never delete a real application data directory as a rollback shortcut.
-- Any real keychain or Secret Service access must use disposable entries whose
-  service and account names start with `quotavista-test-`, must be cleaned up by
-  the test itself, and must be followed by an independent check that the entries
-  are gone. The application's own production service name is `quotavista`
+- Any real keychain or Secret Service access must use disposable entries, must be
+  cleaned up by the test itself, and must be followed by an independent check
+  that the entries are gone. The disposable **service** name starts with
+  `quotavista-test-` — the smoke tests build
+  `quotavista-test-<task>-<pid>` (`crates/infrastructure/src/secrets/tests.rs`) —
+  while the **account** names are the application's normal reference keys,
+  `qv1:macos-keychain:synthetic-entry-a` and `-b`. The prefix rule therefore
+  applies to the service, which is what selects the entry group; the cleanup
+  check searches that service and also greps the whole keychain for
+  `quotavista-test`. The application's own production service name is `quotavista`
   (`crates/infrastructure/src/secrets.rs`), which does not carry that prefix, so
   the prototype is never launched with the native store during validation.
 - Launch the prototype with `QUOTAVISTA_SECRET_STORE=session-only` for every
@@ -78,6 +84,17 @@ cargo fetch
 cargo build --locked -p quotavista-desktop
 ```
 
+The non-interactive probe additionally builds a **validation-only** copy of the
+same binary with a different application identifier:
+
+```sh
+TAURI_CONFIG='{"identifier":"com.quotavista.prototype.nativeprobe"}' \
+    CARGO_TARGET_DIR=target/native-probe cargo build --locked -p quotavista-desktop
+```
+
+`scripts/native-launch-probe.sh` runs that build itself (step 0b), so this is only
+needed for a manual run. See "Single-instance isolation" below for why.
+
 `cargo build` is required before any native launch: the scripts run the built
 binary at `target/debug/quotavista-desktop` in the repository root, and bundling
 is disabled in `apps/desktop/src-tauri/tauri.conf.json`, so there is no
@@ -99,13 +116,56 @@ Reset between runs:
 # Scripted runs: delete only the throwaway probe directory the script created.
 rm -rf "${TMPDIR:-/tmp}"/qv-native-probe.*
 
-# Manual runs: use a fresh directory instead of deleting anything.
-export TMPDIR="$(mktemp -d /tmp/qv-manual.XXXXXX)"
+# Manual runs: export the ONE mandatory session block before launching anything.
+# Both variables are required; a block that exports only TMPDIR still leaves the
+# prototype on the operator's real Keychain or Secret Service.
+export QUOTAVISTA_NATIVE_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/qv-native-session.XXXXXX")"
+export TMPDIR="$QUOTAVISTA_NATIVE_TMPDIR"
+export QUOTAVISTA_SECRET_STORE=session-only
 ```
 
 Never reset by deleting `${TMPDIR:-/tmp}/quotavista-prototype` unless you created
 it yourself during this validation; on a shared or daily-driver machine that
 path may hold another run's state. Prefer a fresh `TMPDIR` per attempt.
+
+`scripts/native-checks.sh --interactive` prints this same block, plus launch
+commands built by `qv_launch_command`, which cannot drop either export.
+
+### Single-instance isolation
+
+Overriding `TMPDIR` configures the process you start. It does **not** reconfigure
+an instance that is already running, and it does not move the single-instance
+channel. `tauri-plugin-single-instance` 2.5.4 derives that channel from the
+application identifier alone:
+
+- macOS — `PathBuf::from(format!("/tmp/{}_si.sock", identifier))` with `.` and `-`
+  replaced by `_`, so `com.quotavista.prototype` always uses
+  `/tmp/com_quotavista_prototype_si.sock` (`src/platform_impl/macos.rs:61`).
+  `TMPDIR` is never consulted.
+- Linux — the session D-Bus name `<identifier>.SingleInstance`
+  (`src/platform_impl/linux.rs:31`), settable only from Rust via `Builder::dbus_id`.
+
+A second launch connects to that channel first and, if anything is listening,
+exits 0 after handing the activation over — so it wakes whatever is already
+running, showing its window and running its wake path against its own state. A
+stale socket is left behind when a process is terminated by a signal, because the
+plugin removes it only on `RunEvent::Exit`.
+
+This procedure therefore runs the non-interactive probe under a **validation-only
+identifier**, `com.quotavista.prototype.nativeprobe`, built by `TAURI_CONFIG` into
+a separate `CARGO_TARGET_DIR=target/native-probe`. That gives the run a disjoint
+channel and cannot activate an ordinary instance. The probe also:
+
+- fails closed before launching if either socket has a live holder or either
+  binary is already running (`qv_require_clear_host`), and refuses to run at all
+  when `lsof` is unavailable, because it could then not tell a live socket from a
+  stale one;
+- records the ordinary socket's modification time before and during the run, so
+  the transcript shows it was never bound or activated (step 1b);
+- removes only the validation socket on cleanup, never the ordinary one.
+
+Manual runs must respect the same boundary: use the validation identity, or accept
+explicitly that a second launch activates whatever is already up on this machine.
 
 To verify what a run committed, read the store back read-only (it never contains
 credential values — see `crates/infrastructure/migrations/0001_persistence.sql`,
@@ -123,6 +183,29 @@ sqlite3 "file:${db}?mode=ro" \
           (SELECT t.locale || "/" || t.reporting_zone || "/" || t.currency FROM settings t)
      FROM store_state s;'
 ```
+
+**Counts alone are not proof that the fixture initialised.** A store can answer
+every one of those `COUNT(*)` subqueries and still be an empty schema, or a
+half-seeded one, and a check that only compares "cold equals warm" accepts any
+identical pair — including `0|0|0|0|0|0|zh-CN/UTC/USD`. The reviewer's
+reproduction of exactly that false pass is why
+`scripts/test-native-launch-probe.sh` exists. A valid first-launch fixture on any
+target is:
+
+| Field | Expected | Where the value comes from |
+| --- | --- | --- |
+| `store_state.data_revision` | `8` | each committed write advances it by one (`sqlite.rs`, `advance_data_revision`) |
+| connections | `2`, ids exactly `synthetic-kimi-demo` and `synthetic-openrouter-demo` | `synthetic_providers()` in `crates/providers/src/lib.rs` |
+| connection lifecycle | `active` on the cold run; `needs_credentials` on every later launch | `reconcile_connection_credentials`, `crates/infrastructure/src/secrets.rs` |
+| `credential_ref` non-null | `0` | seeding writes no secret |
+| provider_scopes | `2`, key `synthetic-account`, type `account`, no orphans | `seed_demo_connections` |
+| usage_facts | `6` | three settled UTC days per connection (`HISTORY_DAYS = 3`) |
+| published_partitions / sync_runs | `2` / `2` | the seeded refresh published one partition per scope |
+| settings | `en/UTC/USD` | the migration's seed row |
+
+`scripts/native-launch-probe.sh` asserts all of these per launch and fails the run
+on any mismatch, and it fails on the stderr diagnostics `demo seeding failed` and
+`credential store unavailable` instead of merely printing them.
 
 ## Environment capture
 
@@ -149,6 +232,7 @@ themselves; record them verbatim.
 
 ```sh
 ./scripts/native-checks.sh --automated      # lifecycle, platform adapters, sealed IPC
+./scripts/test-native-launch-probe.sh       # regression suite for the two scripts below
 ./scripts/native-launch-probe.sh            # real launches, see below
 ```
 
@@ -163,15 +247,30 @@ It launches the built binary up to three times, each in its own throwaway
 
 | Step | What it proves |
 | --- | --- |
-| 1 cold launch | The binary starts, the composition initialises, and the tray/notification adapters report their detections. Time from `exec` to the capabilities line is measured, so a launch that never arrived cannot look fast. |
-| 2 single instance | A second launch exits immediately while the first keeps running and logs the handover wake. |
-| 3–4 terminate and inspect cold | The process stops on `SIGTERM` with a real exit status, and the committed synthetic state is read back from SQLite. |
-| 5–7 warm launch | The same directory restarts faster, does not reseed, and keeps the identical data revision and settings. |
-| 8 no-tray launch | `QUOTAVISTA_TRAY=off` is honoured: the adapter reports `tray=Unavailable`. |
+| 0a incumbent gate | Nothing already holds either single-instance socket and neither binary is running, checked without connecting to the socket. The probe **refuses to run** (`PROBE: REFUSED`, exit 2) when `lsof` is unavailable, because it could then not distinguish a live socket from a stale one. |
+| 0b isolated build | The validation-only binary exists and actually carries the identifier `com.quotavista.prototype.nativeprobe`. |
+| 1 cold launch | The binary starts, the composition initialises, and the tray/notification adapters report their detections. Time from `exec` to the capabilities line is measured, so a launch that never arrived cannot look fast. Reaching that line is a startup milestone of the process, not evidence that a usable window was rendered. |
+| 1b isolation held | The ordinary socket's modification time is unchanged across the run and the validation socket appeared, so no launch bound or activated the ordinary channel. |
+| 2 single instance | A second launch exits early while the first keeps running and logs the handover wake. Process-level only. |
+| 3–4 terminate and validate cold | The process stops on `SIGTERM` with a real exit status, and the committed synthetic state is validated field by field against the fixture table above — not merely read back. |
+| 5–7 warm launch | The same directory restarts, does not reseed, keeps the identical aggregate, and shows both demo connections at `needs_credentials` as the startup credential reconciliation requires. |
+| 8 no-tray launch | `QUOTAVISTA_TRAY=off` is honoured: the adapter reports `tray=Unavailable`. This exercises the forced-unavailable branch of the override; it is not the discovery of a genuinely missing tray. |
 | 9 | An explicit list of what the probe did **not** observe. |
 
 Every capability the probe cannot see is printed as `NOT OBSERVED: …` rather than
-as a pass. Add `--keep` to leave the launch directories in place for inspection.
+as a pass. Add `--keep` to leave the launch directories in place for inspection,
+and `--skip-build` to reuse an existing validation binary.
+
+`scripts/test-native-launch-probe.sh` is the regression suite for both scripts. It
+launches nothing and touches no credential store; it builds SQLite fixtures on the
+real migrations and asserts that the validator accepts a known-good store and
+rejects a schema-only store, a seed without committed facts, a seed without
+published partitions, wrong connection identities, an orphan scope, a persisted
+credential reference, an off-fixture scope key, a wrong lifecycle, a wrong data
+revision, and wrong settings. It also asserts the single-instance isolation logic
+against a synthetic incumbent, a stale socket, and the three spellings of a binary
+path that `ps` can show. Run it after changing either script.
+
 
 Two manually gated checks complete the automated set:
 
@@ -208,6 +307,15 @@ On Linux, the equivalent check is
 ```sh
 ./scripts/native-checks.sh --interactive
 ```
+
+Before the first step, export the mandatory session block printed at the top of
+the transcript — `QUOTAVISTA_NATIVE_TMPDIR`, `TMPDIR`, and
+`QUOTAVISTA_SECRET_STORE=session-only` — in the shell that will launch the app,
+and launch with one of the printed `env …` commands rather than a bare
+`cargo run`. A bare `cargo run` in a clean shell selects the platform secret
+store, whose real service name is `quotavista`, and uses the ordinary
+single-instance channel. The transcript prints both the validation-identity and
+ordinary-identity commands so the choice is explicit rather than accidental.
 
 Sixteen steps need a human at the desktop: cold launch, in-app capability read,
 English and Simplified-Chinese synthetic notification banners, close with a tray,

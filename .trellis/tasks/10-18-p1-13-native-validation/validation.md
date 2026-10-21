@@ -47,12 +47,21 @@ Safety boundary actually observed:
   launch probe and did not exist after it, because every scripted launch
   overrides `TMPDIR` with a throwaway `mktemp -d` directory that the probe
   deletes on exit.
-- Real macOS Keychain access was limited to the disposable service
-  `quotavista-test-p1-05-35988` used by the `#[ignore]`d smoke test, and cleanup
-  was verified independently of the test (output below). The production service
-  name is `quotavista` (`crates/infrastructure/src/secrets.rs:37`), which does
-  not satisfy the `quotavista-test-` rule, so the prototype was never launched
-  against the native store: every native launch set
+- Real macOS Keychain access came in two kinds, and they are not the same kind of
+  access. **Writes and deletes** touched only the disposable service
+  `quotavista-test-p1-05-35988` used by the `#[ignore]`d smoke test, under the
+  application's normal reference accounts
+  `qv1:macos-keychain:synthetic-entry-a` and `-b`; cleanup was verified
+  independently of the test (output below). **Read-only diagnostic queries** were
+  broader: the cleanup transcript runs `security dump-keychain` (which enumerates
+  the whole keychain) and `security find-generic-password -s quotavista` (a
+  lookup against the production service name). Neither reads a secret value —
+  `find-generic-password` without `-w` prints metadata only, and the query
+  returned "could not be found" — but "the entries are absent afterwards" is
+  evidence of cleanup, not proof that nothing else was ever enumerated. The
+  production service name is `quotavista` (`crates/infrastructure/src/secrets.rs:37`),
+  which does not satisfy the `quotavista-test-` rule, so the prototype was never
+  launched against the native store: every native launch set
   `QUOTAVISTA_SECRET_STORE=session-only`.
 - All persisted data inspected was synthetic demo data seeded by the prototype
   itself.
@@ -93,6 +102,61 @@ Safety boundary actually observed:
 7. **Links broken by the P1-12 archiving were repaired here** rather than left
    for a later task, because A24 counts valid local links as evidence and this
    task was already editing those documents.
+8. **Single-instance isolation comes from the application identifier, not from
+   `TMPDIR`.** An independent review reproduced cross-directory activation: the
+   pinned `tauri-plugin-single-instance` 2.5.4 derives its macOS channel as
+   `format!("/tmp/{}_si.sock", identifier)` with `.` and `-` replaced by `_`
+   (`src/platform_impl/macos.rs:61`), never consulting `TMPDIR`, and on Linux uses
+   the session D-Bus name `<identifier>.SingleInstance`
+   (`src/platform_impl/linux.rs:31`). A fresh `TMPDIR` and
+   `QUOTAVISTA_SECRET_STORE=session-only` configure the process being started; they
+   do not reconfigure an incumbent, which can still receive the activation, show
+   its window and run its wake path against its own state. The probe now builds a
+   validation-only binary with `TAURI_CONFIG='{"identifier":"com.quotavista.prototype.nativeprobe"}'`
+   into `CARGO_TARGET_DIR=target/native-probe`, giving it the disjoint channel
+   `/tmp/com_quotavista_prototype_nativeprobe_si.sock`; step 1b records that the
+   ordinary socket's mtime is unchanged across the run. Detection uses `lsof`
+   holders and `ps` argv matching rather than connecting to the socket, because
+   connecting *is* the activation being avoided. A loose `pgrep -f quotavista`
+   was rejected after it matched the agent process itself, whose environment
+   merely contains the worktree path.
+9. **The probe fails closed on an incumbent and refuses to guess.** Before any
+   launch, `qv_require_clear_host` requires that neither socket has a live holder
+   and that neither binary is running; when `lsof` is unavailable the probe exits
+   2 with `PROBE: REFUSED` rather than proceeding, because it could then not
+   distinguish a live socket from a stale one. It removes only the validation
+   socket on cleanup and never the ordinary one, even when the ordinary one is
+   stale.
+10. **A store inspection that only compares aggregates accepts an empty store.**
+    The review demonstrated `PROBE: PASS` against a disposable test double that
+    read back `0|0|0|0|0|0|zh-CN/UTC/USD`, because "cold equals warm and non-empty"
+    was the whole criterion. The probe now validates the fixture field by field
+    against the expectations in `docs/validation/native-target-procedure.md`
+    (revision 8, the two `*-demo` connection identities, scope key/type, no
+    orphan scopes, no non-null `credential_ref`, 6 facts, 2 published partitions,
+    2 sync runs, `en/UTC/USD`), treats a readable store and a *valid* store as
+    separate judgements, and fails on the `demo seeding failed` and
+    `credential store unavailable` diagnostics instead of only printing them.
+    `scripts/test-native-launch-probe.sh` carries 15 store fixtures including the
+    reviewer's exact false-pass shape.
+11. **The warm launch's `needs_credentials` lifecycle is expected, and naming it
+    was the point.** The first validator run rejected the warm store with
+    `found 'needs_credentials ', expected 'active '`. That is not a regression:
+    `reconcile_connection_credentials` (`crates/infrastructure/src/secrets.rs:47`)
+    marks an `Active` connection whose `credential_ref` is absent or unreadable as
+    `NeedsCredentials`, which is exactly what `lib.rs` promises — "a session-only
+    credential never survives a restart, so its connection reports
+    `needs_credentials` in the first list the renderer reads". The expectation is
+    therefore per-launch (`EXPECTED_LIFECYCLES_SEEDED` vs
+    `EXPECTED_LIFECYCLES_RESTARTED`) rather than a constant, and this is the first
+    native observation of that promise rather than only a unit test of it.
+12. **A command an operator is told to copy has to be executed by a test.** The
+    documented manual-session block once printed
+    `export QUOTAVISTA_NATIVE_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp/qv-native-session.XXXXXX")}"`
+    — a mis-nested brace that made `mktemp` create nothing usable, while a
+    substring assertion on `export QUOTAVISTA_NATIVE_TMPDIR=` still passed. The
+    self-test now runs the printed block in a real `bash -c` and requires a
+    directory, `TMPDIR` repointed at it, and `QUOTAVISTA_SECRET_STORE=session-only`.
 
 ## PRD criterion evidence
 
@@ -126,6 +190,48 @@ what "this task changes no application source" predicts.
 - No-tray mode (pid 33738, `QUOTAVISTA_TRAY=off`): **445 ms**,
   `quotavista: capabilities tray=Unavailable notification=Unconfirmed`.
 - Native Keychain round-trip on the real host store (see criterion 2).
+
+#### Launch observations from the rewritten probe
+
+The bullets above came from the probe as it stood at `1afa2a8`. An independent
+review then found two defects in that probe (B1: `TMPDIR` does not isolate the
+single-instance channel; B2: the store inspection accepted any identical
+non-empty aggregate), so the probe was rewritten — see design decisions 8 to 12.
+The rewritten probe was run against the same prototype at `10dc053` on
+2026-10-21 15:16:55 UTC, with the rewrite itself still in the working tree, and
+it printed `PROBE: PASS`:
+
+```text
+Binary                     target/native-probe/debug/quotavista-desktop
+Application identifier     com.quotavista.prototype.nativeprobe (validation only)
+Ordinary identifier unused com.quotavista.prototype
+Validation channel         /tmp/com_quotavista_prototype_nativeprobe_si.sock
+Ordinary channel           /tmp/com_quotavista_prototype_si.sock (never bound)
+Cold launch                pid 48546, exec→capabilities 1164 ms, rss 123376 KiB
+                           quotavista: capabilities tray=Available notification=Unconfirmed
+Isolation held (step 1b)   ordinary channel before=1792591131 during=1792591131
+                           validation channel before=absent during=1792595817
+Second launch              pid 48744, exited status 0 after 119 ms; first survived
+                           and logged the SingleInstanceActivation wake
+Warm launch                pid 48885, exec→capabilities 450 ms, rss 122416 KiB
+No-tray launch             pid 49071, QUOTAVISTA_TRAY=off, 441 ms,
+                           quotavista: capabilities tray=Unavailable notification=Unconfirmed
+Cold fixture               8|2|2|6|2|2|en/UTC/USD, ids synthetic-kimi-demo
+                           synthetic-openrouter-demo, lifecycles `active `
+Warm fixture               8|2|2|6|2|2|en/UTC/USD, same ids, lifecycles
+                           `needs_credentials ` — every field (as expected)
+Termination                SIGTERM, status 143 for cold, warm and no-tray
+Cleanup                    default prototype directory untouched; no
+                           target/native-probe/debug/quotavista-desktop remains
+```
+
+Every capability line and every fixture field agrees with the pre-review run;
+what changed is that the run is now isolated from any ordinary instance and the
+fixture is validated field by field instead of compared as an aggregate. The
+`active ` → `needs_credentials ` lifecycle transition on restart is new
+*observable* evidence for the promise `lib.rs` makes about session-only
+credentials (design decision 11). Where this subsection and the bullets above
+disagree on a pid or a latency, this subsection is the current one.
 
 What macOS does **not** carry: the sixteen interactive observations — window
 visibility and the four screens, in-app capability read, notification banners in
@@ -174,8 +280,14 @@ First sentence — *no-tray Linux usable and exits on close*:
   tray on a GNOME desktop. On Linux this is entirely `UNVERIFIED`.
 
 Second sentence — *secret-store failures never create plaintext persistence or
-an implicit session-only downgrade*: **MET on macOS**, with three independent
-lines of evidence.
+an implicit session-only downgrade*: **MET on macOS, within the scope this
+prototype can reach**, on three independent lines of evidence — one static, one
+an inspection of the synthetic run, one automated. The scope limit matters: no
+native run ever supplied a user credential, because every launch selected the
+session-only store and demo seeding writes no secret. What follows therefore
+shows that the *storage contract* has no plaintext credential path and that the
+*observed synthetic state* holds no secret value. It does not show what happens
+to a secret a user actually typed.
 
 - No plaintext persistence, statically: `crates/infrastructure/migrations/0001_persistence.sql`
   is headed "Phase 1 storage boundaries. No credential values or raw provider
@@ -183,9 +295,14 @@ lines of evidence.
   (`lib.rs:912 seed_demo_connections`) writes only `connections` and
   `provider_scopes` rows via `create_connection`, which inserts into exactly
   those two tables.
-- No plaintext persistence, by inspection: the read-only store query above
-  returns counters and settings only (`8|2|2|6|2|2|en/UTC/USD`). Nothing in the
-  launched prototype's on-disk state is a secret.
+- No plaintext persistence, by inspection of what the run actually produced: the
+  read-only store query returns counters and settings only
+  (`8|2|2|6|2|2|en/UTC/USD`), the `credential_ref` column is `NULL` on both
+  seeded connections, and the state directory holds exactly `journal/`,
+  `journal/refresh-counter.v1`, and the three `quotavista.sqlite*` files. The
+  inspection covers the SQLite tables the query names and a directory listing; it
+  is not a grep of every log and journal body for secret material, and no such
+  grep was run.
 - No implicit downgrade: `lib.rs:260 build_inner` keeps a credential-store
   failure as `(None, Some(secret_error(&error)))` in `AppState.degraded` and, as
   its comment states, "the session store is never substituted for it".
@@ -254,12 +371,18 @@ lines of evidence.
 
 ## Validation commands
 
-Run 2026-10-21 on this branch. Every command below was executed twice: once
-during development against the pre-commit base `1761be7`, and once as a
+Run 2026-10-21 on this branch. Every command below was executed three times:
+once during development against the pre-commit base `1761be7`, once as a
 confirming battery against the committed revision `1afa2a8`
 (`1afa2a88bf18bd6326ae6edc005e2e5477b21dd4`, recorded at the end of this
-section). Both runs exit 0 on every command and agree on every count; the
-numbers cited in this record come from the confirming run.
+section), and once more against the rewritten launch probe after the independent
+review. All three exit 0 on every command. Where a count differs between runs it
+is a volatile number (a pid, a latency, a benchmark percentile) and both values
+are shown; the structural counts — 221 workspace tests, 82 frontend tests, 217
+catalog keys, 16 pending interactive steps — are identical in all three.
+
+`scripts/test-native-launch-probe.sh` and `scripts/native-launch-lib.sh` exist
+only from the review round onward, so they appear in the second and third runs.
 
 ```text
 cargo fmt --all -- --check                                                    rc=0
@@ -271,6 +394,7 @@ node ./scripts/check-catalog-parity.mjs                                       rc
 cargo run --locked -p quotavista-contracts --bin generate-contracts -- --check rc=0 (TypeScript contract is current)
 ./scripts/native-checks.sh --environment                                      rc=0
 ./scripts/native-checks.sh --automated                                        rc=0 (AUTOMATED: PASS — 21 + 13 + 2 tests)
+./scripts/test-native-launch-probe.sh                                         rc=0 (49 regression checks)
 ./scripts/native-launch-probe.sh                                              rc=0 (PROBE: PASS)
 sh -c './scripts/native-checks.sh --interactive < /dev/null'                   rc=0 (16 × OBSERVED: PENDING, 0 passes)
 (cd apps/desktop && npm ci)                                                   rc=0
@@ -434,3 +558,17 @@ step 13 still reports `OBSERVED: PENDING` sixteen times with no passes.
   not a performance guarantee across a support matrix.
 - **No packaging, signing, notarization, or installer evidence exists.**
   Bundling is disabled in the prototype configuration; that work belongs to G04.
+- **What the review round changed, and what it did not.** An independent review
+  of `10dc053` returned CHANGES_REQUESTED with two blocking findings: the probe's
+  fresh `TMPDIR` did not isolate the single-instance channel (B1), and its store
+  inspection accepted any identical non-empty aggregate (B2) — the reviewer
+  demonstrated `PROBE: PASS` against a disposable double that read back
+  `0|0|0|0|0|0|zh-CN/UTC/USD`. Both are fixed, with a 49-case regression suite
+  (`scripts/test-native-launch-probe.sh`) that reproduces each failure shape. Two
+  further findings were documentation scope (S1: the interactive checklist printed
+  bare `cargo run` commands that would select the native store; S2: "no plaintext
+  credential persistence" claimed more than the inspection showed) plus a nit
+  about the Keychain prefix rule and the read-only cleanup queries. None of this
+  adds a single interactive or Linux observation: the sixteen macOS steps are
+  still `PENDING`, every Linux row is still `UNVERIFIED`, and Phase 1 still does
+  not exit.
