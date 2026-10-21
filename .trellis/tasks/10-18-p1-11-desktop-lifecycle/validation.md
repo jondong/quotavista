@@ -637,6 +637,15 @@ while quitting neither consumes the gate's slot nor competes for that lock, and
 of running the remaining steps. `quit` exits the process from inside its own task,
 after cancellation and the pool close.
 
+Admission stays coordinated by the same `state.refresh` mutex the refresh command
+already uses: a wake and a manual refresh serialize on it, and
+`RefreshCoordinator` coalesces a second request for a connection that already has
+a live job, so spawning instead of blocking cannot double-admit work.
+`the_wake_callback_returns_while_the_refresh_pipeline_is_still_busy` covers the
+serialization side — its holder owns that mutex for the whole window — and
+`wake_merges_one_refresh_and_a_second_wake_adds_nothing` covers the coalescing
+side.
+
 Proof: `tests::the_wake_callback_returns_while_the_refresh_pipeline_is_still_busy`
 — the delayed synthetic-work test the review asked for. A holder task owns the
 refresh lock for 400ms; the real `wake` callback returns in under 100ms, and
@@ -729,20 +738,29 @@ still pass, so the IPC boundary is unchanged.
 ## Continuous integration
 
 Pull request #11 (`jondong/p1-11-desktop-lifecycle` → `main`). Every push was
-watched with `gh pr checks 11 --watch`, and both required checks completed
-successfully on each head.
+watched with `gh pr checks 11 --watch` or `gh run list`, and both required checks
+completed successfully on every head this branch has had.
 
-| Head | `workspace-checks` (ubuntu-latest) | `macos-desktop` (macos-latest) |
-| --- | --- | --- |
-| `4045a2e` (round-1 implementation) | `COMPLETED SUCCESS`, 1m25s | `COMPLETED SUCCESS`, 3m22s |
-| `164218d` (round-1 validation record) | `COMPLETED SUCCESS`, 2m13s | `COMPLETED SUCCESS`, 4m25s |
+| Head | Content | `workspace-checks` | `macos-desktop` | Run |
+| --- | --- | --- | --- | --- |
+| `4045a2e` | round-1 implementation | success, 1m25s | success, 3m22s | 39541645343 |
+| `164218d` | round-1 validation record | success, 2m13s | success, 4m25s | 39542209346 |
+| `2668cc5` | review fixes and the two rebase repairs | success, 1m38s | success, 3m23s | 39556096304 |
+| `f358fd0` | review-round and rebase records | success, 2m4s | success, 4m10s | 39556511256 |
+| `ab208d1` | execution-plan checkboxes, count corrections | success, 1m34s | success, 4m31s | 39556945222 |
 
-Runs: <https://github.com/jondong/quotavista/actions/runs/39541645343> and
-<https://github.com/jondong/quotavista/actions/runs/39542209346>. Those two heads
-predate the rebase onto P1-09, so their SHAs are no longer on this branch; the
-observed results are kept because they are what actually ran. The post-rebase
-head's result is appended in a follow-up commit, since a commit cannot contain the
-SHA it is itself committed as.
+`4045a2e` and `164218d` predate the rebase onto P1-09, so those two SHAs are no
+longer on this branch; their observed results are kept because they are what
+actually ran. `2668cc5` is the last head that changed any code — every head after
+it is markdown only, and each still ran the full pipeline. The final row names the
+head this row was committed on top of, because a commit cannot contain its own
+SHA; the follow-up documentation commit's run is green as well and is visible in
+the pull request's check history.
+
+Three of the watchers died on transient GitHub API errors
+(`Post "https://api.github.com/graphql": unexpected EOF`), so the results above
+were re-read directly from `gh run view` per run rather than taken from a
+watcher's last line.
 
 The ubuntu job excludes `quotavista-desktop` from Clippy and tests, so the two new
 desktop-only plugin dependencies are compiled only by the macOS job; that job runs
