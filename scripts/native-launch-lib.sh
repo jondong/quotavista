@@ -203,32 +203,83 @@ qv_host_os() {
   esac
 }
 
-# qv_dbus_state <identifier>
-# On Linux the plugin claims the session-bus name `<identifier>.SingleInstance`
-# instead of a socket, so ownership — not a filesystem stamp — is the evidence.
-# Prints `free`, `owned`, or `unknown:<reason>`. Asking `NameHasOwner` on the
-# bus daemon does not claim the name and does not activate anything.
-qv_dbus_state() {
-  local name out
-  name="$(qv_dbus_name "$1")"
-  if ! command -v gdbus >/dev/null 2>&1; then
-    printf 'unknown:no-gdbus\n'
-    return 0
-  fi
-  if ! out="$(gdbus call --session --dest org.freedesktop.DBus \
-    --object-path /org/freedesktop/DBus \
-    --method org.freedesktop.DBus.NameHasOwner "$name" 2>&1)"; then
-    # No session bus, or a bus that would not answer. Either way this is an
-    # inspection we cannot interpret, and callers must not read it as clear.
-    printf 'unknown:query-failed\n'
-    return 0
-  fi
-  case "$out" in
+# qv_dbus_classify <gdbus-output>
+# Maps a NameHasOwner reply. Anything that is not a clear true or false is
+# unknown: a caller must not treat an unparsed reply as free.
+qv_dbus_classify() {
+  case "$1" in
     *true*) printf 'owned\n' ;;
     *false*) printf 'free\n' ;;
     *) printf 'unknown:unparsed\n' ;;
   esac
-  return 0
+}
+
+# qv_dbus_query <name> [bus-address]
+# Empty address queries the caller's session bus (`--session`). A non-empty
+# address queries that bus (`--address`) and does not fall back to `--session`:
+# the launched process may not be on the caller's bus. Asking NameHasOwner does
+# not claim the name and does not activate anything.
+qv_dbus_query() {
+  local name="$1" addr="${2:-}" out
+  if ! command -v gdbus >/dev/null 2>&1; then
+    printf 'unknown:no-gdbus\n'
+    return 0
+  fi
+  if [ -n "$addr" ]; then
+    if ! out="$(gdbus call --address "$addr" --dest org.freedesktop.DBus \
+      --object-path /org/freedesktop/DBus \
+      --method org.freedesktop.DBus.NameHasOwner "$name" 2>&1)"; then
+      printf 'unknown:query-failed\n'
+      return 0
+    fi
+  else
+    if ! out="$(gdbus call --session --dest org.freedesktop.DBus \
+      --object-path /org/freedesktop/DBus \
+      --method org.freedesktop.DBus.NameHasOwner "$name" 2>&1)"; then
+      # No session bus, or a bus that would not answer. Callers must not read
+      # that as clear.
+      printf 'unknown:query-failed\n'
+      return 0
+    fi
+  fi
+  qv_dbus_classify "$out"
+}
+
+# qv_dbus_state <identifier>
+# Caller's session bus. Used by the preflight incumbent gate.
+# Prints `free`, `owned`, or `unknown:<reason>`.
+qv_dbus_state() {
+  qv_dbus_query "$(qv_dbus_name "$1")"
+}
+
+# qv_dbus_state_on_bus <identifier> <bus-address>
+# Ownership on a specific bus. An empty address is unknown, never free:
+# failing to read the launched process's bus must not look like a clear name.
+qv_dbus_state_on_bus() {
+  if [ -z "${2:-}" ]; then
+    printf 'unknown:no-bus-address\n'
+    return 0
+  fi
+  qv_dbus_query "$(qv_dbus_name "$1")" "$2"
+}
+
+# qv_process_bus_address <pid>
+# Prints DBUS_SESSION_BUS_ADDRESS from the process itself. `/proc/<pid>/environ`
+# is authoritative (NUL-separated). `ps eww` is the fallback where `/proc` is
+# absent, which is how the regression suite exercises the Linux branch on
+# macOS. Empty output means the address could not be read; callers fail closed
+# rather than substituting the caller's bus.
+qv_process_bus_address() {
+  local pid="$1" addr=""
+  if [ -n "$pid" ] && [ -r "/proc/${pid}/environ" ]; then
+    addr="$(tr '\0' '\n' < "/proc/${pid}/environ" | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p' | head -1 || true)"
+    printf '%s\n' "$addr"
+    return 0
+  fi
+  if [ -n "$pid" ]; then
+    addr="$(ps eww -p "$pid" 2>/dev/null | tr ' ' '\n' | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p' | head -1 || true)"
+  fi
+  printf '%s\n' "$addr"
 }
 
 # qv_detect_incumbents

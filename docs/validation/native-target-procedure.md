@@ -287,11 +287,11 @@ It launches the built binary up to three times, each in its own throwaway
 | 0a incumbent gate and run lock | Nothing already holds the platform's single-instance channel (a Unix socket read through `lsof` on macOS, a session-bus name read through `gdbus` on Linux) and neither binary is running — checked without connecting, because connecting is the activation being avoided. A channel state that cannot be interpreted counts as an incumbent. The probe **refuses to run** (`PROBE: REFUSED`, exit 2) when the platform's inspection tool is missing, and takes `mkdir /tmp/quotavista-native-probe.lock` so two overlapping runs cannot share the fixed validation identifier; the lock is released on every exit path. |
 | 0b isolated build | The validation-only binary exists and actually carries the identifier `com.quotavista.prototype.nativeprobe`, read back out of the file rather than assumed from the build command. `--skip-build` does not weaken this: a cached artifact built for the ordinary identity is refused before anything is launched, because a post-launch identity check cannot undo an activation. |
 | 1 cold launch | The binary starts, the composition initialises, and the tray/notification adapters report their detections. Time from `exec` to the capabilities line is measured, so a launch that never arrived cannot look fast. Reaching that line is a startup milestone of the process, not evidence that a usable window was rendered. |
-| 1b no recorded change | The ordinary socket's stamp is unchanged across the run and the validation socket appeared. The unchanged stamp supports "no recorded change", not "no activation" — connecting to an existing socket need not change its mtime. The substantive isolation is the disjoint identifier named in the header. |
+| 1b no recorded change | The ordinary channel's stamp is unchanged across the run. On macOS the validation socket must appear. On Linux the plugin does not create that socket; the probe instead requires the validation name `<identifier>.SingleInstance` to be owned on the launched process's own session bus, and a free or unknown answer fails. The unchanged stamp supports "no recorded change", not "no activation" — connecting to an existing socket need not change its mtime. The substantive isolation is the disjoint identifier named in the header. |
 | 2 single instance | A second launch exits early while the first keeps running and logs the handover wake. Process-level only. |
 | 3–4 terminate and validate cold | The process stops on `SIGTERM` with a real exit status, and the committed synthetic state is validated field by field against the fixture table above — not merely read back. |
 | 5–7 warm launch | The same directory restarts, does not reseed, keeps the identical aggregate, and shows both demo connections at `needs_credentials` as the startup credential reconciliation requires. |
-| 8 no-tray launch | `QUOTAVISTA_TRAY=off` is honoured: the adapter reports `tray=Unavailable`. This exercises the forced-unavailable branch of the override; it is not the discovery of a genuinely missing tray. |
+| 8 no-tray launch | `QUOTAVISTA_TRAY=off` is honoured: the adapter reports `tray=Unavailable`, stderr has no seeding or credential-store failure, and that launch's own fresh store matches the seeded fixture. A fatal diagnostic or an empty or invalid store fails the step. This exercises the forced-unavailable branch of the override; it is not the discovery of a genuinely missing tray, and it is not the window-close exit (interactive step 8). |
 | 9 | An explicit list of what the probe did **not** observe. |
 
 Every capability the probe cannot see is printed as `NOT OBSERVED: …` rather than
@@ -299,7 +299,7 @@ as a pass. Add `--keep` to leave the launch directories in place for inspection,
 and `--skip-build` to reuse an existing validation binary.
 
 `scripts/test-native-launch-probe.sh` is the regression suite for both scripts. It
-launches nothing and touches no credential store; it builds SQLite fixtures on the
+launches a synthetic test double for the main-path cases, never the real binary, and touches no credential store; it builds SQLite fixtures on the
 real migrations and asserts that the validator accepts a known-good store and
 rejects a schema-only store, a seed without committed facts, a seed without
 published partitions, wrong connection identities, an orphan scope, a persisted
@@ -316,7 +316,7 @@ spellings of a binary path that `ps` can show; the run lock against a live owner
 a dead owner, and a release attempted by a shell that does not own it; and the
 Linux session-bus branch — an owned name is an incumbent, a bus that will not
 answer fails closed, a free name reports a clear host, and a missing `gdbus`
-reports unknown rather than free. Run it after changing either script.
+reports unknown rather than free. The suite also drives `main --skip-build` with a test double: a Linux launch whose validation name is owned on the child bus passes without a Unix socket; a free or unknown name fails step 1b; the no-tray path fails on each fatal diagnostic and on an empty or schema-only store, and passes only when that launch's diagnostics are clean and its fresh fixture validates. Run it after changing either script.
 
 Two manually gated checks complete the automated set:
 

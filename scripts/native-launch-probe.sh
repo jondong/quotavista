@@ -583,8 +583,15 @@ main() {
   printf -- '- Binary: %s\n' "$BIN"
   printf -- '- Application identifier: %s (validation only)\n' "$QV_PROBE_IDENTIFIER"
   printf -- '- Ordinary identifier not used: %s\n' "$QV_ORDINARY_IDENTIFIER"
-  printf -- '- Single-instance channel: %s\n' "$PROBE_SOCKET"
-  printf -- '- Ordinary channel left alone: %s\n' "$ORDINARY_SOCKET"
+  if [ "$(qv_host_os)" = "linux" ]; then
+    printf -- '- Single-instance channel: session bus name %s (Linux does not use %s)\n' \
+      "$(qv_dbus_name "$QV_PROBE_IDENTIFIER")" "$PROBE_SOCKET"
+    printf -- '- Ordinary channel left alone: session bus name %s\n' \
+      "$(qv_dbus_name "$QV_ORDINARY_IDENTIFIER")"
+  else
+    printf -- '- Single-instance channel: %s\n' "$PROBE_SOCKET"
+    printf -- '- Ordinary channel left alone: %s\n' "$ORDINARY_SOCKET"
+  fi
   printf -- '- Probe root (throwaway, created by this run): %s\n' "$PROBE_ROOT"
   printf -- '- Credential store for every launch: QUOTAVISTA_SECRET_STORE=session-only\n'
   printf -- '- Real credential store entries written, read, or deleted: none\n'
@@ -641,7 +648,11 @@ main() {
     printf '\nPROBE: REFUSED (incumbent detected)\n'
     exit 2
   fi
-  note "- no process holds either single-instance socket and no copy of either binary is running"
+  if [ "$host_os" = "linux" ]; then
+    note "- no session-bus name is owned, no socket is held, and no copy of either binary is running"
+  else
+    note "- no process holds either single-instance socket and no copy of either binary is running"
+  fi
   pass "host clear of incumbents (fail-closed gate)"
 
   step "0b. Validation binary with an isolated single-instance identity"
@@ -745,11 +756,45 @@ main() {
     note "- the ordinary channel CHANGED during a validation launch; isolation did not hold"
     isolation_ok=1
   fi
-  if [ -e "$PROBE_SOCKET" ]; then
-    note "- a validation socket appeared, so the validation identity registered its own channel"
+  if [ "$(qv_host_os)" = "linux" ]; then
+    # The plugin never creates /tmp/<identifier>_si.sock on Linux. Requiring
+    # that file fails a healthy launch. Ownership of the validation name on
+    # the launched process's own session bus is the evidence; free and
+    # unknown both fail closed. Do not fall back to the caller's bus.
+    local bus dbus_state validation_name
+    validation_name="$(qv_dbus_name "$QV_PROBE_IDENTIFIER")"
+    bus="$(qv_process_bus_address "$COLD_PID")"
+    note "- Linux validation channel is the session-bus name ${validation_name}, not ${PROBE_SOCKET}"
+    if [ -n "$bus" ]; then
+      note "- launched process ${COLD_PID} session bus: ${bus}"
+    else
+      note "- launched process ${COLD_PID} has no readable DBUS_SESSION_BUS_ADDRESS; ownership cannot be shown"
+    fi
+    dbus_state="$(qv_dbus_state_on_bus "$QV_PROBE_IDENTIFIER" "$bus")"
+    note "- validation bus name ownership: ${dbus_state}"
+    case "$dbus_state" in
+      owned)
+        note "- the launched process's session bus owns ${validation_name}, so the validation identity registered its own channel"
+        ;;
+      free)
+        note "- ${validation_name} is free on the launched process's session bus, so single-instance registration is unconfirmed"
+        isolation_ok=1
+        ;;
+      *)
+        note "- ${validation_name} reports ${dbus_state}; unknown or unreadable ownership is not a registered channel"
+        isolation_ok=1
+        ;;
+    esac
+    if [ -e "$PROBE_SOCKET" ]; then
+      note "- a file exists at ${PROBE_SOCKET}; Linux does not require it, and it is not the isolation evidence"
+    fi
   else
-    note "- no validation socket appeared, so single-instance registration is unconfirmed"
-    isolation_ok=1
+    if [ -e "$PROBE_SOCKET" ]; then
+      note "- a validation socket appeared, so the validation identity registered its own channel"
+    else
+      note "- no validation socket appeared, so single-instance registration is unconfirmed"
+      isolation_ok=1
+    fi
   fi
   if [ "$isolation_ok" -eq 0 ]; then
     pass "single-instance isolation from the ordinary application"
@@ -875,17 +920,42 @@ main() {
       note "- time from exec to '${READY_MARKER}': ${ready_elapsed_ms} ms"
       note "- ${ready_line}"
       report_diagnostics notray "$PROBE_ROOT/notray.err"
+      local notray_ok=0
       case "$ready_line" in
         *tray=Unavailable*)
           note "- this exercises the forced-unavailable branch of the override; it is not the discovery of a genuinely missing tray"
-          pass "no-tray override reported the tray as unavailable (forced branch)"
           ;;
         *)
           note "- the override did not report tray=Unavailable"
-          fail "no-tray override reported the tray as unavailable (forced branch)"
+          notray_ok=1
           ;;
       esac
+      # Do not pass 'system tray unavailable' as an extra: that pattern is
+      # fatal, and the no-tray launch is expected to report the tray missing.
+      # Seeding and credential-store failures still fail the step.
+      if ! require_clean_diagnostics notray "$PROBE_ROOT/notray.err"; then
+        notray_ok=1
+      fi
       stop notray "$launch_pid"
+      # Fresh directory, so this is a first seed (active), not the warm restart
+      # whose expected lifecycles are still in EXPECTED_LIFECYCLES.
+      EXPECTED_LIFECYCLES="$EXPECTED_LIFECYCLES_SEEDED"
+      # Read the store only after the writer has exited.
+      if store_snapshot notray "$NOTRAY_DIR/quotavista-prototype"; then
+        if validate_snapshot notray; then
+          note "- the no-tray run committed the expected deterministic fixture"
+        else
+          note "- the no-tray store did not match the expected fixture"
+          notray_ok=1
+        fi
+      else
+        notray_ok=1
+      fi
+      if [ "$notray_ok" -eq 0 ]; then
+        pass "no-tray override reported the tray as unavailable (forced branch)"
+      else
+        fail "no-tray override reported the tray as unavailable (forced branch)"
+      fi
     else
       fail "no-tray override reported the tray as unavailable (forced branch)"
       stop notray "$launch_pid"

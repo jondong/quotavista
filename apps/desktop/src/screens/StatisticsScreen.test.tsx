@@ -142,6 +142,7 @@ beforeEach(async () => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 function renderScreen() {
@@ -176,6 +177,10 @@ describe("StatisticsScreen", () => {
   });
 
   it("shows the explicit range dates, zone, and provisional marker", async () => {
+    // last7 is today-6 through today. Freeze UTC so this assertion does not
+    // follow the wall clock; Date only, so waitFor still uses real timers.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-21T12:00:00Z"));
     renderScreen();
     expect(
       await screen.findByText("Range: 2026-10-15 – 2026-10-21 · zone UTC · Day"),
@@ -183,7 +188,6 @@ describe("StatisticsScreen", () => {
     expect(screen.getByText(/Data as of/)).not.toBeNull();
     expect(screen.getByText(/Provisional/)).not.toBeNull();
   });
-
   it("shows unavailable buckets as unknown, never as zero", async () => {
     fixture = statisticsData({
       series: [

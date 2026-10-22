@@ -692,3 +692,28 @@ with no passes, and no step in the battery can change that.
   adds a single interactive or Linux observation: the sixteen macOS steps are
   still `PENDING`, every Linux row is still `UNVERIFIED`, and Phase 1 still does
   not exit.
+
+- **What the second review round changed, and what it did not.** A re-review of
+  `657c1d7` returned CHANGES_REQUESTED. The post-launch isolation check still
+  required the macOS validation socket on every host, so a healthy Linux launch
+  failed step 1b; the no-tray path accepted `tray=Unavailable` without rejecting
+  fatal diagnostics or validating that launch's own store. Both are fixed.
+  On Linux the probe now requires `<identifier>.SingleInstance` to be owned on
+  the launched process's own session bus (`gdbus --address` of that process's
+  `DBUS_SESSION_BUS_ADDRESS`, never the caller's bus); a free or unknown answer
+  fails, and a missing `/tmp` socket is not a failure there. The no-tray step
+  passes only when diagnostics are clean and the fresh seeded fixture validates.
+  The regression suite drives `main --skip-build` with a synthetic test double
+  for those paths (darwin pass, linux owned pass with no socket, linux free and
+  unknown fail, and no-tray failures for each fatal diagnostic plus an empty and
+  a schema-only store). It is 98 checks, not the 82 recorded above. A date-only
+  freeze in `StatisticsScreen.test.tsx` stops one frontend assertion following
+  the wall clock; component behavior is unchanged. The local battery on this
+  diff, before this commit, exited 0 on every required step: fmt, clippy,
+  `cargo test --locked --workspace` (221 passed, 0 failed, 1 ignored), boundary
+  scripts, catalog parity (217 keys), contracts check, desktop npm
+  ci/lint/i18n/test/typecheck/build (82 tests), `native-checks.sh --environment`
+  and `--automated` (`AUTOMATED: PASS`), both native-launch scripts
+  (`PROBE: PASS`), and `git diff --check`. None of this adds an interactive or
+  Linux observation: the sixteen macOS steps are still `PENDING`, every Linux
+  row is still `UNVERIFIED`, and Phase 1 still does not exit.

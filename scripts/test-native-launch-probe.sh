@@ -17,10 +17,11 @@
 #      and pin the rule that only the validation identity's socket is ever
 #      removed.
 #
-# Everything here is synthetic. No QuotaVista process is launched, no real
-# single-instance socket is created, the ordinary application identifier is
-# temporarily replaced with a `selftest` name for the incumbent cases, and no
-# credential store of any kind is touched.
+# Everything here is synthetic. No QuotaVista process is launched. The
+# main-path cases launch a test double only, under a temp lock and temp
+# socket paths, never the real /tmp plugin sockets. The ordinary application
+# identifier is temporarily replaced with a `selftest` name for the incumbent
+# cases, and no credential store of any kind is touched.
 #
 # Usage: scripts/test-native-launch-probe.sh
 
@@ -981,6 +982,318 @@ else
     tfail "a printed launch command keeps the session-only store alongside an extra variable" \
         "got: $launch_line"
 fi
+
+echo
+echo "== post-launch channel and no-tray main path =="
+
+# Helper pins. The main-path cases below are what prove main() uses them.
+if [ "$(qv_dbus_state_on_bus "$QV_PROBE_IDENTIFIER" "")" = "unknown:no-bus-address" ]; then
+    tok "an empty bus address is unknown, never free"
+else
+    tfail "an empty bus address is unknown, never free" \
+        "printed '$(qv_dbus_state_on_bus "$QV_PROBE_IDENTIFIER" "")'"
+fi
+saved_main_gdbus="$(declare -f gdbus 2>/dev/null || true)"
+gdbus() { printf '(false,)\n'; }
+if [ "$(qv_dbus_state_on_bus "$QV_PROBE_IDENTIFIER" "unix:path=$tmp/unused-bus")" = "free" ]; then
+    tok "NameHasOwner false on a named bus is free"
+else
+    tfail "NameHasOwner false on a named bus is free" \
+        "printed '$(qv_dbus_state_on_bus "$QV_PROBE_IDENTIFIER" "unix:path=$tmp/unused-bus")'"
+fi
+gdbus() { printf 'gdbus: no such bus\n' >&2; return 1; }
+if [ "$(qv_dbus_state_on_bus "$QV_PROBE_IDENTIFIER" "unix:path=$tmp/unused-bus")" = "unknown:query-failed" ]; then
+    tok "a named bus that will not answer is unknown"
+else
+    tfail "a named bus that will not answer is unknown" \
+        "printed '$(qv_dbus_state_on_bus "$QV_PROBE_IDENTIFIER" "unix:path=$tmp/unused-bus")'"
+fi
+if [ -n "$saved_main_gdbus" ]; then
+    eval "$saved_main_gdbus"
+else
+    unset -f gdbus
+fi
+
+unit_bus="unix:path=$tmp/unit-child-bus"
+# A shell, not /bin/sleep: macOS ps hides the environment of platform binaries.
+cat >"$tmp/unit-sleeper" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+chmod +x "$tmp/unit-sleeper"
+(
+    export DBUS_SESSION_BUS_ADDRESS="$unit_bus"
+    exec "$tmp/unit-sleeper"
+) &
+unit_pid=$!
+cleanup_pids+=("$unit_pid")
+sleep 0.3
+unit_got="$(qv_process_bus_address "$unit_pid")"
+kill "$unit_pid" 2>/dev/null || true
+wait "$unit_pid" 2>/dev/null || true
+if [ "$unit_got" = "$unit_bus" ]; then
+    tok "the launched process's session bus is read back from the process"
+else
+    tfail "the launched process's session bus is read back from the process" \
+        "got '${unit_got:-<empty>}'"
+fi
+
+main_active="$(build_fixture main-active good)"
+main_restarted="$(build_fixture main-restarted good)"
+sql "$main_restarted/quotavista.sqlite" "UPDATE connections SET lifecycle = 'needs_credentials';"
+main_schema="$(build_fixture main-schema schema-only)"
+FIXTURE_ACTIVE="$main_active/quotavista.sqlite"
+FIXTURE_RESTARTED="$main_restarted/quotavista.sqlite"
+FIXTURE_SCHEMA="$main_schema/quotavista.sqlite"
+
+# Re-exec so the process bus differs from the caller's. A probe that queries
+# its own bus, or --session, fails the Linux control.
+cat >"$tmp/fake-desktop" <<'EOF'
+#!/usr/bin/env bash
+# com.quotavista.prototype.nativeprobe
+# Test double only: no native app, network, keychain, or real data.
+set -u
+if [ "${QV_FAKE_EXECED:-}" != 1 ]; then
+    export QV_FAKE_EXECED=1
+    export DBUS_SESSION_BUS_ADDRESS="${CASE_CHILD_BUS:?}"
+    exec "$0"
+fi
+root="${CASE_ROOT:?}"
+count_path="$root/count"
+count=0
+if [ -f "$count_path" ]; then
+    count=$(cat "$count_path")
+fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$count_path"
+if [ "$count" -eq 2 ]; then
+    kill -USR1 "$(cat "$root/first.pid")"
+    sleep 0.1
+    exit 0
+fi
+if [ "$count" -eq 1 ]; then
+    printf '%s\n' "$$" >"$root/first.pid"
+    if [ "${CASE_OS:-}" = "darwin" ]; then
+        : >"$root/validation.sock"
+    fi
+fi
+trap 'printf "quotavista: SingleInstanceActivation\n" >&2' USR1
+mkdir -p "${TMPDIR:?}/quotavista-prototype"
+dest="${TMPDIR}/quotavista-prototype/quotavista.sqlite"
+copy_db() {
+    if [ -n "${1:-}" ] && [ -f "$1" ]; then
+        cp "$1" "$dest"
+    fi
+}
+case "$count" in
+    1) copy_db "${FIXTURE_ACTIVE:?}" ;;
+    3) copy_db "${FIXTURE_RESTARTED:?}" ;;
+    4)
+        case "${CASE_NOTRAY:-good}" in
+            empty) ;;
+            schema) copy_db "${FIXTURE_SCHEMA:?}" ;;
+            *) copy_db "${FIXTURE_ACTIVE:?}" ;;
+        esac
+        ;;
+esac
+if [ "$count" -eq 4 ] && [ -n "${CASE_FATAL:-}" ]; then
+    printf 'quotavista: %s\n' "$CASE_FATAL" >&2
+fi
+printf 'quotavista: capabilities tray=Unavailable notification=Unconfirmed\n' >&2
+# read is a builtin, so SIGUSR1 runs the trap at once. An external sleep
+# would defer it until that sleep exited, and the probe would miss the line.
+while true; do
+    read -t 30 _ || true
+done
+EOF
+chmod +x "$tmp/fake-desktop"
+
+# main re-sources the library, which would wipe overrides. The dot wrapper
+# puts them back. Diagnostics, snapshot validation, and the bus helpers stay real.
+run_probe_main() {
+    local name="$1"
+    case_root="$tmp/main-$name"
+    case_log="$case_root/probe.log"
+    mkdir -p "$case_root"
+    case_rc=0
+    (
+        export CASE_ROOT="$case_root"
+        export CASE_OS="${CASE_OS:?}"
+        export CASE_DBUS="${CASE_DBUS:-owned}"
+        export CASE_NOTRAY="${CASE_NOTRAY:-good}"
+        export CASE_FATAL="${CASE_FATAL-}"
+        export CASE_CHILD_BUS="unix:path=${case_root}/child-bus"
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=${case_root}/parent-bus"
+        export FIXTURE_ACTIVE FIXTURE_RESTARTED FIXTURE_SCHEMA
+        export QV_FAKE_BIN="$tmp/fake-desktop"
+        # shellcheck disable=SC2329
+        function .() {
+            builtin source "$@"
+            QV_PROBE_BIN="$QV_FAKE_BIN"
+            QV_LOCK_DIR="$CASE_ROOT/lock"
+            qv_ordinary_socket() { printf '%s/ordinary.sock\n' "$CASE_ROOT"; }
+            qv_probe_socket() { printf '%s/validation.sock\n' "$CASE_ROOT"; }
+            qv_host_os() { printf '%s\n' "$CASE_OS"; }
+            gdbus() {
+                printf '%s\n' "$*" >>"$CASE_ROOT/gdbus.log"
+                case "$*" in
+                    *"--address ${CASE_CHILD_BUS}"*"${QV_PROBE_IDENTIFIER}.SingleInstance"*)
+                        case "$CASE_DBUS" in
+                            owned) printf '(true,)\n' ;;
+                            free) printf '(false,)\n' ;;
+                            *) printf 'gdbus: no such bus\n' >&2; return 1 ;;
+                        esac
+                        ;;
+                    *"--session"*)
+                        printf '(false,)\n'
+                        ;;
+                    *)
+                        printf 'gdbus: unexpected invocation\n' >&2
+                        return 1
+                        ;;
+                esac
+            }
+        }
+        main --skip-build
+    ) >"$case_log" 2>&1 || case_rc=$?
+    if pgrep -f "$tmp/fake-desktop" >/dev/null 2>&1; then
+        pkill -f "$tmp/fake-desktop" >/dev/null 2>&1 || true
+        tfail "$name left a test double running" "killed stragglers after main exited"
+    fi
+}
+
+assert_probe() {
+    local name="$1" want_rc="$2"
+    shift 2
+    if [ "$case_rc" -ne "$want_rc" ]; then
+        tfail "$name exits $want_rc" "exited $case_rc" "$(grep -E 'RESULT:|PROBE:' "$case_log" | tail -30)"
+        return
+    fi
+    local pattern
+    for pattern in "$@"; do
+        if ! grep -qF -- "$pattern" "$case_log"; then
+            tfail "$name log contains: $pattern" "missing" "$(tail -40 "$case_log")"
+            return
+        fi
+    done
+    tok "$name"
+}
+
+assert_child_bus() {
+    local name="$1"
+    if [ ! -f "$case_root/gdbus.log" ]; then
+        tfail "$name queried the child bus" "no gdbus.log"
+        return
+    fi
+    if ! grep -qF -- "--address unix:path=${case_root}/child-bus" "$case_root/gdbus.log" ||
+        ! grep -qF -- "${QV_PROBE_IDENTIFIER}.SingleInstance" "$case_root/gdbus.log"; then
+        tfail "$name queried the child bus" "gdbus.log:" "$(cat "$case_root/gdbus.log")"
+        return
+    fi
+    if grep -qF -- "--address unix:path=${case_root}/parent-bus" "$case_root/gdbus.log"; then
+        tfail "$name did not query the caller's bus" "gdbus.log:" "$(cat "$case_root/gdbus.log")"
+        return
+    fi
+    tok "$name queried the launched process's bus, not the caller's"
+}
+
+CASE_OS=darwin
+CASE_DBUS=owned
+CASE_NOTRAY=good
+CASE_FATAL=""
+run_probe_main darwin-pass
+assert_probe "darwin control passes through main" 0 \
+    "PROBE: PASS" \
+    "RESULT: PASS (single-instance isolation from the ordinary application)" \
+    "a validation socket appeared" \
+    "RESULT: PASS (no-tray override reported the tray as unavailable (forced branch))" \
+    "the no-tray run committed the expected deterministic fixture"
+
+CASE_OS=linux
+CASE_DBUS=owned
+CASE_NOTRAY=good
+CASE_FATAL=""
+run_probe_main linux-owned
+assert_probe "linux control passes without a Unix socket" 0 \
+    "PROBE: PASS" \
+    "RESULT: PASS (single-instance isolation from the ordinary application)" \
+    "validation bus name ownership: owned" \
+    "RESULT: PASS (no-tray override reported the tray as unavailable (forced branch))"
+assert_child_bus "linux control"
+if [ -e "$case_root/validation.sock" ]; then
+    tfail "linux control did not require a Unix socket" "validation.sock was created"
+elif grep -qF "no validation socket appeared, so single-instance registration is unconfirmed" "$case_log"; then
+    tfail "linux control did not fail closed on a missing socket" "socket-only failure line was printed"
+else
+    tok "linux control passed with no validation socket"
+fi
+
+CASE_OS=linux
+CASE_DBUS=free
+CASE_NOTRAY=good
+CASE_FATAL=""
+run_probe_main linux-free
+assert_probe "linux free bus name fails isolation" 1 \
+    "PROBE: FAIL" \
+    "RESULT: FAIL (single-instance isolation from the ordinary application)" \
+    "validation bus name ownership: free"
+assert_child_bus "linux free"
+
+CASE_OS=linux
+CASE_DBUS=fail
+CASE_NOTRAY=good
+CASE_FATAL=""
+run_probe_main linux-unknown
+assert_probe "linux unknown bus ownership fails isolation" 1 \
+    "PROBE: FAIL" \
+    "RESULT: FAIL (single-instance isolation from the ordinary application)" \
+    "validation bus name ownership: unknown:query-failed"
+assert_child_bus "linux unknown"
+
+CASE_OS=darwin
+CASE_DBUS=owned
+CASE_NOTRAY=good
+CASE_FATAL="demo seeding failed: synthetic"
+run_probe_main notray-seed
+assert_probe "no-tray demo seeding failed is fatal" 1 \
+    "PROBE: FAIL" \
+    "RESULT: FAIL (no-tray override reported the tray as unavailable (forced branch))" \
+    "RESULT: PASS (single-instance isolation from the ordinary application)" \
+    "RESULT: PASS (cold run committed the expected synthetic fixture)" \
+    "demo seeding failed: synthetic"
+
+CASE_OS=darwin
+CASE_DBUS=owned
+CASE_NOTRAY=good
+CASE_FATAL="credential store unavailable: synthetic"
+run_probe_main notray-secret
+assert_probe "no-tray credential store unavailable is fatal" 1 \
+    "PROBE: FAIL" \
+    "RESULT: FAIL (no-tray override reported the tray as unavailable (forced branch))" \
+    "RESULT: PASS (cold run committed the expected synthetic fixture)" \
+    "credential store unavailable: synthetic"
+
+CASE_OS=darwin
+CASE_DBUS=owned
+CASE_NOTRAY=empty
+CASE_FATAL=""
+run_probe_main notray-empty
+assert_probe "no-tray empty store fails fixture validation" 1 \
+    "PROBE: FAIL" \
+    "RESULT: FAIL (no-tray override reported the tray as unavailable (forced branch))" \
+    "RESULT: PASS (cold run committed the expected synthetic fixture)" \
+    "no database"
+
+CASE_OS=darwin
+CASE_DBUS=owned
+CASE_NOTRAY=schema
+CASE_FATAL=""
+run_probe_main notray-schema
+assert_probe "no-tray schema-only store fails fixture validation" 1 \
+    "PROBE: FAIL" \
+    "RESULT: FAIL (no-tray override reported the tray as unavailable (forced branch))" \
+    "RESULT: PASS (cold run committed the expected synthetic fixture)" \
+    "the no-tray store did not match the expected fixture"
 
 echo
 if [ "$failures" -ne 0 ]; then
