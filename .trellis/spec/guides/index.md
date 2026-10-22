@@ -65,6 +65,14 @@ These guides help you **ask the right questions before coding**.
 
 **Verification rule**: Every CRITICAL/WARNING finding must be verified against the actual code before prioritizing. Budget ~35% false-positive rate for AI reviews.
 
+### When Archiving a Trellis Task
+
+- [ ] Which `docs/` files link to `.trellis/tasks/<task-dir>/…`? `grep -rn "<task-dir>" docs/`
+- [ ] Which other task artifacts link to it as `../<task-dir>/…`? Archiving moves the directory under `.trellis/tasks/archive/YYYY-MM/`, so both link shapes break silently — nothing fails until a human clicks.
+- [ ] `task.json` `meta.depends_on` holds bare task **ids**, not links. Leave those alone.
+- [ ] Re-run a local-link check over `docs/**`, the active task directory, `README.md`, `CONTRIBUTING.md`, and `AGENTS.md` before committing. A24 counts valid local links as evidence, so a broken link is a documentation defect, not a cosmetic nit.
+- [ ] Check whether prose status lines went stale at the same time: "application implementation has not started", "all tasks are in planning", "the next implementation target is P1-01". Archiving is the moment they become false, and a stale status line reads as a false claim.
+
 ---
 
 ## Pre-Modification Rule (CRITICAL)

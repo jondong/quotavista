@@ -2,7 +2,7 @@
 
 Date: 2026-10-18
 
-Status: Task decomposition complete; application implementation has not started
+Status: P1-01 through P1-12 are merged and archived. P1-13 is in progress and incomplete; see the [Phase 1 exit assessment](validation/phase-one-exit-assessment.md)
 
 Baseline: [Requirements 0.9](requirements.md), [Architecture 0.4](architecture.md), and [development plan](development-plan.md). [Trellis workflow instructions](task-management.md) describe setup and task operations.
 
@@ -19,18 +19,18 @@ The [parent milestone](../.trellis/tasks/10-18-phase-one-prototype/prd.md) owns 
 | Task | Deliverable | Prerequisites | Initial state |
 | --- | --- | --- | --- |
 | [P1-01](../.trellis/tasks/archive/2026-10/10-18-p1-01-workspace/prd.md) | Scaffold the desktop workspace and reproducible checks | None | Completed and archived; PR #1 merged |
-| [P1-02](../.trellis/tasks/10-18-p1-02-contracts/prd.md) | Define domain primitives and checked IPC contracts | P1-01 | Implemented with synthetic fixtures; awaiting PR review |
-| [P1-03](../.trellis/tasks/10-18-p1-03-sqlite/prd.md) | Implement SQLite persistence and candidate publication | P1-02 | Planning |
-| [P1-04](../.trellis/tasks/10-18-p1-04-recovery-fences/prd.md) | Establish lifecycle journals and stale-result fences | P1-03 | Planning |
-| [P1-05](../.trellis/tasks/10-18-p1-05-secret-stores/prd.md) | Implement native and session-only secret storage | P1-04 | Planning |
-| [P1-06](../.trellis/tasks/10-18-p1-06-simulation/prd.md) | Add deterministic simulated providers and refresh coordination | P1-04 | Planning |
-| [P1-07](../.trellis/tasks/10-18-p1-07-ipc/prd.md) | Compose the backend behind restricted Tauri IPC | P1-05, P1-06 | Planning |
-| [P1-08](../.trellis/tasks/10-18-p1-08-bilingual-shell/prd.md) | Build the bilingual desktop navigation and display foundations | P1-02 | Planning |
-| [P1-09](../.trellis/tasks/10-18-p1-09-overview-statistics/prd.md) | Implement simulated overview and period statistics views | P1-07, P1-08 | Planning |
-| [P1-10](../.trellis/tasks/10-18-p1-10-connections-settings/prd.md) | Implement prototype connection and settings flows | P1-07, P1-08 | Planning |
-| [P1-11](../.trellis/tasks/10-18-p1-11-desktop-lifecycle/prd.md) | Implement desktop lifecycle and native integration fallbacks | P1-07, P1-08 | Planning |
-| [P1-12](../.trellis/tasks/10-18-p1-12-integration-validation/prd.md) | Validate prototype recovery, bilingual flows, and local query budgets | P1-09, P1-10, P1-11 | Planning |
-| [P1-13](../.trellis/tasks/10-18-p1-13-native-validation/prd.md) | Validate native macOS and Ubuntu prototype behavior | P1-12 | Planning |
+| [P1-02](../.trellis/tasks/archive/2026-10/10-18-p1-02-contracts/prd.md) | Define domain primitives and checked IPC contracts | P1-01 | Completed and archived; PR #2 merged |
+| [P1-03](../.trellis/tasks/archive/2026-10/10-18-p1-03-sqlite/prd.md) | Implement SQLite persistence and candidate publication | P1-02 | Completed and archived; PR #4 merged |
+| [P1-04](../.trellis/tasks/archive/2026-10/10-18-p1-04-recovery-fences/prd.md) | Establish lifecycle journals and stale-result fences | P1-03 | Completed and archived; PR #5 merged |
+| [P1-05](../.trellis/tasks/archive/2026-10/10-18-p1-05-secret-stores/prd.md) | Implement native and session-only secret storage | P1-04 | Completed and archived; PR #7 merged |
+| [P1-06](../.trellis/tasks/archive/2026-10/10-18-p1-06-simulation/prd.md) | Add deterministic simulated providers and refresh coordination | P1-04 | Completed and archived; PR #6 merged |
+| [P1-07](../.trellis/tasks/archive/2026-10/10-18-p1-07-ipc/prd.md) | Compose the backend behind restricted Tauri IPC | P1-05, P1-06 | Completed and archived; PR #8 merged |
+| [P1-08](../.trellis/tasks/archive/2026-10/10-18-p1-08-bilingual-shell/prd.md) | Build the bilingual desktop navigation and display foundations | P1-02 | Completed and archived; PR #3 merged |
+| [P1-09](../.trellis/tasks/archive/2026-10/10-18-p1-09-overview-statistics/prd.md) | Implement simulated overview and period statistics views | P1-07, P1-08 | Completed and archived; PR #10 merged |
+| [P1-10](../.trellis/tasks/archive/2026-10/10-18-p1-10-connections-settings/prd.md) | Implement prototype connection and settings flows | P1-07, P1-08 | Completed and archived; PR #9 merged |
+| [P1-11](../.trellis/tasks/archive/2026-10/10-18-p1-11-desktop-lifecycle/prd.md) | Implement desktop lifecycle and native integration fallbacks | P1-07, P1-08 | Completed and archived; PR #11 merged |
+| [P1-12](../.trellis/tasks/archive/2026-10/10-18-p1-12-integration-validation/prd.md) | Validate prototype recovery, bilingual flows, and local query budgets | P1-09, P1-10, P1-11 | Completed and archived; PR #12 merged |
+| [P1-13](../.trellis/tasks/10-18-p1-13-native-validation/prd.md) | Validate native macOS and Ubuntu prototype behavior | P1-12 | In progress and incomplete; see the [exit assessment](validation/phase-one-exit-assessment.md) |
 
 The table records the initial plan, not live task status. Use `task.py list` and each `task.json` for current status. Completed tasks move to `.trellis/tasks/archive/YYYY-MM/`; resolve their stable task directory name there after archiving. These initial planning links may need updating as tasks move.
 
@@ -66,6 +66,8 @@ Record macOS OS/architecture and Ubuntu 26.04/GNOME/x86_64 with the actual Wayla
 
 G01/G02 remain open until real provider validation. G04 retains release work even when prototype native checks pass. Requirements A01-A25 remain governed by the acceptance mapping; prototype tests contribute evidence without closing unrelated release obligations.
 
+Current status (2026-10-21): the [Phase 1 exit assessment](validation/phase-one-exit-assessment.md) records this milestone as **INCOMPLETE**. Non-interactive native checks pass on the recorded macOS host; the sixteen interactive desktop observations are pending a human operator; and no Ubuntu 26.04 GNOME x86_64 machine was available, so every Linux row is unverified rather than expected-to-pass. The procedure an operator follows is [native-target-procedure.md](validation/native-target-procedure.md). The milestone stays open and P1-13 stays incomplete until both targets carry actual observations.
+
 ## Starting point
 
-The next implementation target is P1-01. Its prerequisites are empty. All other child tasks wait for the predecessors recorded in `meta.depends_on` and their PRD/execution plan. Trellis does not enforce this dependency graph; the task owner must verify completed active or archived records before activation. The parent is a milestone and should not be activated as a substitute for child work.
+The remaining implementation target is P1-13, whose only predecessor (P1-12) is archived. Trellis does not enforce this dependency graph; the task owner must verify completed active or archived records before activation. The parent is a milestone and should not be activated as a substitute for child work, and it stays open until its own cross-task exit gate passes — which it does not yet, because the native validation is incomplete.
