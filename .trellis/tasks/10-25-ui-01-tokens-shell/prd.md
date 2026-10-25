@@ -17,12 +17,12 @@ Introduce CSS design tokens and polish the application shell (header, navigation
 
 ## Acceptance criteria
 
-- [ ] Token variables cover colors, spacing, type scale, radius, and focus; shell rules consume tokens rather than one-off hex/spacing litter for header/nav/banner.
-- [ ] Light and dark `color-scheme` both remain readable for shell chrome (no white-on-white / black-on-black regressions in either scheme).
-- [ ] Synthetic/demo banner stays highly visible and clearly non-production.
-- [ ] Keyboard focus (`:focus-visible`), skip link, and `aria-current` navigation behaviour remain intact.
-- [ ] Language switching still preserves the current screen; catalog parity check still passes.
-- [ ] Desktop frontend checks pass: in `apps/desktop`, `npm ci` (if needed), `npm run lint`, `npm run i18n:check`, `npm test`, `npm run typecheck`, `npm run build`; also `git diff --check`.
+- [x] Token variables cover colors, spacing, type scale, radius, and focus; shell rules consume tokens rather than one-off hex/spacing litter for header/nav/banner.
+- [x] Light and dark `color-scheme` both remain readable for shell chrome (no white-on-white / black-on-black regressions in either scheme).
+- [x] Synthetic/demo banner stays highly visible and clearly non-production.
+- [x] Keyboard focus (`:focus-visible`), skip link, and `aria-current` navigation behaviour remain intact.
+- [x] Language switching still preserves the current screen; catalog parity check still passes.
+- [x] Desktop frontend checks pass: in `apps/desktop`, `npm ci` (if needed), `npm run lint`, `npm run i18n:check`, `npm test`, `npm run typecheck`, `npm run build`; also `git diff --check`.
 
 ## Out of scope / constraints
 
@@ -36,4 +36,4 @@ Introduce CSS design tokens and polish the application shell (header, navigation
 
 ## Planning status
 
-Ready for implementation on branch `jondong/ui-01-tokens-shell`.
+Ready for implementation on branch `jondong/ui-polish-tokens-shell`.

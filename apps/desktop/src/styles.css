@@ -40,6 +40,7 @@
   --color-accent-hover: #1d4ed8;
   --color-accent-subtle: #e8effd;
   --color-accent-contrast: #ffffff;
+  --color-accent-text: #1d4ed8;
   --color-warning: #b45309;
   --color-warning-surface: #fdf1e3;
   --color-danger: #b91c1c;
@@ -64,6 +65,7 @@
     --color-accent-hover: #9dbcff;
     --color-accent-subtle: #1d2a45;
     --color-accent-contrast: #10131a;
+    --color-accent-text: #7aa5ff;
     --color-warning: #f0a44e;
     --color-warning-surface: #35260f;
     --color-danger: #f0958f;
@@ -197,7 +199,7 @@ body {
 .nav-button[aria-current="page"] {
   background: var(--color-accent-subtle);
   border-color: var(--color-accent);
-  color: var(--color-accent);
+  color: var(--color-accent-text);
   font-weight: var(--font-weight-semibold);
 }
 

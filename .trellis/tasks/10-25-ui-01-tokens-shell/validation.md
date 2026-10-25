@@ -38,3 +38,16 @@ All required local validation passed in this worktree. Commands run in `apps/des
 ## Notes for UI-02/UI-03
 
 Screen content layouts (Overview/Statistics/Connections/Settings) were not restructured. Shared rules those screens already consume (`.error`, `.empty`, `.note`, charts, tables, `dt`/`dd`) now draw from tokens, so UI-02/UI-03 should reuse `--color-*`, `--space-*`, and `--font-size-*` rather than introduce new one-off values.
+
+## Review round 1 fixes
+
+The local-first review requested one blocking change (B1): the light-mode selected-navigation pair (`--color-accent` `#2563eb` text on `--color-accent-subtle` `#e8effd` fill) measured 4.48:1, below the WCAG AA 4.5:1 normal-text benchmark, regressing from the pre-change 5.17:1 on white.
+
+Fixed in the token layer only: a new `--color-accent-text` token carries text-on-tint accent color. Light scheme sets it to `#1d4ed8` (the existing hover accent), and `.nav-button[aria-current="page"]` now consumes it. WCAG relative-luminance computation (0.2126R + 0.7152G + 0.0722B over linearized sRGB, ratio `(L1+0.05)/(L2+0.05)`):
+
+- Light selected nav: `#1d4ed8` on `#e8effd` = **5.81:1** (was 4.48:1). Also 6.70:1 on white and 6.25:1 on `--color-surface-raised`, so the state stays compliant wherever the button sits.
+- Dark selected nav: `--color-accent-text: #7aa5ff` on `#1d2a45` = **5.89:1**, identical to the reviewed pair — no dark regression.
+- Light warning banner untouched at `#b45309` on `#fdf1e3` = 4.51:1, per the review's caution not to lighten that pair.
+- Normal nav buttons (`color: inherit`, body text on surface) and hover state (raised surface + accent border) are unaffected.
+
+Re-ran in `apps/desktop` after the fix: `npm run lint` (no issues), `npm run i18n:check` (217 keys, placeholders matching), `npm test` (8 files, 82 tests, 0 failed), `npm run typecheck` (clean), `npm run build` (44 modules), and `git diff --check` (clean). Review nits also reconciled: the stale branch name in `prd.md`/`implement.md` now reads `jondong/ui-polish-tokens-shell`, and the PRD/implementation checkboxes are checked against this verified evidence.
