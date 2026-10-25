@@ -49,17 +49,17 @@ export default function MetricValue({ metric }: { metric: MetricDto }) {
   }
   switch (metric.unit.kind) {
     case "tokens":
-      return <>{formatTokens(value)}</>;
+      return <span className="metric-value">{formatTokens(value)}</span>;
     case "money":
       return (
-        <>
+        <span className="metric-value">
           {formatDecimal(value)} {metric.unit.currency}
-        </>
+        </span>
       );
     case "ratio":
-      return <>{formatPercent(value)}</>;
+      return <span className="metric-value">{formatPercent(value)}</span>;
     case "percentage_points":
     case "native":
-      return <>{formatDecimal(value)}</>;
+      return <span className="metric-value">{formatDecimal(value)}</span>;
   }
 }

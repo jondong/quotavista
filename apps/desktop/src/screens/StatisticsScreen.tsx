@@ -372,7 +372,7 @@ export default function StatisticsScreen() {
       ) : (
         <>
           {failed ? <p role="alert" className="error">{t("statistics.error.queryFailed")}</p> : null}
-          <p>
+          <p className="note">
             {t("statistics.range.summary", {
               start: range.start,
               end: range.end,
@@ -380,7 +380,7 @@ export default function StatisticsScreen() {
               grain: grainLabel,
             })}
           </p>
-          <p>
+          <p className="note">
             {t("statistics.range.asOf", {
               instant: formatDateTime(new Date(stats.as_of), REPORTING_ZONE),
             })}

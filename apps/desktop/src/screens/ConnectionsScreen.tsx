@@ -107,7 +107,7 @@ function CredentialFields({
 
   return (
     <>
-      <div>
+      <div className="form-field">
         <label htmlFor={`${idPrefix}-credential-kind`}>
           {t("connections.add.credentialKind")}
         </label>
@@ -127,7 +127,7 @@ function CredentialFields({
           </option>
         </select>
       </div>
-      <div>
+      <div className="form-field">
         <label htmlFor={`${idPrefix}-secret`}>{t("connections.add.secret")}</label>
         <input
           id={`${idPrefix}-secret`}
@@ -138,7 +138,7 @@ function CredentialFields({
         />
         <p className="note">{t("connections.add.secret.hint")}</p>
       </div>
-      <div>
+      <div className="form-field">
         <label htmlFor={`${idPrefix}-storage-mode`}>{t("connections.add.storageMode")}</label>
         <select
           id={`${idPrefix}-storage-mode`}
@@ -160,7 +160,7 @@ function OperationStatus({ operation }: { operation: OperationDto }) {
   const { t } = useI18n();
   const hint = NEXT_ACTION_HINTS[operation.next_action];
   return (
-    <div className="subsection">
+    <div className="subsection operation-status" data-state={operation.state}>
       <h4>{t("connections.operation.heading")}</h4>
       <p>
         {t(OPERATION_KIND_LABELS[operation.kind])} —{" "}
@@ -370,7 +370,7 @@ export default function ConnectionsScreen() {
               <tr key={connection.connection_id}>
                 <td>
                   {renameFor === connection.connection_id ? (
-                    <>
+                    <span className="rename-editor">
                       <label htmlFor={`rename-${connection.connection_id}`}>
                         {t("connections.alias.renameLabel")}
                       </label>
@@ -400,7 +400,7 @@ export default function ConnectionsScreen() {
                       <button type="button" onClick={() => setRenameFor(null)}>
                         {t("common.action.cancel")}
                       </button>
-                    </>
+                    </span>
                   ) : (
                     <>
                       {connection.alias}
@@ -514,15 +514,17 @@ export default function ConnectionsScreen() {
               draft={rotateDraft}
               onChange={setRotateDraft}
             />
-            <button type="submit" className="button-primary" disabled={rotateBusy}>
-              {t("connections.rotate.submit")}
-            </button>
-            <p className="note">{t("connections.rotate.note")}</p>
+            <div className="form-actions">
+              <button type="submit" className="button-primary" disabled={rotateBusy}>
+                {t("connections.rotate.submit")}
+              </button>
+              <p className="note">{t("connections.rotate.note")}</p>
+            </div>
           </form>
         ))}
 
       {lastError ? (
-        <div role="alert" className="subsection">
+        <div role="alert" className="subsection error">
           <h4>{t("connections.error.heading")}</h4>
           <p>{lastError}</p>
         </div>
@@ -538,7 +540,7 @@ export default function ConnectionsScreen() {
         }}
       >
         <h3>{t("connections.add.heading")}</h3>
-        <div>
+        <div className="form-field">
           <label htmlFor="add-provider">{t("connections.add.provider")}</label>
           <select
             id="add-provider"
@@ -549,7 +551,7 @@ export default function ConnectionsScreen() {
             <option value="openrouter">{t("connections.provider.openrouter")}</option>
           </select>
         </div>
-        <div>
+        <div className="form-field">
           <label htmlFor="add-alias">{t("connections.add.alias")}</label>
           <input
             id="add-alias"
@@ -561,10 +563,12 @@ export default function ConnectionsScreen() {
           <p className="note">{t("connections.alias.hint")}</p>
         </div>
         <CredentialFields idPrefix="add" draft={addDraft} onChange={setAddDraft} />
-        <button type="submit" className="button-primary" disabled={addBusy}>
-          {t("connections.add.submit")}
-        </button>
-        <p className="note">{t("connections.add.note")}</p>
+        <div className="form-actions">
+          <button type="submit" className="button-primary" disabled={addBusy}>
+            {t("connections.add.submit")}
+          </button>
+          <p className="note">{t("connections.add.note")}</p>
+        </div>
       </form>
     </section>
   );
