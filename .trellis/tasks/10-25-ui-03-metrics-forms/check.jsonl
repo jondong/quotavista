@@ -1,0 +1,5 @@
+{"file": "docs/requirements.md", "reason": "Product requirements for verification"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend quality checks"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Bilingual validation commands"}
+{"file": ".trellis/tasks/10-25-ui-03-metrics-forms/prd.md", "reason": "Acceptance criteria to verify"}
+{"file": ".trellis/tasks/10-25-ui-03-metrics-forms/validation.md", "reason": "Per-criterion evidence and command output for review"}

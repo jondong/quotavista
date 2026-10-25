@@ -1,0 +1,9 @@
+{"file": "docs/requirements.md", "reason": "Authoritative product requirements 0.9"}
+{"file": "docs/architecture.md", "reason": "Metric and statistics transport DTOs"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend project constraints"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component and accessibility rules for metrics and forms"}
+{"file": ".trellis/tasks/10-25-ui-polish/prd.md", "reason": "Parent milestone scope"}
+{"file": ".trellis/tasks/10-25-ui-03-metrics-forms/prd.md", "reason": "This task acceptance"}
+{"file": ".trellis/tasks/archive/2026-10/10-25-ui-01-tokens-shell/validation.md", "reason": "UI-01 token contract"}
+{"file": ".trellis/tasks/archive/2026-10/10-25-ui-02-four-screens/validation.md", "reason": "UI-02 screen layout contract and boundaries"}
+{"file": ".trellis/tasks/10-25-ui-03-metrics-forms/implement.md", "reason": "Execution plan with completion status for the UI-03 metric and form readability work"}

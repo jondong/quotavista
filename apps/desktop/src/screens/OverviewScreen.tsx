@@ -149,7 +149,7 @@ export default function OverviewScreen() {
   return (
     <section className="panel">
       <h2>{t("nav.overview")}</h2>
-      <p>
+      <p className="note">
         {t("overview.summary.range", {
           start: todayUtc(),
           end: todayUtc(),
