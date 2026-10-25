@@ -1,0 +1,38 @@
+{
+  "id": "ui-polish",
+  "name": "ui-polish",
+  "title": "UI polish \u2014 design tokens and screen visuals",
+  "description": "Visual polish for the bilingual desktop prototype: design tokens, shell chrome, and screen readability without changing IPC contracts or adding real providers.",
+  "status": "planning",
+  "dev_type": "frontend",
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-25",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-25-ui-01-tokens-shell",
+    "10-25-ui-02-four-screens",
+    "10-25-ui-03-metrics-forms"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "milestone",
+    "track": "ui-polish",
+    "note": "Separate from official Phase 2 provider validation in docs/development-plan.md",
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

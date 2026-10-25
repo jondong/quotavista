@@ -1,0 +1,36 @@
+{
+  "id": "ui-02-four-screens",
+  "name": "ui-02-four-screens",
+  "title": "UI-02: Four-screen layout polish",
+  "description": "Polish layout density and visual hierarchy on Overview, Statistics, Connections, and Settings screens after UI-01 tokens land.",
+  "status": "planning",
+  "dev_type": "frontend",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-25",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-25-ui-polish",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "track": "ui-polish",
+    "plan_id": "UI-02",
+    "depends_on": [
+      "10-25-ui-01-tokens-shell"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}
