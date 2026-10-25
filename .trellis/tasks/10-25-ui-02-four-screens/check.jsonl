@@ -1,0 +1,5 @@
+{"file": "docs/requirements.md", "reason": "Product requirements for verification"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend quality checks"}
+{"file": ".trellis/tasks/10-25-ui-02-four-screens/prd.md", "reason": "Acceptance criteria to verify"}
+{"file": ".trellis/tasks/10-25-ui-02-four-screens/design.md", "reason": "Design boundaries"}
+{"file": ".trellis/tasks/10-25-ui-02-four-screens/validation.md", "reason": "Per-criterion evidence and command output for review"}

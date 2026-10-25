@@ -46,7 +46,7 @@ function ScopeSection({ metrics }: { metrics: MetricDto[] }) {
   const scopeId = metrics[0]?.scope_id ?? "";
   const plan = metrics[0]?.product_id ?? null;
   return (
-    <section>
+    <section className="subsection">
       <h3>{t("overview.scope.heading", { scope: scopeId })}</h3>
       {plan ? <p>{t("overview.scope.plan", { plan })}</p> : null}
       <dl className="metric-list">
@@ -132,9 +132,11 @@ export default function OverviewScreen() {
       <section className="panel">
         <h2>{t("nav.overview")}</h2>
         {failed ? (
-          <p role="alert">{t("overview.error.statusUnavailable")}</p>
+          <p role="alert" className="error">
+            {t("overview.error.statusUnavailable")}
+          </p>
         ) : (
-          <p>{t("common.loading")}</p>
+          <p className="note">{t("common.loading")}</p>
         )}
       </section>
     );
@@ -155,7 +157,7 @@ export default function OverviewScreen() {
         })}
         {summary.provisional ? ` ${t("overview.summary.provisional", { asOf })}` : ""}
       </p>
-      <section>
+      <section className="subsection">
         <h3>{t("overview.summary.heading")}</h3>
         <dl className="metric-list">
           {total ? (

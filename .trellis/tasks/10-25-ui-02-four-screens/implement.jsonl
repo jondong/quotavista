@@ -1,0 +1,7 @@
+{"file": "docs/requirements.md", "reason": "Authoritative product requirements 0.9"}
+{"file": "docs/architecture.md", "reason": "Reviewed architecture 0.4"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend project constraints"}
+{"file": ".trellis/tasks/10-25-ui-polish/prd.md", "reason": "Parent milestone scope"}
+{"file": ".trellis/tasks/10-25-ui-02-four-screens/prd.md", "reason": "This task acceptance"}
+{"file": ".trellis/tasks/archive/2026-10/10-25-ui-01-tokens-shell/validation.md", "reason": "UI-01 token contract and notes for UI-02"}
+{"file": ".trellis/tasks/10-25-ui-02-four-screens/implement.md", "reason": "Execution plan with completion status for the UI-02 screen layout work"}

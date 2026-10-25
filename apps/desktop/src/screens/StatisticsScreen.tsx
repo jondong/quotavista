@@ -220,6 +220,7 @@ function LaneChart({
 function PlanTable({ stats }: { stats: StatisticsDto }) {
   const { t } = useI18n();
   return (
+    <div className="table-wrap">
     <table className="plans-table">
       <thead>
         <tr>
@@ -255,6 +256,7 @@ function PlanTable({ stats }: { stats: StatisticsDto }) {
         })}
       </tbody>
     </table>
+    </div>
   );
 }
 
@@ -363,13 +365,13 @@ export default function StatisticsScreen() {
 
       {!stats ? (
         failed ? (
-          <p role="alert">{t("statistics.error.queryFailed")}</p>
+          <p role="alert" className="error">{t("statistics.error.queryFailed")}</p>
         ) : (
-          <p>{t("common.loading")}</p>
+          <p className="note">{t("common.loading")}</p>
         )
       ) : (
         <>
-          {failed ? <p role="alert">{t("statistics.error.queryFailed")}</p> : null}
+          {failed ? <p role="alert" className="error">{t("statistics.error.queryFailed")}</p> : null}
           <p>
             {t("statistics.range.summary", {
               start: range.start,
@@ -384,7 +386,7 @@ export default function StatisticsScreen() {
             })}
             {stats.provisional ? ` ${t("statistics.range.provisional")}` : ""}
           </p>
-          <section>
+          <section className="subsection">
             <h3>{t("statistics.total.recordedTokens")}</h3>
             <p className="statistics-total">
               {stats.totals
@@ -398,13 +400,13 @@ export default function StatisticsScreen() {
             lanes.set(point.zone, lane);
             return lanes;
           }, new Map())].map(([zone, points], index) => (
-            <section key={zone} className="statistics-lane">
+            <section key={zone} className="statistics-lane subsection">
               <h3>{t("statistics.series.zoneLane", { zone })}</h3>
               <LaneChart lane={{ zone, points }} laneIndex={index} grainLabel={grainLabel} />
             </section>
           ))}
           {stats.excluded_scopes.length > 0 ? (
-            <section>
+            <section className="subsection">
               <h3>{t("statistics.excluded.heading")}</h3>
               <ul>
                 {stats.excluded_scopes.map((excluded) => (
@@ -420,7 +422,7 @@ export default function StatisticsScreen() {
               </ul>
             </section>
           ) : null}
-          <section>
+          <section className="subsection">
             <h3>{t("statistics.plans.heading")}</h3>
             <PlanTable stats={stats} />
           </section>

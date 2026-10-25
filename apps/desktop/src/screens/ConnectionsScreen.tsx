@@ -160,7 +160,7 @@ function OperationStatus({ operation }: { operation: OperationDto }) {
   const { t } = useI18n();
   const hint = NEXT_ACTION_HINTS[operation.next_action];
   return (
-    <div>
+    <div className="subsection">
       <h4>{t("connections.operation.heading")}</h4>
       <p>
         {t(OPERATION_KIND_LABELS[operation.kind])} —{" "}
@@ -330,20 +330,31 @@ export default function ConnectionsScreen() {
   };
 
   if (failed) {
-    return <p role="alert" className="error">{t("common.error")}</p>;
+    return (
+      <section className="panel">
+        <h2>{t("connections.heading")}</h2>
+        <p role="alert" className="error">{t("common.error")}</p>
+      </section>
+    );
   }
   if (!connections) {
-    return <p role="status">{t("common.loading")}</p>;
+    return (
+      <section className="panel">
+        <h2>{t("connections.heading")}</h2>
+        <p role="status" className="note">{t("common.loading")}</p>
+      </section>
+    );
   }
 
   return (
-    <section aria-labelledby="connections-heading">
+    <section className="panel" aria-labelledby="connections-heading">
       <h2 id="connections-heading">{t("connections.heading")}</h2>
 
       <h3>{t("connections.list.heading")}</h3>
       {connections.connections.length === 0 ? (
-        <p>{t("connections.list.empty")}</p>
+        <p className="empty">{t("connections.list.empty")}</p>
       ) : (
+        <div className="table-wrap">
         <table>
           <thead>
             <tr>
@@ -416,7 +427,7 @@ export default function ConnectionsScreen() {
                   ) : null}
                 </td>
                 <td>{connection.config_revision}</td>
-                <td>
+                <td className="connections-actions">
                   <button
                     type="button"
                     disabled={connection.lifecycle !== "active" && connection.lifecycle !== "needs_credentials"}
@@ -483,12 +494,14 @@ export default function ConnectionsScreen() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
 
       {connections.connections
         .filter((connection) => connection.connection_id === rotateFor)
         .map((connection) => (
           <form
+            className="subsection"
             key={connection.connection_id}
             onSubmit={(event) => {
               event.preventDefault();
@@ -501,7 +514,7 @@ export default function ConnectionsScreen() {
               draft={rotateDraft}
               onChange={setRotateDraft}
             />
-            <button type="submit" disabled={rotateBusy}>
+            <button type="submit" className="button-primary" disabled={rotateBusy}>
               {t("connections.rotate.submit")}
             </button>
             <p className="note">{t("connections.rotate.note")}</p>
@@ -509,7 +522,7 @@ export default function ConnectionsScreen() {
         ))}
 
       {lastError ? (
-        <div role="alert">
+        <div role="alert" className="subsection">
           <h4>{t("connections.error.heading")}</h4>
           <p>{lastError}</p>
         </div>
@@ -518,6 +531,7 @@ export default function ConnectionsScreen() {
       {lastOperation ? <OperationStatus operation={lastOperation} /> : null}
 
       <form
+        className="subsection"
         onSubmit={(event) => {
           event.preventDefault();
           void submitAdd();
@@ -547,7 +561,7 @@ export default function ConnectionsScreen() {
           <p className="note">{t("connections.alias.hint")}</p>
         </div>
         <CredentialFields idPrefix="add" draft={addDraft} onChange={setAddDraft} />
-        <button type="submit" disabled={addBusy}>
+        <button type="submit" className="button-primary" disabled={addBusy}>
           {t("connections.add.submit")}
         </button>
         <p className="note">{t("connections.add.note")}</p>
