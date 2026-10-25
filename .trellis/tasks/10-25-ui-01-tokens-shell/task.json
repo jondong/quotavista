@@ -3,7 +3,7 @@
   "name": "ui-01-tokens-shell",
   "title": "UI-01: Design tokens and shell chrome polish",
   "description": "Introduce CSS design tokens and polish shell chrome (header, nav, synthetic banner, dark/light consistency) in apps/desktop without adding a UI component library.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": "frontend",
   "scope": null,
   "package": null,
