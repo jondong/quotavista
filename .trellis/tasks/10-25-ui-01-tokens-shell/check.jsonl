@@ -1,0 +1,5 @@
+{"file": "docs/requirements.md", "reason": "Authoritative product requirements 0.9"}
+{"file": "docs/architecture.md", "reason": "Reviewed architecture 0.4"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend project constraints"}
+{"file": ".trellis/tasks/10-25-ui-01-tokens-shell/prd.md", "reason": "Acceptance criteria to verify"}
+{"file": ".trellis/tasks/10-25-ui-01-tokens-shell/design.md", "reason": "Design boundaries"}

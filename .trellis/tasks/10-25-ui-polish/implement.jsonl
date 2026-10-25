@@ -1,0 +1,3 @@
+{"file": "docs/requirements.md", "reason": "Authoritative product requirements 0.9"}
+{"file": "docs/development-plan.md", "reason": "Keep UI track separate from Phase 2 provider validation"}
+{"file": "apps/desktop/src/styles.css", "reason": "Shared visual surface"}

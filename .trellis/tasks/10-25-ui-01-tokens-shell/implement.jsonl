@@ -1,0 +1,6 @@
+{"file": "docs/requirements.md", "reason": "Authoritative product requirements 0.9"}
+{"file": "docs/architecture.md", "reason": "Reviewed architecture 0.4"}
+{"file": "docs/development-plan.md", "reason": "UI polish is separate from Phase 2 provider validation"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend project constraints"}
+{"file": ".trellis/tasks/10-25-ui-polish/prd.md", "reason": "Parent milestone scope"}
+{"file": ".trellis/tasks/10-25-ui-01-tokens-shell/prd.md", "reason": "This task acceptance"}

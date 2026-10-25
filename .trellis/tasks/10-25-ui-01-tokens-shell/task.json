@@ -1,0 +1,34 @@
+{
+  "id": "ui-01-tokens-shell",
+  "name": "ui-01-tokens-shell",
+  "title": "UI-01: Design tokens and shell chrome polish",
+  "description": "Introduce CSS design tokens and polish shell chrome (header, nav, synthetic banner, dark/light consistency) in apps/desktop without adding a UI component library.",
+  "status": "planning",
+  "dev_type": "frontend",
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-25",
+  "completedAt": null,
+  "branch": "jondong/ui-polish-tokens-shell",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-25-ui-polish",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "track": "ui-polish",
+    "plan_id": "UI-01",
+    "depends_on": [],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}
