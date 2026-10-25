@@ -71,7 +71,7 @@ export default function SettingsScreen() {
 
   if (!settings || !drafts) {
     return (
-      <section aria-labelledby="settings-heading">
+      <section className="panel" aria-labelledby="settings-heading">
         <h2 id="settings-heading">{t("settings.heading")}</h2>
         {error ? (
           <p role="alert" className="error">
@@ -81,7 +81,7 @@ export default function SettingsScreen() {
             </button>
           </p>
         ) : (
-          <p role="status">{t("common.loading")}</p>
+          <p role="status" className="note">{t("common.loading")}</p>
         )}
       </section>
     );
@@ -132,15 +132,18 @@ export default function SettingsScreen() {
   };
 
   return (
-    <section aria-labelledby="settings-heading">
+    <section className="panel" aria-labelledby="settings-heading">
       <h2 id="settings-heading">{t("settings.heading")}</h2>
 
+      <section className="subsection">
       <h3>{t("settings.language.label")}</h3>
       <div className="language-control">
         <LanguageSelect idPrefix="settings" />
         <p className="note">{t("settings.language.hint")}</p>
       </div>
+      </section>
 
+      <section className="subsection">
       <h3>{t("settings.reporting.heading")}</h3>
       <div>
         <label htmlFor="settings-zone">{t("settings.reporting.zone")}</label>
@@ -164,6 +167,8 @@ export default function SettingsScreen() {
       </div>
       <p className="note">{t("settings.reporting.note")}</p>
 
+      </section>
+      <section className="subsection">
       <h3>{t("settings.polling.heading")}</h3>
       <div>
         <label htmlFor="settings-polling">{t("settings.polling.label")}</label>
@@ -182,7 +187,9 @@ export default function SettingsScreen() {
         </select>
         <p className="note">{t("settings.polling.note")}</p>
       </div>
+      </section>
 
+      <section className="subsection">
       <h3>{t("settings.thresholds.heading")}</h3>
       <div>
         <label htmlFor="settings-quota-threshold">{t("settings.thresholds.quota")}</label>
@@ -209,11 +216,19 @@ export default function SettingsScreen() {
         <p className="note">{t("settings.thresholds.balance.hint")}</p>
       </div>
       <p className="note">{t("settings.thresholds.note")}</p>
+      </section>
 
-      <button type="button" disabled={busy} onClick={() => void submit()}>
-        {t("settings.save")}
-      </button>
-      {saved ? <p role="status">{t("settings.saved")}</p> : null}
+      <div className="subsection form-actions">
+        <button
+          type="button"
+          className="button-primary"
+          disabled={busy}
+          onClick={() => void submit()}
+        >
+          {t("settings.save")}
+        </button>
+        {saved ? <p role="status">{t("settings.saved")}</p> : null}
+      </div>
       {saveError ? <p role="alert" className="error">{saveError}</p> : null}
       {error ? (
         <p role="alert" className="error">
@@ -224,8 +239,10 @@ export default function SettingsScreen() {
         </p>
       ) : null}
 
+      <section className="subsection">
       <h3>{t("settings.prototype.heading")}</h3>
       <p className="note">{t("settings.prototype.note")}</p>
+      </section>
     </section>
   );
 }
