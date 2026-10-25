@@ -31,7 +31,7 @@ The [Phase 1 task plan](phase-one-plan.md) breaks this work into a Trellis miles
 
 Exit gate: The prototype runs on target macOS and Linux environments, credentials are not persisted in plaintext, and Linux remains usable without a tray. If Linux is unavailable for validation, identify that gap instead of claiming cross-platform completion.
 
-Exit-gate status (2026-10-21): **not met**. The [Phase 1 exit assessment](validation/phase-one-exit-assessment.md) records macOS non-interactive native checks as passing on the host that was available, the sixteen interactive desktop observations as pending a human operator, and every Linux row as unverified because no Ubuntu 26.04 GNOME x86_64 machine existed in this validation window. The gap is identified rather than covered by a cross-platform claim, exactly as this gate requires. G01, G02, and G04 remain open.
+Exit-gate status (2026-10-25, Asia/Shanghai operator update; still **not met**). The [Phase 1 exit assessment](validation/phase-one-exit-assessment.md) records macOS non-interactive native checks as passing on the host that was available, and Jonathan's 2026-10-25 report that Mac interactive testing is complete with existing features appearing to work normally (overall user-reported `OBSERVED`; no detailed per-step tee log attached). Every Linux row remains unverified because no Ubuntu 26.04 GNOME x86_64 machine existed in this validation window, so Phase 1 stays incomplete. The gap is identified rather than covered by a cross-platform claim, exactly as this gate requires. G01, G02, and G04 remain open.
 
 Requirements covered: Foundations for A05, A07, A09, A10, A11, A12, and A18 through A25, as mapped in the acceptance matrix.
 
