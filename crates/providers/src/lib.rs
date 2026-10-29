@@ -1,5 +1,7 @@
 //! Provider adapters. Deterministic synthetic demo adapters plus the
-//! OpenRouter live-adapter skeleton (query-only, fixture-tested offline).
+//! OpenRouter and Kimi live-adapter skeletons (query-only, fixture-tested
+//! offline).
+pub mod kimi;
 pub mod openrouter;
 pub mod simulated;
 use quotavista_core::Provenance;
