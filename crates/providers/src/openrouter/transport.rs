@@ -101,19 +101,22 @@ pub struct ReqwestTransport {
 
 impl ReqwestTransport {
     /// Transport for the public OpenRouter API.
-    /// Transport for the public OpenRouter API.
     pub fn new() -> Result<Self, TransportInitError> {
         Self::with_base_url(DEFAULT_BASE_URL)
     }
 
-    /// Transport for an explicit base URL (scheme must be HTTPS).
     /// Transport for an explicit base URL (scheme must be HTTPS).
     pub fn with_base_url(base: &str) -> Result<Self, TransportInitError> {
         let base_url = reqwest::Url::parse(base)
             .ok()
             .filter(|url| url.scheme() == "https")
             .ok_or(TransportInitError::InvalidBaseUrl)?;
-        let client = reqwest::Client::builder().build()?;
+        let client = reqwest::Client::builder()
+            // No redirects: a redirect of a credentialed GET must never be
+            // followed, so the Management Key cannot leak to another origin
+            // or path. The adapter treats a 3xx as an unusable response.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
         Ok(Self { client, base_url })
     }
 
@@ -144,7 +147,7 @@ impl OpenRouterTransport for ReqwestTransport {
             .base_url
             .join(path)
             .map_err(|_| TransportError::Offline)?;
-        let response = self
+        let mut response = self
             .client
             .get(url)
             .bearer_auth(&token.0)
@@ -153,20 +156,21 @@ impl OpenRouterTransport for ReqwestTransport {
             .send()
             .await
             .map_err(Self::map_error)?;
-        if let Some(length) = response.content_length() {
-            if length as usize > MAX_RESPONSE_BODY_BYTES {
-                return Err(TransportError::Oversized);
-            }
-        }
         let status = response.status().as_u16();
         let retry_after = response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
-        let body = response.bytes().await.map_err(Self::map_error)?;
-        if body.len() > MAX_RESPONSE_BODY_BYTES {
-            return Err(TransportError::Oversized);
+        // Stream the body in chunks and enforce the size cap *while*
+        // downloading: a missing or understated Content-Length must not
+        // buffer an unbounded payload in memory first.
+        let mut body: Vec<u8> = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(Self::map_error)? {
+            if body.len() + chunk.len() > MAX_RESPONSE_BODY_BYTES {
+                return Err(TransportError::Oversized);
+            }
+            body.extend_from_slice(&chunk);
         }
         Ok(TransportResponse {
             status,

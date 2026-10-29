@@ -143,7 +143,7 @@ fn money_metric(metric: &str, value: Value, request: &ProviderRequest) -> Curren
         query_kind: QueryKind::Unvalidated,
         provenance: Provenance::Observation,
         observed_at: request.as_of,
-        source_as_of: Some(request.as_of),
+        source_as_of: None,
     }
 }
 
@@ -153,12 +153,15 @@ fn money_metric(metric: &str, value: Value, request: &ProviderRequest) -> Curren
 /// `remaining` is a plain arithmetic remainder of two directly observed
 /// values, classified `Unvalidated` until live reconciliation validates the
 /// wire shape. When usage exceeds credits the remainder is negative, which
+/// values, classified `Unvalidated` until live reconciliation validates the
+/// wire shape. When usage exceeds credits the remainder is negative, which
 /// the nonnegative money domain cannot carry; the metric is then reported
-/// `Missing`/`Unsupported` with no value rather than clamped to zero.
-/// The Credits envelope carries no server-side timestamp, so
-/// `observed_at`/`source_as_of` fall back to the request instant
-/// (TODO live validation: check for a timestamp field during
-/// reconciliation).
+/// `Missing`/`IncompatibleUnit` with no value rather than clamped to zero
+/// (a unit-system limit, not a missing upstream capability). The Credits
+/// envelope carries no server-side timestamp, so `observed_at` records the
+/// local observation instant while `source_as_of` stays `None` until
+/// reconciliation confirms a server-side field to carry
+/// (TODO live validation).
 pub(crate) fn credits_metrics(
     body: &str,
     request: &ProviderRequest,
@@ -209,11 +212,11 @@ pub(crate) fn credits_metrics(
             product_key: None,
             value: None,
             availability: Availability::Missing,
-            reason: Some(Reason::Unsupported),
+            reason: Some(Reason::IncompatibleUnit),
             query_kind: QueryKind::Unvalidated,
             provenance: Provenance::Observation,
             observed_at: request.as_of,
-            source_as_of: Some(request.as_of),
+            source_as_of: None,
         },
     };
     metrics.push(remaining_metric);
@@ -252,7 +255,7 @@ mod tests {
             assert_eq!(metric.dataset, CREDITS_DATASET);
             assert_eq!(metric.provenance, Provenance::Observation);
             assert_eq!(metric.query_kind, QueryKind::Unvalidated);
-            assert_eq!(metric.source_as_of, Some(request().as_of));
+            assert_eq!(metric.source_as_of, None);
         }
     }
 
@@ -261,8 +264,12 @@ mod tests {
         let body = include_str!("fixtures/credits_number_amounts.json");
         let metrics = credits_metrics(body, &request()).unwrap();
         // 120.5 and 37.25 arrive as JSON numbers and must stay exact.
-        assert_eq!(money_value(&metrics[0]), "120.5");
-        assert_eq!(money_value(&metrics[2]), "83.25");
+        // 120.055 and 37.257 arrive as bare JSON numbers and are NOT
+        // representable in f64 exactly; only the raw-text path yields these
+        // exact strings (a f64 detour would print 120.05500000000001-style
+        // artifacts).
+        assert_eq!(money_value(&metrics[0]), "120.055");
+        assert_eq!(money_value(&metrics[2]), "82.798");
     }
 
     #[test]
@@ -272,7 +279,7 @@ mod tests {
         let remainder = &metrics[2];
         assert_eq!(remainder.metric, "remaining");
         assert_eq!(remainder.availability, Availability::Missing);
-        assert_eq!(remainder.reason, Some(Reason::Unsupported));
+        assert_eq!(remainder.reason, Some(Reason::IncompatibleUnit));
         assert!(remainder.value.is_none());
         remainder.validate().unwrap();
         // The directly observed totals stay available.

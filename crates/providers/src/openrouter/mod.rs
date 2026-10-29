@@ -66,34 +66,43 @@ pub const LIVE_MANAGEMENT_KEY_ENV: &str = "QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY"
 /// Parse a `Retry-After` value: delta-seconds or an HTTP-date evaluated
 /// against the request instant. Absent or unusable values fall back to
 /// [`DEFAULT_RETRY_AFTER_SECONDS`]; results are clamped to
-/// [`MAX_RETRY_AFTER_SECONDS`].
+/// [`MAX_RETRY_AFTER_SECONDS`]. The header is untrusted input, so all
+/// arithmetic is checked i64 work in raw seconds — `TimeDelta`/`Duration`
+/// constructors that panic on out-of-range values are never fed unclamped
+/// numbers.
 fn parse_retry_after(
     header: Option<&str>,
     as_of: chrono::DateTime<chrono::Utc>,
 ) -> chrono::Duration {
-    let fallback = chrono::Duration::seconds(DEFAULT_RETRY_AFTER_SECONDS);
     let Some(value) = header.map(str::trim) else {
-        return fallback;
+        return chrono::Duration::seconds(DEFAULT_RETRY_AFTER_SECONDS);
     };
-    let parsed = if value.bytes().all(|b| b.is_ascii_digit()) && !value.is_empty() {
-        value.parse::<i64>().ok().map(chrono::Duration::seconds)
+    let raw_seconds: Option<i64> = if value.bytes().all(|b| b.is_ascii_digit()) && !value.is_empty()
+    {
+        // A digit run beyond chrono's representable window (or beyond i64)
+        // yields None here and takes the fallback; it never reaches a
+        // panicking duration constructor.
+        value.parse::<i64>().ok()
     } else {
         chrono::DateTime::parse_from_rfc2822(value)
             .ok()
-            .map(|until| {
+            .and_then(|until| {
+                // Timestamps are plain i64 seconds; checked subtraction
+                // cannot panic even for far-future dates. Sub-second
+                // precision is dropped — HTTP-dates carry whole seconds.
                 until
                     .with_timezone(&chrono::Utc)
-                    .signed_duration_since(as_of)
+                    .timestamp()
+                    .checked_sub(as_of.timestamp())
             })
     };
-    let duration = parsed.unwrap_or(fallback);
-    if duration > chrono::Duration::seconds(MAX_RETRY_AFTER_SECONDS) {
-        return chrono::Duration::seconds(MAX_RETRY_AFTER_SECONDS);
+    match raw_seconds {
+        // Unusable values (absent, garbage, past dates) fall back.
+        None | Some(i64::MIN..=-1) => chrono::Duration::seconds(DEFAULT_RETRY_AFTER_SECONDS),
+        // `raw` is now a positive i64 clamped to at most one day, so
+        // `Duration::seconds` is always in range here.
+        Some(raw) => chrono::Duration::seconds(raw.min(MAX_RETRY_AFTER_SECONDS)),
     }
-    if duration < chrono::Duration::zero() {
-        return fallback;
-    }
-    duration
 }
 
 /// The live OpenRouter adapter. Generic over transport and auth so tests
@@ -123,7 +132,7 @@ impl<T, A> OpenRouterAdapter<T, A> {
             query_kind: QueryKind::Unvalidated,
             provenance: Provenance::Observation,
             observed_at: request.as_of,
-            source_as_of: Some(request.as_of),
+            source_as_of: None,
         }
     }
 
@@ -213,8 +222,11 @@ where
                 retry_after: parse_retry_after(response.retry_after.as_deref(), request.as_of),
             }),
             // 5xx and anything else: the provider is effectively unavailable
-            // for this call; treat it as offline rather than guessing.
-            _ => Err(ProviderError::Offline),
+            // Any other received-but-unusable status (400/404/422/5xx …):
+            // the endpoint answered and the response cannot be trusted for
+            // accounting; that is an unusable response, not an offline
+            // network condition.
+            _ => Err(ProviderError::InvalidResponse),
         }
     }
 
@@ -238,7 +250,6 @@ mod tests {
     use quotavista_core::domain::Value;
     use quotavista_core::number::Money;
 
-    /// Deterministic offline transport: one canned response, counts calls.
     /// Deterministic offline transport: one canned response, counts calls.
     struct FakeTransport {
         response: std::sync::Mutex<Option<Result<TransportResponse, TransportError>>>,
@@ -528,11 +539,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_error_fails_whole_call_offline() {
-        let adapter = adapter(ok_status(503, "unavailable"));
+    async fn server_error_fails_whole_call_invalid_response() {
+        // A 503 was *received*: unusable-response semantics, not offline.
+        let adapter_503 = adapter(ok_status(503, "unavailable"));
         assert_eq!(
-            adapter.current(&request()).await,
-            Err(ProviderError::Offline)
+            adapter_503.current(&request()).await,
+            Err(ProviderError::InvalidResponse)
+        );
+        // Same for a client error that is not an auth failure.
+        let adapter_404 = adapter(ok_status(404, "not found"));
+        assert_eq!(
+            adapter_404.current(&request()).await,
+            Err(ProviderError::InvalidResponse)
         );
     }
 
@@ -571,6 +589,33 @@ mod tests {
         assert_eq!(
             parse_retry_after(None, as_of),
             chrono::Duration::seconds(DEFAULT_RETRY_AFTER_SECONDS)
+        );
+    }
+
+    #[test]
+    fn retry_after_hostile_values_never_panic() {
+        let as_of: chrono::DateTime<chrono::Utc> = "2026-10-29T12:00:00Z".parse().unwrap();
+        // One past chrono's `TimeDelta::seconds` panic threshold
+        // (`i64::MAX / 1000` + 1): must clamp to the 24 h ceiling, not abort.
+        assert_eq!(
+            parse_retry_after(Some("9223372036854776"), as_of),
+            chrono::Duration::seconds(MAX_RETRY_AFTER_SECONDS)
+        );
+        // Far-future HTTP-date (well over the ~292-year TimeDelta window):
+        // must clamp, not panic in `signed_duration_since`-style math.
+        assert_eq!(
+            parse_retry_after(Some("Fri, 31 Dec 9999 23:59:59 GMT"), as_of),
+            chrono::Duration::seconds(MAX_RETRY_AFTER_SECONDS)
+        );
+        // Digits beyond i64 entirely still fall back.
+        assert_eq!(
+            parse_retry_after(Some("99999999999999999999999999999999"), as_of),
+            chrono::Duration::seconds(DEFAULT_RETRY_AFTER_SECONDS)
+        );
+        // A legitimate immediate-retry value is preserved as zero.
+        assert_eq!(
+            parse_retry_after(Some("0"), as_of),
+            chrono::Duration::zero()
         );
     }
 
