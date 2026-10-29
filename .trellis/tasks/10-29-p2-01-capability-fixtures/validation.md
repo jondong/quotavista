@@ -63,7 +63,7 @@ real; where a code could not be captured the reason is stated.
 | 9 | `(cd apps/desktop && npm run i18n:check)` | rc=0 — `Catalog parity OK: 217 keys, placeholders matching in both catalogs` |
 | 10 | `(cd apps/desktop && npm run test)` | rc=0 — `Test Files 8 passed (8)`, `Tests 82 passed (82)` |
 | 11 | `(cd apps/desktop && npm run typecheck)` | rc=0 |
-| 12 | `(cd apps/desktop && npm run build)` | rc=0 — `✓ 44 modules transformed`, `✓ built in 274ms` |
+| 12 | `(cd apps/desktop && npm run build)` | rc=0 — `✓ 44 modules transformed` |
 
 Per-suite test counts for step 5, all `0 failed`:
 
@@ -80,7 +80,7 @@ Per-suite test counts for step 5, all `0 failed`:
 These totals are unchanged from the P2-02 close, which is the expected result: this
 task modifies no Rust.
 
-Two notes on output noise, both pre-existing and unrelated to this task:
+Three notes on output capture and noise:
 
 - Steps 4 and 6 emit `warning: failed to parse serde attribute … ts-rs failed to
   parse this attribute. It will be ignored.` for `try_from`, `into`, and
@@ -90,6 +90,14 @@ Two notes on output noise, both pre-existing and unrelated to this task:
   `scripts/check-validation-fixtures.mjs` existed, so its step 7 failed. That run's
   numbers are not cited anywhere in this record; every figure above comes from the
   single fresh run after all files were in place.
+- Steps 8–12 were run twice. The first run needed `npm ci` because this worktree had
+  no `apps/desktop/node_modules`; its retained log holds the output text quoted above
+  (`Catalog parity OK: 217 keys`, `Test Files 8 passed (8)`, `✓ 44 modules
+  transformed`) but records only `install_rc=0`, because the background activation
+  shell is POSIX `zsh -c` and does not expand `${PIPESTATUS[0]}`. Per-step exit codes
+  were therefore re-captured by a second run under `bash`, one command per line with no
+  pipe, which is where every `rc=0` in rows 8–12 comes from. Build duration is
+  deliberately not cited: it varies between the two runs and is not a pass/fail fact.
 
 `markdownlint-cli2` (v0.24.0 / markdownlint v0.42.0) is **not** part of the
 documented battery in `CONTRIBUTING.md`, and the repository does not enforce
