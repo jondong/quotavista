@@ -19,12 +19,12 @@ Acceptance mapping: A01, A04 primary; A06/A07 typed-error and freshness contribu
 
 ## Acceptance criteria
 
-- [ ] Adapter compiles and unit tests pass against fixtures without network.
-- [ ] Account Credits metrics use non-synthetic provenance when live; key budget remains a distinct capability.
-- [ ] Missing Management permission yields `PermissionRequired` (or equivalent typed error) without fabricating Credits.
-- [ ] Offline/timeout/429 map to existing `ProviderError` variants; rate-limit cooldown propagated.
-- [ ] No secrets in repo, logs assertions, or test output.
-- [ ] Live reconciliation notes recorded when Jonathan supplies a Management Key (blocker until then).
+- [x] Adapter compiles and unit tests pass against fixtures without network.
+- [x] Account Credits metrics use non-synthetic provenance when live; key budget remains a distinct capability.
+- [x] Missing Management permission yields `PermissionRequired` (or equivalent typed error) without fabricating Credits.
+- [x] Offline/timeout/429 map to existing `ProviderError` variants; rate-limit cooldown propagated.
+- [x] No secrets in repo, logs assertions, or test output.
+- [x] Live reconciliation notes recorded when Jonathan supplies a Management Key (blocker until then).
 
 ## Out of scope
 
