@@ -180,3 +180,37 @@ observations. The Phase 1 exit gate remains **not met** in
 - A human runs the sixteen interactive macOS observations at a named commit
 - An operator runs docs/validation/native-target-procedure.md on Ubuntu 26.04 GNOME x86_64 and records XDG_SESSION_TYPE
 - Phase 1 stays INCOMPLETE and G01, G02 and G04 stay open until both happen
+
+
+## Session 6: P2-02 OpenRouter adapter skeleton implemented and committed locally
+<!-- trellis-session: v=2 fp=b4736711a0b47789 -->
+
+**Date**: 2026-10-29
+**Task**: P2-02 OpenRouter adapter skeleton implemented and committed locally
+**Branch**: `jondong/p2-02-openrouter-adapter`
+
+### Summary
+
+Session summary was not supplied.
+
+### Main Changes
+
+- OpenRouter live-adapter skeleton in crates/providers/src/openrouter: Credits endpoint parsing to prepaid-credits money metrics with exact decimal arithmetic, injectable transport + redacted BearerToken + AuthTokenSource auth handle, ProviderError mapping incl. RateLimited cooldown parsing, key-budget explicit Unsupported row, history Ok(None), 29 offline tests + #[ignore] live smoke test, sanitized fixtures incl. shape-only Activity stub. Validation record in task validation.md.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9b18a3f` | feat(providers): add OpenRouter live-adapter skeleton with offline fixture tests |
+
+### Testing
+
+- [OK] cargo fmt --all -- --check clean; cargo clippy --locked --workspace --all-targets -- -D warnings 0 errors; cargo test --locked --workspace 250 passed / 0 failed (providers 42 passed, 1 ignored live); check-core-boundaries.sh + test-check-core-boundaries.sh clean; generate-contracts --check current; secret grep on diff clean
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Coordinator: independent review of commit 9b18a3f. Blocker: live reconciliation needs Jonathan to supply a query-only Management Key locally (QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY for the ignored smoke test); wire shapes in fixtures are sanitized inventions pending confirmation.

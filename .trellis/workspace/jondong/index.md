@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
-- **Last Active**: 2026-10-22
+- **Total Sessions**: 6
+- **Last Active**: 2026-10-29
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~171 | Active |
+| `journal-1.md` | ~216 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-10-29 | P2-02 OpenRouter adapter skeleton implemented and committed locally | `9b18a3f` | `jondong/p2-02-openrouter-adapter` |
 | 5 | 2026-10-22 | P1-13 review round: probe isolation, fixture content checks, and 82 regression cases | `d051409` | `jondong/p1-13-native-validation` |
 | 4 | 2026-10-21 | P1-13 native validation: macOS evidence recorded, Linux left unverified | `1afa2a8` | `jondong/p1-13-native-validation` |
 | 3 | 2026-10-21 | P1-09 review round 1: UTC lane clipping, coverage rendering, exclusion semantics | `5e868af` | `jondong/p1-09-overview-statistics` |
