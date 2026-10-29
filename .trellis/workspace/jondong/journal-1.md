@@ -215,3 +215,37 @@ Implemented and locally committed the OpenRouter live-adapter skeleton (task P2-
 ### Next Steps
 
 - Coordinator: independent review of commit 9b18a3f. Blocker: live reconciliation needs Jonathan to supply a query-only Management Key locally (QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY for the ignored smoke test); wire shapes in fixtures are sanitized inventions pending confirmation.
+
+
+## Session 7: P2-02 review round 1: Retry-After hardening and should-fixes
+<!-- trellis-session: v=2 fp=840bd3dea73e12a1 -->
+
+**Date**: 2026-10-29
+**Task**: P2-02 review round 1: Retry-After hardening and should-fixes
+**Branch**: `jondong/p2-02-openrouter-adapter`
+
+### Summary
+
+Applied the independent round-1 review (REQUEST_CHANGES) to the OpenRouter adapter skeleton: panic-free Retry-After parsing with hostile-value regression tests, source_as_of None until a server timestamp is confirmed, IncompatibleUnit overdraft reason, InvalidResponse for received-but-unusable statuses, streaming 256 KiB body cap, redirect policy none, and reqwest http2/system-proxy features. Artifact nits fixed (journal session 6, spec index, validation.md counts). All gates re-run green: 251 passed / 0 failed / 2 ignored workspace-wide.
+
+### Main Changes
+
+- crates/providers: mod.rs credits.rs transport.rs Cargo.toml fixtures; .trellis spec index, task validation.md, developer journal
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c18c19a` | fix(providers): harden OpenRouter Retry-After handling and review should-fixes |
+
+### Testing
+
+- [OK] cargo fmt --all -- --check clean; cargo clippy --locked --workspace --all-targets -- -D warnings 0 errors; cargo test --locked --workspace 251 passed / 0 failed / 2 ignored (providers 43 + 1 ignored); check-core-boundaries.sh + test-check-core-boundaries.sh clean; generate-contracts --check current; secret grep on staged diff clean
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Coordinator: re-review with the same independent reviewer. Live reconciliation still blocked on a locally supplied query-only Management Key (QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY for the ignored smoke test).
