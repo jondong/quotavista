@@ -1,0 +1,36 @@
+{
+  "id": "p2-01-capability-fixtures",
+  "name": "p2-01-capability-fixtures",
+  "title": "P2-01: Capability reports and sanitized fixtures",
+  "description": "Produce OpenRouter and Kimi capability reports plus synthetic or sanitized response fixtures without secrets or identifying account data.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-29",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-29-phase-two-provider-validation",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "phase": "2",
+    "plan_id": "P2-01",
+    "depends_on": [
+      "10-29-p2-00-plan"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

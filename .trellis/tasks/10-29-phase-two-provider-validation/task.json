@@ -1,0 +1,40 @@
+{
+  "id": "phase-two-provider-validation",
+  "name": "phase-two-provider-validation",
+  "title": "Phase 2: Initial provider validation",
+  "description": "Validate real OpenRouter prepaid and Kimi shared-membership integrations; capability reports, live adapters, refresh wiring, credential rotation. Phase 1 parent stays incomplete; Ubuntu waived for now.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-29",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-29-p2-00-plan",
+    "10-29-p2-01-capability-fixtures",
+    "10-29-p2-02-openrouter-adapter",
+    "10-29-p2-03-kimi-adapter",
+    "10-29-p2-04-refresh-wiring",
+    "10-29-p2-05-credential-rotation"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Phase 1 parent 10-18-phase-one-prototype stays open incomplete. Ubuntu Phase 1 validation waived for now \u2014 do not invent OBSERVED rows or archive Phase 1 as PASS.",
+  "meta": {
+    "phase": "2",
+    "kind": "milestone",
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

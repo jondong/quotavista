@@ -1,0 +1,7 @@
+{"file": "docs/requirements.md", "reason": "Authoritative product requirements 0.9"}
+{"file": "docs/architecture.md", "reason": "Reviewed architecture 0.4"}
+{"file": "docs/development-plan.md", "reason": "Phase boundaries and exit gates"}
+{"file": "docs/phase-two-plan.md", "reason": "Phase 2 task plan"}
+{"file": "docs/traceability.md", "reason": "Acceptance evidence and unverified gates"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend project constraints"}
+{"file": "docs/traceability.md", "reason": "Acceptance evidence and unverified gates"}
