@@ -1,0 +1,37 @@
+{
+  "id": "p2-04-refresh-wiring",
+  "name": "p2-04-refresh-wiring",
+  "title": "P2-04: Refresh wiring for live adapters",
+  "description": "Wire live OpenRouter and/or Kimi adapters into refresh coordination, connection selection, auth handling, and last-successful-value preservation.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-29",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-29-phase-two-provider-validation",
+  "relatedFiles": [],
+  "notes": "Advisory depends_on lists both adapters; start when at least one live adapter surface is reviewable. Prefer staggering shared refresh/provider files.",
+  "meta": {
+    "phase": "2",
+    "plan_id": "P2-04",
+    "depends_on": [
+      "10-29-p2-02-openrouter-adapter",
+      "10-29-p2-03-kimi-adapter"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

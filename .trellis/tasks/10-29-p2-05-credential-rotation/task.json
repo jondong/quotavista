@@ -1,0 +1,36 @@
+{
+  "id": "p2-05-credential-rotation",
+  "name": "p2-05-credential-rotation",
+  "title": "P2-05: Credential rotation",
+  "description": "Validate same-scope credential rotation and explicit identity replacement, including failures between native secret-store and database steps, without inference calls.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-29",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-29-phase-two-provider-validation",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "phase": "2",
+    "plan_id": "P2-05",
+    "depends_on": [
+      "10-29-p2-04-refresh-wiring"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

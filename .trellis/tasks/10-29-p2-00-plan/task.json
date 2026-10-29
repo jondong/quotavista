@@ -1,0 +1,34 @@
+{
+  "id": "p2-00-plan",
+  "name": "p2-00-plan",
+  "title": "P2-00: Phase 2 plan and Trellis tree",
+  "description": "Write docs/phase-two-plan.md and board the Phase 2 Trellis parent with children P2-00 through P2-05.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-29",
+  "completedAt": null,
+  "branch": "jondong/p2-00-phase-two-plan-2",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-29-phase-two-provider-validation",
+  "relatedFiles": [],
+  "notes": "Archive after plan + Trellis tree exist on a reviewed branch/PR.",
+  "meta": {
+    "phase": "2",
+    "plan_id": "P2-00",
+    "depends_on": [],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}

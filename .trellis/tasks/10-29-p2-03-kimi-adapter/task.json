@@ -1,0 +1,36 @@
+{
+  "id": "p2-03-kimi-adapter",
+  "name": "p2-03-kimi-adapter",
+  "title": "P2-03: Kimi shared-membership adapter",
+  "description": "Implement Kimi shared-membership quota adapter reconciled against the official membership page; no cookies or identifying payloads in fixtures.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-10-29",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-29-phase-two-provider-validation",
+  "relatedFiles": [],
+  "notes": "Soft dependency on P2-01. Live Kimi auth supplied locally only. Dependency metadata is advisory.",
+  "meta": {
+    "phase": "2",
+    "plan_id": "P2-03",
+    "depends_on": [
+      "10-29-p2-00-plan"
+    ],
+    "baseline": {
+      "requirements": "0.9",
+      "architecture": "0.4"
+    }
+  }
+}
