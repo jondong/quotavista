@@ -1,0 +1,14 @@
+{
+  "surface": "POST /api/v1/analytics/query (request body, not a response)",
+  "authorization": "Management Key (bearer)",
+  "origin": "hand-written from the published schema; every value invented",
+  "source_url": "https://openrouter.ai/docs/api-reference/analytics/query-analytics-data",
+  "notes": "A conforming request body. metrics requires at least one entry, dimensions accepts at most two, filters at most 20, and limit defaults to 1000. filters, order_by, group_limit, classifier_dimensions and classifier_filters are deliberately OMITTED: the public documentation names them and bounds them but does not publish their item shapes, so inventing one here would look authoritative without being so. The same applies to the metric and dimension names, which must be discovered from GET /api/v1/analytics/meta at runtime rather than hard-coded.",
+  "fixture": "analytics_query_request.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

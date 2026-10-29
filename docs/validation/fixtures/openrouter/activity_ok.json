@@ -1,0 +1,32 @@
+{
+  "data": [
+    {
+      "date": "2026-10-27",
+      "model": "synthetic/synthetic-model-a",
+      "model_permaslug": "synthetic/synthetic-model-a-2026-01-01",
+      "endpoint_id": "00000000-0000-4000-8000-0000000000a1",
+      "provider_name": "Synthetic Provider",
+      "prompt_tokens": 50,
+      "completion_tokens": 125,
+      "cached_tokens": 10,
+      "reasoning_tokens": 25,
+      "requests": 5,
+      "usage": 0.015,
+      "byok_usage_inference": 0.0
+    },
+    {
+      "date": "2026-10-28",
+      "model": "synthetic/synthetic-model-b",
+      "model_permaslug": "synthetic/synthetic-model-b-2026-02-02",
+      "endpoint_id": "00000000-0000-4000-8000-0000000000b2",
+      "provider_name": "Synthetic Provider Two",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "reasoning_tokens": 0,
+      "requests": 0,
+      "usage": 0.0,
+      "byok_usage_inference": 0.0
+    }
+  ]
+}

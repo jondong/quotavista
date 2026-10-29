@@ -1,0 +1,14 @@
+{
+  "surface": "GET /api/v1/activity?group_by=workspace",
+  "authorization": "Management Key (bearer)",
+  "origin": "hand-written from the published schema; every value invented",
+  "source_url": "https://openrouter.ai/docs/api-reference/analytics/get-user-activity-grouped-by-endpoint",
+  "notes": "With group_by=workspace each row is split per workspace and carries workspace_id. Without that parameter rows are aggregated across workspaces and workspace_id is NOT returned, which preserves the historical response shape - so a parser must treat workspace_id as optional and must not assume one row per date. Activity recorded before workspace resolution existed is permanently attributed to the account default workspace; the provider states no backfill is possible, which is a coverage gap an adapter has to report rather than paper over.",
+  "fixture": "activity_grouped_by_workspace.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

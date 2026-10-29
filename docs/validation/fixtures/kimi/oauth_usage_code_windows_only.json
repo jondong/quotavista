@@ -1,0 +1,25 @@
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "kind": "ok",
+    "quota": {
+      "usages": {
+        "limit5h": {
+          "usedRatio": 0.94,
+          "resetAt": "2026-10-30T01:05:00+08:00"
+        },
+        "limit7d": {
+          "usedRatio": 0.82,
+          "resetAt": "2026-11-01T18:30:00+08:00"
+        },
+        "monthCode": {
+          "usedRatio": 0.79,
+          "resetAt": "2026-11-19T18:30:00+08:00"
+        }
+      },
+      "extraUsage": null
+    }
+  },
+  "request_id": "01SYNTHETIC000000000000004"
+}

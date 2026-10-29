@@ -1,0 +1,14 @@
+{
+  "fixture": "subscription_page_observed_shape.md",
+  "provider": "kimi",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-kimi.md",
+  "surface": "Kimi membership subscription page (web and mobile app, login-gated UI)",
+  "authorization": "An interactive member login session; no API credential documented",
+  "origin": "field list transcribed from the public help documentation; NOT an observation and NOT a capture",
+  "source_url": "https://www.kimi.com/help/membership/membership-account-query",
+  "notes": "Markdown rather than JSON because the source is a rendered page with no published JSON API. It exists so the A03 reconciliation has a written reference and so the missing machine-readable path is recorded as a finding instead of being silently absent. Nothing in it was observed on a real account."
+}

@@ -1,0 +1,10 @@
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "kind": "error",
+    "message": "Synthetic fixture: the upstream account service did not answer.",
+    "status": 503
+  },
+  "request_id": "01SYNTHETIC000000000000005"
+}

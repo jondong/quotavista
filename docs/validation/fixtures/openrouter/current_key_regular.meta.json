@@ -1,0 +1,14 @@
+{
+  "surface": "GET /api/v1/key (200 response, regular inference key)",
+  "authorization": "Any key for the account; NOT management-only",
+  "origin": "hand-written from the published schema; every value invented",
+  "source_url": "https://openrouter.ai/docs/api-reference/limits",
+  "notes": "budgets[] is in enforcement order (guardrail, then workspace, then the key's own limit) and effective_budget is the one that blocks first - here the guardrail budget, whose remaining_usd of 17.5 is the smallest. Summing budgets[] would count one allowance three times. remaining_usd is derived as limit_usd - spend_usd and may be zero or negative, which blocks requests; it is a real state, not a parse error. limit_remaining describes THIS KEY only and is not the account balance. usage_weekly is the current UTC week starting Monday and resets_at is an ISO 8601 UTC instant. is_free_tier means 'has the user paid for credits before', not a plan name. byok_usage* is spend through the user's own upstream keys and does not draw account credits. rate_limit is deprecated. label is already masked by the API; the published example uses the provider's real key prefix, which this corpus deliberately avoids so secret scanners stay clean. is_management_key, is_provisioning_key, expires_at, creator_user_id and allowed_data_regions appear only in the API reference example and not in the limits guide's Key type, so their presence in a live response is UNVERIFIED.",
+  "fixture": "current_key_regular.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

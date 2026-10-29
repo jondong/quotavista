@@ -1,0 +1,28 @@
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "kind": "ok",
+    "quota": {
+      "usages": {
+        "limit5h": {
+          "usedRatio": 0.98,
+          "resetAt": "2026-10-30T07:45:00+08:00"
+        },
+        "monthTotal": {
+          "usedRatio": 1.0,
+          "resetAt": "2026-11-12T07:45:00+08:00"
+        }
+      },
+      "extraUsage": {
+        "balanceCents": 4275,
+        "totalCents": 10000,
+        "monthlyChargeLimitEnabled": true,
+        "monthlyChargeLimitCents": 5000,
+        "monthlyUsedCents": 1250,
+        "currency": "CNY"
+      }
+    }
+  },
+  "request_id": "01SYNTHETIC000000000000007"
+}

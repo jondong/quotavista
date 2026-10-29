@@ -1,0 +1,23 @@
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "kind": "ok",
+    "userInfo": {
+      "userId": "synthetic-user-id-0000000001",
+      "nickname": "<redacted-at-capture>",
+      "status": "active",
+      "region": "mainland-cn",
+      "userLevel": 3,
+      "userLevelName": "<redacted-at-capture>",
+      "domain": "<redacted-at-capture>",
+      "domainName": "<redacted-at-capture>",
+      "email": "<redacted-at-capture>",
+      "phone": {
+        "countryCode": "<redacted-at-capture>",
+        "number": "<redacted-at-capture>"
+      }
+    }
+  },
+  "request_id": "01SYNTHETIC000000000000008"
+}

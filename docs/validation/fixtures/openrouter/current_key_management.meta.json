@@ -1,0 +1,14 @@
+{
+  "surface": "GET /api/v1/key (200 response, management key)",
+  "authorization": "Management Key (bearer)",
+  "origin": "hand-written from the published schema; every value invented",
+  "source_url": "https://openrouter.ai/docs/api-reference/limits",
+  "notes": "A management key cannot call the completion endpoints, so its usage counters stay at zero and it carries no credit cap. is_management_key is the cheapest honest way to learn the presented key's permission category WITHOUT probing the balance - architecture forbids using inference calls to test authentication - but the field is only documented in the API reference example, so its presence is unverified and no code may depend on it yet. expires_at matters operationally: expiry is fixed at creation and cannot be extended, and an expired key makes every request fail 401 'API key expired', so rotation has to be scheduled ahead of it. A management key is account-scoped and unscoped across workspaces, and the same credential also unlocks destructive key, BYOK and guardrail routes - which is why the read-only allow-list has to be enforced in code.",
+  "fixture": "current_key_management.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

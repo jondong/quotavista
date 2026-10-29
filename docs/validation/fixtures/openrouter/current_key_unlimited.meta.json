@@ -1,0 +1,14 @@
+{
+  "surface": "GET /api/v1/key (200 response, key with no cap)",
+  "authorization": "Any key for the account; NOT management-only",
+  "origin": "hand-written from the published schema; every value invented",
+  "source_url": "https://openrouter.ai/docs/api-reference/limits",
+  "notes": "limit, limit_reset and limit_remaining are all null, which the documentation defines as UNLIMITED - not unknown, and not zero. An adapter must render that as 'no key cap' and must never coerce null to 0, which would read as an exhausted key. The point of this fixture: the key has spent 4310.77 with no cap of its own, so an unlimited key budget says nothing about whether the account balance can cover the next request. Reporting this key as 'unlimited funds' is exactly the conflation A04 exists to prevent.",
+  "fixture": "current_key_unlimited.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

@@ -1,0 +1,14 @@
+{
+  "surface": "any /api/* path on the Kimi Code CLI local server (HTTP 401)",
+  "authorization": "None accepted",
+  "origin": "code and HTTP status documented; the msg string is SYNTHETIC",
+  "source_url": "https://www.kimi.com/code/docs/kimi-code-cli/reference/server-api.html",
+  "notes": "Unlike the success cases, this one does use a real non-200 HTTP status: authentication failure is one of the documented exceptions to the 'HTTP status is almost always 200' rule. Business code 40101. This is the state a QuotaVista connection lands in when the other tool's runtime is not logged in, or when its token was rotated - it maps to a needs-credentials state, not to a zero quota and not to an offline provider. Reading this endpoint at all requires a user-authorized connection flow; scanning for the token, importing browser cookies or reading another tool's credentials is forbidden by default. The msg text is invented. Every JSON response from this server is wrapped in {code, msg, data, request_id} and the HTTP status is almost always 200, so the business result is code (0 = success) and must be checked before data. Some error envelopes carry non-empty data, which is why checking the status line or the presence of data first is wrong. request_id is an invented 26-character ULID-shaped string. The server binds plain HTTP on loopback (127.0.0.1:58627 by default) and requires a bearer token for every /api/* path except the liveness probe; that token belongs to another tool's runtime and must never be captured, stored or committed. The whole API is documented as experimental: endpoints, fields and event types may change in any version, so the /openapi.json served by the version actually in use has to be re-validated at runtime before any of these shapes is trusted.",
+  "fixture": "envelope_unauthorized.json",
+  "provider": "kimi",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-kimi.md"
+}

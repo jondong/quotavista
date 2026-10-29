@@ -1,0 +1,14 @@
+{
+  "surface": "GET /api/v1/credits (403 response)",
+  "authorization": "A regular inference key was presented",
+  "origin": "message string copied verbatim from the published error list",
+  "source_url": "https://openrouter.ai/docs/api-reference/credits/get-remaining-credits",
+  "notes": "The account balance is unavailable because the presented key lacks the management scope. This is a PERMISSION state, not an error to retry and not a zero balance: the honest UI outcome is 'supported key information shown, account-balance permission missing', which requirements state does NOT satisfy account-balance acceptance. Note the 403 is ambiguous across the provider - a workspace budget breach also returns 403, naming the broadest exceeded interval - so an adapter must read the error body and must not infer a verdict from the status line alone. P2-02 already maps this envelope to a credits-dataset-only failure while the key-budget row survives.",
+  "fixture": "credits_insufficient_scope.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

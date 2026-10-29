@@ -1,0 +1,17 @@
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "kind": "ok",
+    "quota": {
+      "usages": {
+        "monthTotal": {
+          "usedRatio": 0.31,
+          "resetAt": "2026-11-08T09:00:00+08:00"
+        }
+      },
+      "extraUsage": null
+    }
+  },
+  "request_id": "01SYNTHETIC000000000000003"
+}

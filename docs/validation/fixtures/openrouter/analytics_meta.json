@@ -1,0 +1,40 @@
+{
+  "data": {
+    "dimensions": [
+      {
+        "display_label": "Model",
+        "name": "model"
+      },
+      {
+        "display_label": "Date",
+        "name": "date"
+      }
+    ],
+    "granularities": [
+      {
+        "display_label": "Day",
+        "name": "day"
+      }
+    ],
+    "metrics": [
+      {
+        "display_format": "number",
+        "display_label": "Request Count",
+        "is_rate": false,
+        "name": "request_count"
+      },
+      {
+        "display_format": "percent",
+        "display_label": "Synthetic Rate Metric",
+        "is_rate": true,
+        "name": "synthetic_rate_metric"
+      }
+    ],
+    "operators": [
+      {
+        "name": "eq",
+        "value_type": "scalar"
+      }
+    ]
+  }
+}

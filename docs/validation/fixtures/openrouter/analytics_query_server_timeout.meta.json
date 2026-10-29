@@ -1,0 +1,14 @@
+{
+  "surface": "POST /api/v1/analytics/query (408 response)",
+  "authorization": "Management Key (bearer)",
+  "origin": "message string copied verbatim from the published error list",
+  "source_url": "https://openrouter.ai/docs/api-reference/analytics/query-analytics-data",
+  "notes": "A documented server-side 408 for this endpoint. It is distinct from a transport timeout: here the provider answered, so the request was received and abandoned upstream. A client cannot tell from this envelope whether any partial work was billed, so it maps to a retryable failure and never to an empty result. Retry policy belongs to the service layer, not the parser.",
+  "fixture": "analytics_query_server_timeout.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}
