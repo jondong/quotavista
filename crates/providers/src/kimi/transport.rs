@@ -57,6 +57,7 @@ pub trait KimiTransport: Send + Sync {
 /// URL, no redirects (a credentialed GET must never leak the session token to
 /// another origin), a per-request timeout, and a hard response-size cap
 /// enforced while streaming.
+#[derive(Clone)]
 pub struct ReqwestKimiTransport {
     inner: ReqwestTransport,
 }

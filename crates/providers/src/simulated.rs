@@ -427,6 +427,12 @@ impl SimulatedRouter {
         &self.openrouter
     }
 
+    /// True when this router is a single-adapter test override that answers
+    /// every connection, live ones included.
+    pub fn is_single(&self) -> bool {
+        self.single
+    }
+
     fn route(&self, connection_id: &str) -> &SimulatedAdapter {
         if self.single || connection_id.contains("kimi") {
             &self.kimi
