@@ -697,5 +697,6 @@ fn read_counter(durable: &impl DurableStore) -> Result<u64, JournalError> {
     }
 }
 
+pub mod router;
 #[cfg(test)]
 mod tests;

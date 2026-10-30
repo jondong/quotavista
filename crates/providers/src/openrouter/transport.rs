@@ -94,6 +94,7 @@ pub trait OpenRouterTransport: Send + Sync {
 
 /// Production transport over `reqwest` with rustls. Constructed with the
 /// default base URL or an explicit one; always HTTPS.
+#[derive(Clone)]
 pub struct ReqwestTransport {
     client: reqwest::Client,
     base_url: reqwest::Url,

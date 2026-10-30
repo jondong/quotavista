@@ -29,8 +29,12 @@ use quotavista_core::provider::{ProviderError, RefreshClock};
 use quotavista_core::secrets::{SecretError, SecretStore};
 use quotavista_core::storage::{Connection, Repository, Scope, StorageError, WriteContext};
 use quotavista_infrastructure::durable::{FileStore, SharedFileStore};
-use quotavista_infrastructure::refresh::{Admission, HistoryOutcome, Outcome, RefreshCoordinator};
+use quotavista_infrastructure::refresh::{
+    router::ProviderRouter, Admission, HistoryOutcome, Outcome, RefreshCoordinator,
+};
 use quotavista_infrastructure::sqlite::SqliteRepository;
+use quotavista_providers::kimi::ReqwestKimiTransport;
+use quotavista_providers::openrouter::ReqwestTransport;
 use quotavista_providers::simulated::{SimulatedAdapter, SimulatedRouter};
 use quotavista_providers::synthetic_providers;
 use tauri::{Emitter, Manager};
@@ -212,9 +216,20 @@ type LifecycleCoordinator = quotavista_infrastructure::lifecycle::Coordinator<
     Arc<dyn SecretReferenceStore>,
 >;
 
-/// The refresh coordinator wired to the synthetic provider adapter.
-type RefreshState =
-    RefreshCoordinator<SqliteRepository, SimulatedRouter, SharedFileStore, UtcClock>;
+/// The refresh coordinator wired to the provider router: simulated adapters
+/// answer demo connections, live OpenRouter/Kimi adapters answer user
+/// connections whose credentials resolve (P2-04).
+type RefreshState = RefreshCoordinator<
+    SqliteRepository,
+    ProviderRouter<
+        SqliteRepository,
+        connections::RoutingSecrets,
+        ReqwestTransport,
+        ReqwestKimiTransport,
+    >,
+    SharedFileStore,
+    UtcClock,
+>;
 
 /// Initialise the desktop composition in a caller-supplied root directory.
 /// The desktop binary uses `std::env::temp_dir()`; tests pass a
@@ -306,7 +321,19 @@ async fn build_inner(
         connections::reconcile_startup_credentials(&database, store).await;
     }
 
-    let refresh = RefreshCoordinator::open(database.clone(), provider, durable.clone(), UtcClock)
+    // Provider selection (P2-04): demo connections keep the simulated adapters
+    // and never touch a live transport; `kimi`/`openrouter` connections resolve
+    // their stored credential reference into the live adapters. A transport that
+    // cannot be constructed degrades that provider's live connections to a
+    // typed offline failure instead of failing the whole composition.
+    let router = ProviderRouter::new(
+        database.clone(),
+        store.clone(),
+        ReqwestTransport::new().ok(),
+        ReqwestKimiTransport::new().ok(),
+        provider,
+    );
+    let refresh = RefreshCoordinator::open(database.clone(), router, durable.clone(), UtcClock)
         .map_err(|_| safe(ErrorCode::InternalError))?;
 
     Ok(AppState {
@@ -1697,6 +1724,49 @@ mod tests {
         assert!(sink.events().is_empty());
     }
 
+    /// A live connection routed through the provider router fails typed when
+    /// no credential is retrievable: the failure is produced before any
+    /// transport call, so this test never touches the network even though the
+    /// composition holds the real reqwest transports.
+    #[tokio::test]
+    async fn live_connection_without_credential_fails_typed_without_network() {
+        let (_dir, state, _router) = fixture_with_router().await;
+        // A live provider row seeded directly: Active but with no credential
+        // reference. `connect_provider` always stages one, so this is the
+        // composition-level "credential not retrievable" state.
+        state
+            .repository
+            .create_connection(
+                &Connection {
+                    id: "live-kimi".to_owned(),
+                    provider: "kimi".to_owned(),
+                    alias: "Live Kimi".to_owned(),
+                    generation: 0,
+                    lifecycle: Lifecycle::Active,
+                },
+                &Scope {
+                    id: "live-kimi-scope".to_owned(),
+                    connection_id: "live-kimi".to_owned(),
+                    key: "live-kimi-account".to_owned(),
+                    kind: "account".to_owned(),
+                },
+            )
+            .await
+            .expect("connection must be stored");
+
+        let envelope = run_request(&state, Some(refresh_selected_request(&["live-kimi"]))).await;
+        let operation = only_operation(&envelope);
+        assert_eq!(operation.state, OperationState::Failed);
+        assert_eq!(
+            operation.error.as_ref().map(|error| error.code()),
+            Some(ErrorCode::PermissionRequired)
+        );
+        assert_eq!(operation.next_action, NextAction::ProvideCredentials);
+        // The failure is typed at the router before any transport call, so a
+        // second refresh takes the same deterministic path.
+        let envelope = run_request(&state, Some(refresh_selected_request(&["live-kimi"]))).await;
+        assert_eq!(only_operation(&envelope).state, OperationState::Failed);
+    }
     #[tokio::test]
     async fn a_refused_connection_reports_a_failure_without_an_event() {
         let (_dir, state, sink) = fixture().await;
