@@ -1,0 +1,12 @@
+{
+  "data": {
+    "api_wallet": {
+      "balance": "9.99",
+      "currency": "USD"
+    },
+    "code_limits": {
+      "used": 120,
+      "limit": 1000
+    }
+  }
+}

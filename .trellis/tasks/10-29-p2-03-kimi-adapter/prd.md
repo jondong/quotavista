@@ -18,9 +18,9 @@ Acceptance mapping: A01–A03 primary; A02 scope rules mandatory.
 
 ## Acceptance criteria
 
-- [ ] Fixture tests cover shared-pool metrics and unsupported substitutes.
+- [x] Fixture tests cover shared-pool metrics and unsupported substitutes.
 - [ ] Live reconciliation notes vs official membership page when credentials available.
-- [ ] No cookies, raw headers, or identifying account data in repository fixtures.
+- [x] No cookies, raw headers, or identifying account data in repository fixtures.
 
 ## Out of scope
 

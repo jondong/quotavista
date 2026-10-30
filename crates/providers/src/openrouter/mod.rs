@@ -70,7 +70,7 @@ pub const LIVE_MANAGEMENT_KEY_ENV: &str = "QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY"
 /// arithmetic is checked i64 work in raw seconds — `TimeDelta`/`Duration`
 /// constructors that panic on out-of-range values are never fed unclamped
 /// numbers.
-fn parse_retry_after(
+pub(crate) fn parse_retry_after(
     header: Option<&str>,
     as_of: chrono::DateTime<chrono::Utc>,
 ) -> chrono::Duration {
