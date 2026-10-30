@@ -561,6 +561,168 @@ async fn failed_cleanup_after_commit_stays_pending_and_recovery_converges() {
 }
 
 #[tokio::test]
+async fn activation_refusal_after_the_candidate_write_compensates_the_orphan() {
+    let harness = fixture().await;
+    let mut coordinator = harness.recovered().await;
+    setup(&mut coordinator, PREVIOUS).await;
+
+    // Plant an incomplete operation projection so the activation transaction's
+    // mutation fence refuses the write. The refusal lands after the candidate
+    // write to the secret store and before the database commit — the rotation
+    // failure window between the two systems.
+    harness
+        .repo
+        .begin_operation(&record(
+            "synthetic-fence",
+            OperationKind::ReplaceCredentials,
+            OperationPhase::Pending,
+            Some("synthetic-reference-fence"),
+        ))
+        .await
+        .unwrap();
+
+    let error = coordinator
+        .activate_credentials(
+            "synthetic-operation-2",
+            &context(1),
+            OperationKind::ReplaceCredentials,
+            CANDIDATE,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error, JournalError::Conflict);
+
+    // The candidate had reached the store, was never activated, and the inline
+    // compensation deleted the orphan — the previous reference survives.
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS]);
+    assert_eq!(harness.secrets.deleted(), vec![CANDIDATE]);
+    assert_eq!(
+        harness
+            .repo
+            .credential_ref(CONNECTION)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(PREVIOUS)
+    );
+    assert!(coordinator.journal().is_empty());
+
+    // The planted projection keeps the fence up until recovery finishes it.
+    assert_eq!(
+        coordinator.schedule_context(CONNECTION).await.unwrap_err(),
+        JournalError::Conflict
+    );
+
+    // Recovery finishes the planted projection and lifts the fence, and a retry
+    // with a fresh candidate succeeds against the untouched previous reference.
+    drop(coordinator);
+    let mut coordinator = harness.coordinator();
+    let report = coordinator.recover().await.unwrap();
+    assert!(report.pending.is_empty());
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS]);
+    assert!(harness.repo.operations(None).await.unwrap().is_empty());
+    let generation = coordinator
+        .schedule_context(CONNECTION)
+        .await
+        .unwrap()
+        .generation;
+    assert_eq!(generation, 1);
+    coordinator
+        .activate_credentials(
+            "synthetic-operation-3",
+            &context(generation),
+            OperationKind::ReplaceCredentials,
+            CANDIDATE,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        harness
+            .repo
+            .credential_ref(CONNECTION)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(CANDIDATE)
+    );
+    assert_eq!(harness.secrets.present(), vec![CANDIDATE]);
+}
+
+#[tokio::test]
+async fn interrupted_activation_owed_cleanup_survives_to_recovery_and_keeps_the_previous() {
+    let harness = fixture().await;
+    let mut coordinator = harness.recovered().await;
+    setup(&mut coordinator, PREVIOUS).await;
+
+    // Same refusal window — after the candidate store write, before the
+    // database commit — but the compensating delete also fails, so the owed
+    // cleanup survives to recovery.
+    harness
+        .repo
+        .begin_operation(&record(
+            "synthetic-fence",
+            OperationKind::ReplaceCredentials,
+            OperationPhase::Pending,
+            Some("synthetic-reference-fence"),
+        ))
+        .await
+        .unwrap();
+    harness.secrets.refuse_delete(CANDIDATE);
+
+    let error = coordinator
+        .activate_credentials(
+            "synthetic-operation-2",
+            &context(1),
+            OperationKind::ReplaceCredentials,
+            CANDIDATE,
+        )
+        .await
+        .unwrap_err();
+    // The compensating delete failed too, so its error is reported; the
+    // activation refusal itself stays recorded as compensation pending.
+    assert_eq!(error, JournalError::Locked);
+
+    // The candidate was written to the store before the refusal, was never
+    // activated, and could not be deleted inline: the interruption stays
+    // visible behind the fence while the previous reference keeps serving.
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS, CANDIDATE]);
+    assert_eq!(
+        harness
+            .repo
+            .credential_ref(CONNECTION)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(PREVIOUS)
+    );
+    let pending = coordinator.journal().get("synthetic-operation-2").unwrap();
+    assert_eq!(pending.phase, OperationPhase::CompensationPending);
+    assert_eq!(pending.candidate_ref.as_deref(), Some(CANDIDATE));
+    assert_eq!(pending.previous_ref.as_deref(), Some(PREVIOUS));
+
+    // Recovery with a healthy store deletes the orphan candidate — never the
+    // previous reference — and finishes both interrupted operations.
+    drop(coordinator);
+    harness.secrets.allow_delete(CANDIDATE);
+    let mut coordinator = harness.coordinator();
+    let report = coordinator.recover().await.unwrap();
+    assert!(report.pending.is_empty());
+    assert_eq!(harness.secrets.present(), vec![PREVIOUS]);
+    assert!(harness.secrets.deleted().contains(&CANDIDATE.to_owned()));
+    assert!(!harness.secrets.deleted().contains(&PREVIOUS.to_owned()));
+    assert!(coordinator.journal().is_empty());
+    assert!(harness.repo.operations(None).await.unwrap().is_empty());
+    assert_eq!(
+        coordinator
+            .schedule_context(CONNECTION)
+            .await
+            .unwrap()
+            .generation,
+        1
+    );
+}
+
+#[tokio::test]
 async fn obsolete_generation_cannot_activate_and_the_candidate_is_compensated() {
     let harness = fixture().await;
     let mut coordinator = harness.recovered().await;

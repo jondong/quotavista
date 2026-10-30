@@ -991,6 +991,16 @@ async fn explicit_identity_replacement_never_rebinds_history() {
     .await;
     let removed = operation_of(removed);
     assert_eq!(removed.state, OperationState::Succeeded);
+    // The removal also deleted the old account's secret: its reference no
+    // longer reads back, while the replacement's still does.
+    assert!(
+        matches!(
+            store.read(&old_ref),
+            Err(quotavista_core::secrets::SecretError::NeedsCredentials)
+        ),
+        "the removed account's reference is gone"
+    );
+    assert_eq!(store.read(&new_ref).expect("new still readable"), SECRET_B);
 
     let connections = list_connections(&state).await;
     assert_eq!(connections.len(), 1);
@@ -1015,13 +1025,15 @@ async fn explicit_identity_replacement_never_rebinds_history() {
     );
 }
 
-/// P2-05 PRD criterion 2: a store failure between the secret-store write and
-/// the database commit — every reference operation fails once the journal has
-/// recorded its intent — keeps the previous credential live and readable,
-/// leaves the interrupted rotation visible as a pending operation, writes no
-/// plaintext to the disk, and converges across a restart.
+/// P2-05 PRD criterion 2: an activation refusal between the successful
+/// secret-store candidate write and the database commit keeps the previous
+/// credential live and readable, leaves the interrupted rotation visible as a
+/// pending operation, writes no plaintext to the disk, and converges across a
+/// restart. The refusal is produced by planting an incomplete operation
+/// projection, which the activation transaction's mutation fence rejects; the
+/// compensating delete is failed too, so the owed cleanup survives to recovery.
 #[tokio::test]
-async fn rotation_store_failure_before_commit_recovers_across_restart() {
+async fn rotation_activation_failure_after_the_store_write_recovers_across_restart() {
     let (dir, state, _sink) = fixture().await;
     let operation = connect(&state, SECRET_A).await;
     let id = operation.connection_id.expect("setup names the connection");
@@ -1033,15 +1045,28 @@ async fn rotation_store_failure_before_commit_recovers_across_restart() {
         .expect("credential ref readable")
         .expect("the setup left a live reference");
 
-    // Fail candidate writes and reference deletions: the candidate is staged
-    // and the journal records its intent, but the store commit fails and the
-    // compensating delete cannot run either — the worst mid-flight window
-    // between the secret-store write and the database commit.
+    // Plant an incomplete operation projection on the same connection, so the
+    // rotation's activation transaction is refused by its mutation fence after
+    // the candidate write has already reached the store. Fail reference
+    // deletions as well, so the inline compensation cannot run and the owed
+    // cleanup survives to recovery — the worst mid-flight window.
+    state
+        .repository
+        .begin_operation(&quotavista_core::journal::OperationRecord {
+            operation_id: "op-planted-activation-fence".into(),
+            connection_id: id.as_str().to_string(),
+            kind: quotavista_core::journal::OperationKind::ReplaceCredentials,
+            phase: quotavista_core::journal::OperationPhase::Pending,
+            candidate_ref: Some("qv1:session-only:planted-activation-fence".into()),
+            previous_ref: None,
+            generation,
+        })
+        .await
+        .expect("planted fence projection");
     let store = state
         .secrets
         .as_ref()
         .expect("session composition has a store");
-    store.set_fail_reference_writes(true);
     store.set_fail_reference_deletes(true);
     let failed = run(&state, rotate_request(id.as_str(), generation, SECRET_A)).await;
     assert!(
@@ -1052,8 +1077,32 @@ async fn rotation_store_failure_before_commit_recovers_across_restart() {
         "the interrupted rotation reports a storage failure, got {failed:?}"
     );
 
-    // No half-applied state: the previous credential is still the live
-    // reference, still readable, and the connection is still active.
+    // The candidate had already been committed to the store when the database
+    // refused: the interrupted rotation names it and it reads back, while the
+    // previous credential is still the live, readable reference.
+    let records = state
+        .repository
+        .operations(Some(id.as_str()))
+        .await
+        .expect("operations readable");
+    let interrupted = records
+        .iter()
+        .find(|record| {
+            record.kind == quotavista_core::journal::OperationKind::ReplaceCredentials
+                && record.previous_ref.as_deref() == Some(live.as_str())
+        })
+        .expect("the interrupted rotation stays visible");
+    let orphan = interrupted
+        .candidate_ref
+        .clone()
+        .expect("the rotation names its candidate");
+    assert_ne!(orphan, live, "the candidate is a new reference");
+    assert_eq!(
+        store
+            .read(&orphan)
+            .expect("the candidate reached the store"),
+        SECRET_A
+    );
     assert_eq!(
         state
             .repository
@@ -1072,25 +1121,14 @@ async fn rotation_store_failure_before_commit_recovers_across_restart() {
     let connections = list_connections(&state).await;
     assert_eq!(connections[0].lifecycle, LifecycleDto::Active);
 
-    // The interrupted rotation stays visible as a pending operation — the
-    // visible recovery path — until recovery finishes it.
-    let records = state
-        .repository
-        .operations(Some(id.as_str()))
-        .await
-        .expect("operations readable");
-    assert!(
-        records.iter().any(
-            |record| record.kind == quotavista_core::journal::OperationKind::ReplaceCredentials
-        ),
-        "the interrupted rotation stays visible"
-    );
-
     // No plaintext secret reached the disk at any point.
     assert_no_secret_on_disk(&dir, &[SECRET_A, SECRET_B]);
 
-    // A restart runs recovery: the owed compensation completes, the fence is
-    // released, and — session-only — the connection reports needs_credentials.
+    // A restart runs recovery: the orphan candidate — never the previous
+    // reference — is the owed cleanup, both interrupted operations finish, the
+    // fence is released, and — session-only, with an in-memory store — the
+    // connection reports needs_credentials. Persistent-store cleanup semantics
+    // are proven by the infrastructure lifecycle tests.
     let (state, _sink) = restart(&dir).await;
     let records = state
         .repository
@@ -1121,6 +1159,15 @@ async fn rotation_store_failure_before_commit_recovers_across_restart() {
         .expect("credential ref readable")
         .expect("the retry left a live reference");
     assert_ne!(rotated, live, "the retry activated a new reference");
+    assert_eq!(
+        state
+            .secrets
+            .as_ref()
+            .expect("session composition has a store")
+            .read(&rotated)
+            .expect("the rotated credential is readable"),
+        SECRET_A
+    );
     assert_no_secret_on_disk(&dir, &[SECRET_A, SECRET_B]);
 }
 

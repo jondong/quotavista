@@ -9,9 +9,8 @@ Commands (run from the worktree root, Rust toolchain per `rust-toolchain.toml`):
 
 - `cargo fmt --all` then `cargo fmt --all -- --check` — clean.
 - `cargo clippy --locked --workspace --all-targets -- -D warnings` — 0 errors.
-- `cargo test --locked --workspace` — 295 passed, 0 failed
-  (`grep -E "test result:" /tmp/p2-05-test.log` aggregated; 295 `ok` lines).
-
+- `cargo test --locked --workspace` — 297 passed, 0 failed
+  (13 `test result: ok` lines, every one `0 failed`).
 ## PRD criterion 1 — rotation keeps identity when scope matches; replacement requires explicit user action
 
 Existing Phase 1 evidence still passes unchanged:
@@ -35,26 +34,55 @@ New P2-05 evidence:
   `crate::identity::synthetic_identity` of their own secrets, distinct readable credential
   references (`SECRET_A` vs `SECRET_B`), and the replacement publishes history under its
   own scope only. Removing the old account deletes only its artifacts — the replacement
-  keeps its history and its snapshot, and the old scope's snapshot reads back `None`.
+  keeps its history and its snapshot, the old scope's snapshot reads back `None`,
+  and the removed account's credential reference no longer reads back while the
+  replacement's still does.
 
 ## PRD criterion 2 — mid-flight failures: no plaintext on disk, no half-applied state without a visible recovery path
 
-Forward direction (between secret-store write and DB commit):
+Forward direction (after the secret-store write, before the DB commit). The refusal
+is produced by planting an incomplete operation projection on the connection, which
+the activation transaction's mutation fence rejects inside `activate_reference` —
+exactly the window between a committed candidate and a refused database commit; no
+production code was changed for the injection:
 
-- `rotation_store_failure_before_commit_recovers_across_restart`
-  (`apps/desktop/src-tauri/src/connections_tests.rs`): with the new test-only
-  `set_fail_reference_writes` + `set_fail_reference_deletes` injections
-  (`apps/desktop/src-tauri/src/connections.rs`, `RoutingSecrets`), a rotation fails after
-  the journal recorded its intent but before the store committed the candidate. The
-  command reports `StorageError` (retryable); the previous credential is still the live
-  reference and still readable; the connection stays Active; the interrupted rotation
-  stays visible as a pending `ReplaceCredentials` operation; and
-  `assert_no_secret_on_disk` (new helper, recursive scan of every file under the fixture
-  temp dir) proves no `SECRET_A`/`SECRET_B` bytes reached the disk. After `restart` the
-  built-in recovery finishes the owed compensation (no `ReplaceCredentials` records
-  remain), the session-only connection reports `NeedsCredentials`, and the explicit
-  retry rotation succeeds, activates a new reference, and leaves nothing on disk.
+- `activation_refusal_after_the_candidate_write_compensates_the_orphan`
+  (`crates/infrastructure/src/lifecycle/tests.rs`): after the fence refuses the
+  activation, the candidate had already been written to the store; the inline
+  compensation deletes the **orphan candidate — never the previous reference** —
+  the previous reference keeps serving, the journal is clean, the planted fence
+  stays up until recovery finishes it, and a retry with a fresh candidate succeeds.
+- `interrupted_activation_owed_cleanup_survives_to_recovery_and_keeps_the_previous`
+  (`crates/infrastructure/src/lifecycle/tests.rs`): the same refusal with the
+  compensating delete also failing — the candidate is present in the store, never
+  activated, and the interruption stays visible as `CompensationPending` behind the
+  fence while the previous reference keeps serving. Recovery with a healthy store
+  deletes the orphan candidate (never the previous reference) and finishes both
+  interrupted operations.
+- `rotation_activation_failure_after_the_store_write_recovers_across_restart`
+  (`apps/desktop/src-tauri/src/connections_tests.rs`): the same window through the
+  IPC command, with `set_fail_reference_deletes` (the remaining test-only
+  `RoutingSecrets` injection) keeping the inline compensation from running. The
+  command reports `StorageError`; the interrupted record names its orphan candidate,
+  which **reads back from the store** (proof the store write succeeded before the
+  database refusal); the previous credential is still the live, readable reference;
+  the connection stays Active; and `assert_no_secret_on_disk` (recursive scan of
+  every file under the fixture temp dir) proves no `SECRET_A`/`SECRET_B` bytes
+  reached the disk. After `restart` the built-in recovery finishes both interrupted
+  operations (no `ReplaceCredentials` records remain), the session-only connection
+  reports `NeedsCredentials`, and the explicit retry rotation succeeds, activates a
+  new reference, and leaves nothing on disk. Session-only caveat: the store is
+  in-memory, so post-restart store-content assertions are carried by the two
+  infrastructure tests above.
 
+Honest IPC note (review finding): the `replace_credentials` envelope does not
+return the interrupted operation's id, and no IPC command lists lifecycle
+operations, so a renderer cannot poll that specific operation. What the failure
+does guarantee at the IPC surface: a typed `StorageError` envelope, an untouched
+working credential, and — because the journal/projection are durable — the
+automatic recovery that `restart`-time `Coordinator::recover()` performs; the
+pending record is visible to any component with repository access (as asserted
+in the tests). Returning operation ids over IPC is left as follow-up work.
 Reverse direction (after DB commit):
 
 - `rotation_cleanup_failure_keeps_the_activated_credential`

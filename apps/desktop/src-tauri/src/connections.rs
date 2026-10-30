@@ -42,7 +42,6 @@ pub struct RoutingSecrets {
     native: Option<Arc<dyn SecretStore>>,
     session: Arc<SessionSecrets>,
     /// Test-only injection point so the deletion-recovery flows can exercise a
-    /// failing reference cleanup. Production never sets it.
     /// Test-only injection point so the deletion-recovery flows can exercise a
     /// failing reference cleanup. Production never sets it.
     fail_reference_ops: AtomicBool,
@@ -50,11 +49,6 @@ pub struct RoutingSecrets {
     /// rotation can commit and then fail the superseded-reference cleanup.
     /// Production never sets it.
     fail_reference_deletes: AtomicBool,
-    /// Test-only injection point that fails reference *writes* only — the
-    /// candidate is staged but never committed — so a rotation can fail
-    /// between the journal intent and the database commit. Production never
-    /// sets it.
-    fail_reference_writes: AtomicBool,
 }
 
 impl RoutingSecrets {
@@ -67,10 +61,8 @@ impl RoutingSecrets {
             session: Arc::new(SessionSecrets::new()),
             fail_reference_ops: AtomicBool::new(false),
             fail_reference_deletes: AtomicBool::new(false),
-            fail_reference_writes: AtomicBool::new(false),
         }
     }
-
     /// A composition with the native store available; session-tagged
     /// references still route to the in-memory store so the per-connection
     /// session-only mode works.
@@ -80,7 +72,6 @@ impl RoutingSecrets {
             session: Arc::new(SessionSecrets::new()),
             fail_reference_ops: AtomicBool::new(false),
             fail_reference_deletes: AtomicBool::new(false),
-            fail_reference_writes: AtomicBool::new(false),
         }
     }
 
@@ -99,13 +90,6 @@ impl RoutingSecrets {
     /// succeed, so an activation can commit before its cleanup is owed.
     pub fn set_fail_reference_deletes(&self, on: bool) {
         self.fail_reference_deletes.store(on, Ordering::SeqCst);
-    }
-
-    /// Test-only failure injection for candidate writes only: staging and
-    /// deletion still work, so the failure lands between the journal intent
-    /// and the store commit.
-    pub fn set_fail_reference_writes(&self, on: bool) {
-        self.fail_reference_writes.store(on, Ordering::SeqCst);
     }
 
     /// Test-only: how many staged candidates the session store still holds.
@@ -163,9 +147,6 @@ impl SecretStore for RoutingSecrets {
 impl SecretReferenceStore for RoutingSecrets {
     fn write_candidate(&self, reference: &str) -> Result<(), SecretStoreError> {
         self.check_injected_failure()?;
-        if self.fail_reference_writes.load(Ordering::SeqCst) {
-            return Err(SecretStoreError::Unavailable);
-        }
         self.route_reference(reference)?.write_candidate(reference)
     }
 
