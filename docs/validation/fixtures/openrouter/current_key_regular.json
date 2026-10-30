@@ -8,7 +8,7 @@
     "budgets": [
       {
         "scope": "member",
-        "guardrail_id": "00000000-0000-4000-8000-0000000000g1",
+        "guardrail_id": "00000000-0000-4000-8000-0000000000c1",
         "budget_id": null,
         "limit_usd": 50,
         "spend_usd": 32.5,
@@ -20,7 +20,7 @@
       {
         "scope": "workspace",
         "guardrail_id": null,
-        "budget_id": "00000000-0000-4000-8000-0000000000w1",
+        "budget_id": "00000000-0000-4000-8000-0000000000b1",
         "limit_usd": 200,
         "spend_usd": 120.25,
         "remaining_usd": 79.75,
@@ -42,7 +42,7 @@
     ],
     "effective_budget": {
       "scope": "member",
-      "guardrail_id": "00000000-0000-4000-8000-0000000000g1",
+      "guardrail_id": "00000000-0000-4000-8000-0000000000c1",
       "budget_id": null,
       "limit_usd": 50,
       "spend_usd": 32.5,
@@ -64,6 +64,8 @@
     "is_provisioning_key": false,
     "expires_at": "2027-12-31T23:59:59Z",
     "creator_user_id": "user_synthetic0000000000000000",
+    "organization_id": "org_synthetic0000000000000001",
+    "workspace_id": "00000000-0000-4000-8000-0000000000a1",
     "allowed_data_regions": [
       "global"
     ],

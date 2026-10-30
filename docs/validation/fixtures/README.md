@@ -90,7 +90,9 @@ asserts that:
   secret-like patterns;
 - the personally identifying fields in the Kimi userinfo fixture are exactly the
   redaction sentinel, and the omitted optional fields are still absent;
-- every `request_id` is a 26-character ULID-shaped string;
+- every `request_id` is a 26-character ULID-*shaped* string — length and character
+  class only. The invented values are deliberately readable (`01SYNTHETIC…`) and are
+  **not** valid Crockford-base32 ULIDs, so nothing may sort or timestamp-decode them;
 - every `fixtures/…` link in the capability reports resolves on disk;
 - every fixture in this corpus is cited by at least one capability report, so a
   file cannot be added or renamed without the documentation noticing.

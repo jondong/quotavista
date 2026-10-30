@@ -85,11 +85,17 @@ documentation plus parse-time and hygiene evidence only:
   of nine secret-like patterns, or on a capability report that cites a fixture path
   that does not exist.
 
-Neither document claims a measured capability. Every capability verdict in both is
-**Documented** or **Not retrievable**, never **Verified**: no live request was made,
-no member's subscription page was compared, and no OpenRouter console figure was
-reconciled. A01, A02, A03, and A04 therefore remain **Pending**, and the absence of
-live keys stays an open credential blocker rather than a documentation pass.
+Neither document claims a measured capability. The verdict labels the two capability
+matrices actually use are `Supported, **Unverified**`, `**Unsupported**` (with the
+reasons "not implemented", "reported explicitly", and "open question"),
+`**Unsupported by the source**`, `**Unsupported for our purpose** — must not
+substitute`, and `**Partial at best**`. "Supported" there means the provider's own
+documentation publishes the field; it never means QuotaVista has observed it. No cell
+reads **Verified**, **Validated**, **Observed**, or **Measured**, because no live
+request was made, no member's subscription page was compared, and no OpenRouter
+console figure was reconciled. A01, A02, A03, and A04 therefore remain **Pending**, and
+the absence of live keys stays an open credential blocker rather than a documentation
+pass.
 
 ## Credential and safety rules
 

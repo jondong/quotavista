@@ -266,7 +266,13 @@ Published docs/validation/provider-capability-openrouter.md and provider-capabil
 
 | Hash | Message |
 |------|---------|
-| `9d2d852e4b8f748d0d864d52f43809fdd05c5962` | docs(validation): add P2-01 provider capability reports and sanitized fixtures |
+| `68b54ec` | docs(validation): add P2-01 provider capability reports and sanitized fixtures |
+| `4cdbc2c` | docs(trellis): record the P2-01 session in the developer journal |
+| `1f689e1` | docs(trellis): make the P2-01 desktop-check evidence reproducible |
+
+The branch was rebased onto `877536d` after P2-03 landed on `main`, which rewrote this
+session's commit hashes. Every hash in the table above resolves with `git show` at the
+current tip.
 
 ### Status
 

@@ -29,7 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
-| 8 | 2026-10-30 | P2-01 capability reports and sanitized fixture corpus | `9d2d852e4b8f748d0d864d52f43809fdd05c5962` | `jondong/p2-01-capability-fixtures` |
+| 8 | 2026-10-30 | P2-01 capability reports and sanitized fixture corpus | `68b54ec`, `4cdbc2c`, `1f689e1` | `jondong/p2-01-capability-fixtures` |
 | 7 | 2026-10-29 | P2-02 review round 1: Retry-After hardening and should-fixes | `c18c19a` | `jondong/p2-02-openrouter-adapter` |
 | 6 | 2026-10-29 | P2-02 OpenRouter adapter skeleton implemented and committed locally | `9b18a3f` | `jondong/p2-02-openrouter-adapter` |
 | 5 | 2026-10-22 | P1-13 review round: probe isolation, fixture content checks, and 82 regression cases | `d051409` | `jondong/p1-13-native-validation` |

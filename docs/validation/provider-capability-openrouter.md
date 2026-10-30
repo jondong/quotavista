@@ -29,8 +29,8 @@ for release is the last one.
 
 | Surface | Document | Read |
 | --- | --- | --- |
-| Account Credits | <https://openrouter.ai/docs/api/api-reference/credits/get-remaining-credits> | 2026-10-29 |
-| Current key | <https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key> | 2026-10-29 |
+| Account Credits | <https://openrouter.ai/docs/api/api-reference/credits/get-remaining-credits> | 2026-10-29; OpenAPI schema re-read 2026-10-30 |
+| Current key | <https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key> | 2026-10-29; OpenAPI schema re-read 2026-10-30 |
 | Activity | <https://openrouter.ai/docs/api/api-reference/analytics/get-user-activity-grouped-by-endpoint> | 2026-10-29 |
 | Analytics query | <https://openrouter.ai/docs/api/api-reference/analytics/query-analytics-data> | 2026-10-29 |
 | Analytics meta | <https://openrouter.ai/docs/api/api-reference/analytics/get-available-analytics-metrics-and-dimensions> | 2026-10-29 |
@@ -84,8 +84,8 @@ The **per-key** view. Documented as "Get information on the API key associated
 with the current authentication session" — a regular inference key can call it,
 and it is *not* in the management-key route list.
 
-The limits guide publishes an authoritative type for the response, comments
-included:
+The limits guide publishes a hand-written type for the response, comments included.
+It is an **abbreviated subset** of the real schema; the corrections follow it:
 
 ```typescript
 type Budget = {
@@ -141,35 +141,72 @@ Semantics that change how the numbers may be used:
   are the documented encoding of a key with no credit cap. An adapter must render
   that as *no key cap*, and requirements.md is explicit that an unlimited key
   budget still does not imply unlimited account funds.
-- **`remaining_usd` is derived and may be zero or negative.** The guide states
-  `remaining_usd = limit_usd - spend_usd` and that "zero or negative blocks
-  requests". A negative remainder is a real state, not a parse error — the same
-  posture P2-02 already takes for a negative account balance.
+- **`remaining_usd` is derived and may be zero or negative.** The schema states
+  `remaining_usd = limit_usd - spend_usd` and that "Zero or negative means this layer
+  rejects requests with a 403 until it resets." A negative remainder is a real state,
+  not a parse error — the same posture P2-02 already takes for a negative account
+  balance — and it is one more source of the ambiguous 403 described under
+  [Error and permission semantics](#error-and-permission-semantics).
 - **`budgets[]` is ordered by enforcement**, and `effective_budget` names the one
   that blocks first. Enforcement order is guardrail budgets → workspace budgets →
   the key's own limit. Treating `budgets[]` as a set to be summed would
   double-count one allowance expressed at three scopes.
-- **`is_free_tier` does not mean "free plan".** It is documented as "whether the
-  user has paid for credits before" — an account-history flag, not a plan name,
-  and requirements.md forbids guessing a plan from quota size.
-- **`rate_limit` is deprecated.** The API reference carries the note "This field is
-  deprecated and safe to ignore." It must not be surfaced as a quota.
+- **`is_free_tier` does not mean "free plan", and the two documents disagree on what
+  it does mean.** The limits guide calls it "whether the user has paid for credits
+  before"; the OpenAPI schema calls it "Whether this is a free tier API key". Either
+  way it is an account-history or tier flag, not a plan name, and requirements.md
+  forbids guessing a plan from quota size. The schema adds that
+  `free_model_daily_requests.limit` "depends on total credits purchased and is
+  independent of `is_free_tier`", so the flag does not even predict the free-model
+  allowance. Record the conflict; build on neither reading until reconciliation picks
+  one.
+- **`rate_limit` is deprecated and self-contradictory.** The OpenAPI schema publishes
+  it as an object with three *required* properties — `interval` (string), `requests`
+  (integer), and `note` (string) — and marks the whole object `deprecated: true` with
+  the description "Legacy rate limit information about a key. Will always return -1."
+  That description contradicts the schema's own example values (`1h` / `1000`), which
+  the fixtures here reproduce. Parse the object and discard it; never surface it as a
+  quota or a rate limit. It is *not* an invented sub-shape, and dropping it would omit
+  a required field.
 - **BYOK spend is a separate accounting stream.** `byok_usage*` is spend through
   the user's own upstream provider keys and does not draw account credits, while
   `include_byok_in_limit` says whether it counts against the key cap. Adding it to
   credit consumption would mix two different accountabilities.
 
-The API reference example additionally shows `is_management_key`,
-`is_provisioning_key`, `expires_at`, `creator_user_id`, and
-`allowed_data_regions` — none of which appear in the limits guide's `Key` type.
-`is_management_key` would be the cheapest honest way to detect the presented key's
-**permission category** without probing the balance (architecture.md forbids using
-inference calls to test authentication), but because the two documents disagree,
-its presence in a live response is **unverified** and must be confirmed before any
-code depends on it. `label` is already masked by the API, e.g.
-`"sk-or-v1-au7...890"`, so it is a truncated key-shaped string rather than a
-secret — fixtures in this repository nonetheless avoid that prefix entirely so
-secret scanners stay clean.
+The **authoritative** shape is the OpenAPI 3.1 document published inline on the
+API-reference page (`https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key`,
+read 2026-10-30), not the abbreviated type above. Its `data` object lists **24 required
+fields**, and they correct an earlier reading of this section:
+
+- `is_management_key`, `is_provisioning_key`, `creator_user_id`, `organization_id`,
+  `workspace_id`, `allowed_data_regions`, and `rate_limit` are all published properties,
+  and every one of them is **required**. `expires_at` is published and nullable but is
+  *not* in the required list. So these fields are documented parts of the wire shape —
+  the limits guide's `Key` type simply omits them. What remains unmeasured is their
+  *values*: no live response has been observed, so no code may depend on a particular
+  field being populated until reconciliation confirms it.
+- `is_provisioning_key` is marked `deprecated: true` and described as "Whether this is a
+  management key" — a second, dying name for the same idea. Prefer `is_management_key`,
+  which is the cheapest honest way to detect the presented key's **permission category**
+  without probing the balance (architecture.md forbids using inference calls to test
+  authentication).
+- `organization_id` is "The ID of the organization that owns this API key, or null when
+  an individual account owns it"; `workspace_id` is "The ID of the workspace this API key
+  spends in, or null when no active workspace resolved for it, for example because the
+  key's workspace was deleted." These are the strongest identity candidates on the whole
+  surface, and they narrow — though they do not close — the `provider_scope_id` question
+  in [Capability matrix](#capability-matrix) row 22.
+- `allowed_data_regions` is an enum of `global`, `europe`, and `us`, "Empty when no
+  region is permitted", and reflects *region policy only* — other restrictions, such as
+  management keys being blocked from inference, still apply. It is not a capability list.
+- This route documents only **401** and **500** responses. There is no 403, unlike
+  `/credits`, so `/key` cannot distinguish "insufficient permission" from
+  "unauthenticated" by status alone. `error.metadata` is a nullable free-form object, and
+  error envelopes may additionally carry `openrouter_metadata` and `user_id`.
+
+`label` is already masked by the API, e.g. `"sk-or-v1-au7...890"`, so it is a truncated
+key-shaped string rather than a secret — fixtures in this repository nonetheless avoid
+that prefix entirely so secret scanners stay clean.
 
 Two rules from requirements.md follow from the whole surface:
 
@@ -310,7 +347,7 @@ is documented but no live call has confirmed it for any account.
 | 19 | Top-up payments and fees | none | n/a | **Unsupported by the source** | n/a | n/a | n/a |
 | 20 | Server-side as-of timestamp for credits | none | n/a | **Unsupported by the source** | n/a | n/a | n/a |
 | 21 | Account currency from the payload | none | n/a | **Unsupported by the source** | n/a | n/a | n/a |
-| 22 | Account identity (`provider_scope_id`) | `/key` `creator_user_id`; `/activity` `workspace_id` | Mixed | **Unsupported**, open question | Member / workspace | n/a | n/a |
+| 22 | Account identity (`provider_scope_id`) | `/key` `organization_id`, `workspace_id` (both required); `/activity` `workspace_id` | Regular / management key | **Unsupported**, authority unmeasured | Organization / workspace | n/a | n/a |
 
 ### Required metrics that no documented surface can satisfy
 
@@ -331,12 +368,15 @@ more code would close:
 - **A source-supplied as-of instant or currency for the balance.** The credits
   payload has neither. `source_as_of` stays `None`, and the currency is a
   documented assumption that live reconciliation must confirm.
-- **A stable account identity from the credits surface itself.** `/credits` does
-  not name the account. `creator_user_id` identifies a *member*, and
-  `workspace_id` only appears when Activity is asked to split by workspace. Since
-  architecture.md keys deduplication on `provider_scope_id`, and management keys
-  are account-scoped and unscoped across workspaces, the correct account identity
-  for a personal account is an **open question**. Guessing it risks merging two
+- **An account identity carried by the credits payload itself.** `/credits` returns two
+  counters and names no account, so attributing a balance to a
+  `provider_scope_id` always needs a second call. `/key` does publish the identity
+  fields — `organization_id` and `workspace_id` are both **required**, with documented
+  null branches ("null when an individual account owns it" and "null when no active
+  workspace resolved for it") — but which one is authoritative for deduplication is
+  **unmeasured**, and `creator_user_id` identifies a *member* rather than an account.
+  Since architecture.md keys deduplication on `provider_scope_id`, and management keys
+  are account-scoped and unscoped across workspaces, guessing risks merging two
   accounts or splitting one.
 
 ## Error and permission semantics
@@ -420,15 +460,20 @@ parsed by the adapter.
 
 | File | Contents | Consumed by |
 | --- | --- | --- |
-| `credits_ok.json` | `{"data":{"total_credits":"120.50","total_usage":"37.25"}}` | `parses_string_amounts_from_fixture` (credits.rs:246), `credits_success_maps_money_metrics` (mod.rs:339), `key_budget_is_reported_unsupported_not_conflated` (mod.rs:358) |
-| `credits_number_amounts.json` | Bare numbers `120.055` / `37.257` | `parses_bare_number_amounts_exactly` (credits.rs:264) |
-| `credits_overdrawn.json` | `10.00` / `12.50` (negative remainder) | `negative_remaining_is_reported_missing_not_clamped` (credits.rs:277) |
-| `credits_precision_violation.json` | `"1.1234567890123456789"` / `"0"` | `precision_violation_is_invalid` (credits.rs:301) |
-| `credits_missing_field.json` | Only `total_usage` | `missing_amount_field_is_invalid` (credits.rs:292) |
-| `credits_forbidden.json` | 403 envelope | `forbidden_maps_to_dataset_permission_failure` (mod.rs:388) |
-| `credits_rate_limited.json` | 429 envelope | `rate_limit_carries_cooldown_from_retry_after_seconds` (mod.rs:428) |
-| `credits_malformed.txt` | Truncated JSON | `malformed_body_is_invalid` (credits.rs:310), `malformed_success_body_fails_credits_dataset_only` (mod.rs:510) |
+| `credits_ok.json` | `{"data":{"total_credits":"120.50","total_usage":"37.25"}}` | `parses_string_amounts_from_fixture` (credits.rs:245), `credits_success_maps_money_metrics` (mod.rs:338), `key_budget_is_reported_unsupported_not_conflated` (mod.rs:357) |
+| `credits_number_amounts.json` | Bare numbers `120.055` / `37.257` | `parses_bare_number_amounts_exactly` (credits.rs:263) |
+| `credits_overdrawn.json` | `10.00` / `12.50` (negative remainder) | `negative_remaining_is_reported_missing_not_clamped` (credits.rs:276) |
+| `credits_precision_violation.json` | `"1.1234567890123456789"` / `"0"` | `precision_violation_is_invalid` (credits.rs:300) |
+| `credits_missing_field.json` | Only `total_usage` | `missing_amount_field_is_invalid` (credits.rs:291) |
+| `credits_forbidden.json` | 403 envelope | `forbidden_maps_to_dataset_permission_failure` (mod.rs:384) |
+| `credits_rate_limited.json` | 429 envelope | `rate_limit_carries_cooldown_from_retry_after_seconds` (mod.rs:424) |
+| `credits_malformed.txt` | Truncated JSON | `malformed_body_is_invalid` (credits.rs:309), `malformed_success_body_fails_credits_dataset_only` (mod.rs:509) |
 | `activity_shape_only.json` | Self-labelled shape stub, **not parsed by any code path** | nothing — named only in a `history_page` doc comment (mod.rs:241) |
+
+Citation convention: a line number is the `fn` declaration line of that test in
+`crates/providers/src/openrouter/`, as of commit `1f689e1`. These drift when the crate
+is edited, so the test **name** is the durable identifier and the line is a
+convenience.
 
 All values in that directory are invented. No file contains a credential, an
 authorization header, or a real account identifier.
@@ -488,8 +533,11 @@ be assumed.
    Analytics serves it in one call.
 5. Which metric names does `/analytics/meta` actually return for a prepaid
    personal account, and which are `is_rate: true`?
-6. What is the correct `provider_scope_id` for a personal account, given that
-   management keys are account-scoped and unscoped across workspaces?
+6. Which `/key` identity field is authoritative for `provider_scope_id`? The schema
+   publishes `organization_id` (null for an individual account) and `workspace_id`
+   (null when no active workspace resolved), both required — but management keys are
+   account-scoped and unscoped across workspaces. What does a personal account
+   actually return, and does either field survive credential rotation?
 7. Under what conditions does `truncated` come back `true`, and does the server
    ever raise `limit` on its own as the documentation suggests?
 8. How does an overdrawn balance present itself — a negative
