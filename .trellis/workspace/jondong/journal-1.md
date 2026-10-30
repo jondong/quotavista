@@ -249,3 +249,31 @@ Applied the independent round-1 review (REQUEST_CHANGES) to the OpenRouter adapt
 ### Next Steps
 
 - Coordinator: re-review with the same independent reviewer. Live reconciliation still blocked on a locally supplied query-only Management Key (QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY for the ignored smoke test).
+
+
+## Session 8: P2-01 capability reports and sanitized fixture corpus
+<!-- trellis-session: v=2 fp=48db3e46aa75cfe7 -->
+
+**Date**: 2026-10-30
+**Task**: P2-01 capability reports and sanitized fixture corpus
+**Branch**: `jondong/p2-01-capability-fixtures`
+
+### Summary
+
+Published docs/validation/provider-capability-openrouter.md and provider-capability-kimi.md from public documentation only, plus a 49-file sanitized shape-only corpus under docs/validation/fixtures/ with sibling provenance files, and the dependency-free gate scripts/check-validation-fixtures.mjs. Cross-linked from docs/traceability.md (new P2-01 evidence section, appended notes on the A01-A04 cells) and docs/phase-two-plan.md. No Rust source, dependency, or file under crates/ or apps/ changed, so the P2-03 ownership fence held. Full battery green on macOS 27.0.1 arm64 with Rust 1.99.1 and Node 24: boundary scripts, fmt, clippy with zero errors, 251 workspace tests passed and 2 ignored, contract generation current, the fixture gate, and all five desktop checks. Two secret sweeps over 55 changed files found zero hits. Remaining gaps: no live OpenRouter Credits, Activity, or Analytics response was retrieved and no Kimi membership quota was retrieved by any path, so A01-A04 and G01/G02 stay Pending; the Kimi retrieval path is an unresolved integration question because the membership pool has no documented public JSON API and the only machine-readable candidate belongs to another tool's local runtime, is labelled experimental, and needs a user-authorized flow; the usages container shape is ambiguous in the public docs; and PRD criterion 3's 'referenced by adapter tests' is met by the gate rather than by Rust tests, recorded as a deliberate deviation for the coordinator to close with P2-03.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `68b54ec` | docs(validation): add P2-01 provider capability reports and sanitized fixtures |
+| `4cdbc2c` | docs(trellis): record the P2-01 session in the developer journal |
+| `1f689e1` | docs(trellis): make the P2-01 desktop-check evidence reproducible |
+
+The branch was rebased onto `877536d` after P2-03 landed on `main`, which rewrote this
+session's commit hashes. Every hash in the table above resolves with `git show` at the
+current tip.
+
+### Status
+
+[OK] **Completed**

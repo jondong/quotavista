@@ -62,6 +62,41 @@ Tasks in different lanes may run in parallel once prerequisites are complete. Pr
 
 A05 remains primarily Phase 1 transport/UI evidence; live adapters must not collapse real zero, unknown, unsupported, stale, or failed into each other. Full A06–A07 release closure still shares Phase 4 lifecycle work; Phase 2 contributes live refresh evidence only.
 
+## Capability reports and sanitized fixtures (P2-01)
+
+P2-01 published two capability documents and a sanitized fixture corpus. They are
+documentation plus parse-time and hygiene evidence only:
+
+- [`docs/validation/provider-capability-openrouter.md`](validation/provider-capability-openrouter.md)
+  separates the four OpenRouter surfaces — account Credits, current key budget,
+  Activity, and Analytics — records which required metrics **no documented surface
+  can satisfy**, and lists the open questions a live reconciliation must answer.
+- [`docs/validation/provider-capability-kimi.md`](validation/provider-capability-kimi.md)
+  records the shared membership pool, its subscription-cycle monthly refresh, the
+  1000-record usage-detail history bound, the officially documented usage-detail
+  delay, and the explicit refusal to let the Kimi Open Platform API wallet or an
+  independent Kimi Code limit substitute for membership quota. It also records that
+  the membership pool has **no documented public JSON API**, and that the one
+  machine-readable candidate found belongs to another tool's local runtime and is
+  labelled experimental — so the retrieval path stays an open integration question.
+- [`docs/validation/fixtures/`](validation/fixtures/) holds invented-identifier JSON
+  shapes with sibling `*.meta.json` provenance, and
+  `scripts/check-validation-fixtures.mjs` fails on malformed fixture content, on any
+  of nine secret-like patterns, or on a capability report that cites a fixture path
+  that does not exist.
+
+Neither document claims a measured capability. The verdict labels the two capability
+matrices actually use are `Supported, **Unverified**`, `**Unsupported**` (with the
+reasons "not implemented", "reported explicitly", and "open question"),
+`**Unsupported by the source**`, `**Unsupported for our purpose** — must not
+substitute`, and `**Partial at best**`. "Supported" there means the provider's own
+documentation publishes the field; it never means QuotaVista has observed it. No cell
+reads **Verified**, **Validated**, **Observed**, or **Measured**, because no live
+request was made, no member's subscription page was compared, and no OpenRouter
+console figure was reconciled. A01, A02, A03, and A04 therefore remain **Pending**, and
+the absence of live keys stays an open credential blocker rather than a documentation
+pass.
+
 ## Credential and safety rules
 
 - Users supply credentials only on their machine (native secret store or explicitly chosen session memory). Never commit keys, cookies, Management Keys, raw provider payloads with identifying account data, or authorization headers.

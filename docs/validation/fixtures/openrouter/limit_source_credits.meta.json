@@ -1,0 +1,14 @@
+{
+  "surface": "402 response envelope (inference path, not a monitoring endpoint)",
+  "authorization": "Any key for the account",
+  "origin": "structure and both discriminator enumerations are documented; the message and remedy_hint strings are SYNTHETIC",
+  "source_url": "https://openrouter.ai/docs/api-reference/limits",
+  "notes": "OpenRouter publishes one 402 example verbatim, and it pairs limit_source=openrouter_in_flight_budget with reason=in_flight_budget_exhausted. This fixture exercises the OTHER documented limit_source value (openrouter_credits) with the other documented reason (weight_exceeds_budget), so its message and remedy_hint are invented and must not be quoted as provider text. What IS documented and load-bearing is the contract: all three discriminators live under error.metadata, limit_source is one of openrouter_in_flight_budget, openrouter_key_limit or openrouter_credits, and code must branch on limit_source rather than on the prose. openrouter_credits versus openrouter_key_limit is precisely the account-versus-key distinction A04 cares about. A monitoring client does not call inference endpoints, so it should never receive this envelope; it is recorded because a negative account balance can produce these errors even for free models.",
+  "fixture": "limit_source_credits.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

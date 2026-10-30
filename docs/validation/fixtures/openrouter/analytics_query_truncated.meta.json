@@ -1,0 +1,14 @@
+{
+  "surface": "POST /api/v1/analytics/query (200 response, truncated)",
+  "authorization": "Management Key (bearer)",
+  "origin": "hand-written from the published schema; every value invented",
+  "source_url": "https://openrouter.ai/docs/api-reference/analytics/query-analytics-data",
+  "notes": "truncated=true. This is the fixture that must never be published as a complete partition: an incomplete stream cannot replace a published one, and the truncated rows are a partial view whose total is unknown rather than a small total. Because the surface has no cursor, the only honest recovery is a narrower query (fewer dimensions, a shorter time_range, or an explicit group_limit) - not a continuation. Note also that row_count here equals the number of rows returned, so it cannot be used to detect how much was dropped.",
+  "fixture": "analytics_query_truncated.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

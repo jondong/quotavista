@@ -1,0 +1,6 @@
+{
+  "code": 42901,
+  "msg": "Synthetic fixture: too many authentication failures from this origin; temporarily banned.",
+  "data": {},
+  "request_id": "01SYNTHETIC000000000000010"
+}

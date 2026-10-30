@@ -1,0 +1,14 @@
+{
+  "surface": "GET /api/v1/activity",
+  "authorization": "Management Key (bearer)",
+  "origin": "hand-written from the published schema; every value invented",
+  "source_url": "https://openrouter.ai/docs/api-reference/analytics/get-user-activity-grouped-by-endpoint",
+  "notes": "Two rows on two different completed UTC days. The second row is all zeros on purpose: /activity reports a real zero for a day with no traffic, which is a different state from a day that is absent from the response. Field names are the published ones (date, prompt_tokens, completion_tokens, cached_tokens, reasoning_tokens, usage, requests, model, model_permaslug, endpoint_id, provider_name, byok_usage_inference). There is no id field, no api_key field, no cache-write counter and no cost field. The endpoint has no cursor, no limit parameter and no truncation flag, and covers only the last 30 completed UTC days, so today is never present.",
+  "fixture": "activity_ok.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

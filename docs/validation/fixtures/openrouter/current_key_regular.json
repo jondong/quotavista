@@ -1,0 +1,83 @@
+{
+  "data": {
+    "label": "synthetic-key-1a2b...9f0e",
+    "limit": 100,
+    "limit_reset": "monthly",
+    "limit_remaining": 74.5,
+    "include_byok_in_limit": true,
+    "budgets": [
+      {
+        "scope": "member",
+        "guardrail_id": "00000000-0000-4000-8000-0000000000c1",
+        "budget_id": null,
+        "limit_usd": 50,
+        "spend_usd": 32.5,
+        "remaining_usd": 17.5,
+        "reset_interval": "weekly",
+        "resets_at": "2026-11-02T00:00:00.000Z",
+        "include_byok": false
+      },
+      {
+        "scope": "workspace",
+        "guardrail_id": null,
+        "budget_id": "00000000-0000-4000-8000-0000000000b1",
+        "limit_usd": 200,
+        "spend_usd": 120.25,
+        "remaining_usd": 79.75,
+        "reset_interval": "monthly",
+        "resets_at": "2026-11-01T00:00:00.000Z",
+        "include_byok": false
+      },
+      {
+        "scope": "key_limit",
+        "guardrail_id": null,
+        "budget_id": null,
+        "limit_usd": 100,
+        "spend_usd": 25.5,
+        "remaining_usd": 74.5,
+        "reset_interval": "monthly",
+        "resets_at": "2026-11-01T00:00:00.000Z",
+        "include_byok": true
+      }
+    ],
+    "effective_budget": {
+      "scope": "member",
+      "guardrail_id": "00000000-0000-4000-8000-0000000000c1",
+      "budget_id": null,
+      "limit_usd": 50,
+      "spend_usd": 32.5,
+      "remaining_usd": 17.5,
+      "reset_interval": "weekly",
+      "resets_at": "2026-11-02T00:00:00.000Z",
+      "include_byok": false
+    },
+    "usage": 25.5,
+    "usage_daily": 1.25,
+    "usage_weekly": 8.75,
+    "usage_monthly": 25.5,
+    "byok_usage": 17.38,
+    "byok_usage_daily": 0.9,
+    "byok_usage_weekly": 6.1,
+    "byok_usage_monthly": 17.38,
+    "is_free_tier": false,
+    "is_management_key": false,
+    "is_provisioning_key": false,
+    "expires_at": "2027-12-31T23:59:59Z",
+    "creator_user_id": "user_synthetic0000000000000000",
+    "organization_id": "org_synthetic0000000000000001",
+    "workspace_id": "00000000-0000-4000-8000-0000000000a1",
+    "allowed_data_regions": [
+      "global"
+    ],
+    "free_model_daily_requests": {
+      "used": 12,
+      "limit": 50,
+      "remaining": 38
+    },
+    "rate_limit": {
+      "interval": "1h",
+      "requests": 1000,
+      "note": "This field is deprecated and safe to ignore."
+    }
+  }
+}

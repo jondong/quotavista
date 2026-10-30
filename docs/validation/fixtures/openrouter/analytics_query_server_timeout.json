@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": 408,
+    "message": "Operation timed out. Please try again later."
+  }
+}

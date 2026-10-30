@@ -1,0 +1,14 @@
+{
+  "surface": "GET /api/v1/analytics/meta (200 response)",
+  "authorization": "Management Key (bearer)",
+  "origin": "hand-written from the published schema; every value invented",
+  "source_url": "https://openrouter.ai/docs/api-reference/analytics/get-available-analytics-metrics-and-dimensions",
+  "notes": "The query vocabulary: dimensions, granularities, metrics and filter operators. This vocabulary is account- and time-dependent, so it must be discovered at runtime instead of hard-coded per vendor. metrics[].is_rate is the load-bearing flag - a rate metric is a ratio and must never be summed across buckets or across scopes, while an additive metric may be. The request_count entry follows the published example; synthetic_rate_metric is invented to document the is_rate=true shape without asserting that any particular real metric name exists.",
+  "fixture": "analytics_meta.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

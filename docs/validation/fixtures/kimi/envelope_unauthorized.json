@@ -1,0 +1,6 @@
+{
+  "code": 40101,
+  "msg": "Synthetic fixture: the bearer token is missing or not accepted.",
+  "data": {},
+  "request_id": "01SYNTHETIC000000000000009"
+}

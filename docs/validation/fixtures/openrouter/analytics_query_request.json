@@ -1,0 +1,15 @@
+{
+  "metrics": [
+    "request_count",
+    "prompt_tokens"
+  ],
+  "dimensions": [
+    "model"
+  ],
+  "granularity": "day",
+  "time_range": {
+    "start": "2026-10-01T00:00:00Z",
+    "end": "2026-10-29T00:00:00Z"
+  },
+  "limit": 1000
+}

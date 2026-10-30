@@ -1,0 +1,23 @@
+{
+  "data": {
+    "data": [
+      {
+        "date__day": "2026-10-01T00:00:00.000Z",
+        "model": "synthetic/synthetic-model-a",
+        "request_count": 900,
+        "prompt_tokens": 210000
+      },
+      {
+        "date__day": "2026-10-01T00:00:00.000Z",
+        "model": "synthetic/synthetic-model-b",
+        "request_count": 600,
+        "prompt_tokens": 180000
+      }
+    ],
+    "metadata": {
+      "query_time_ms": 513,
+      "row_count": 2,
+      "truncated": true
+    }
+  }
+}

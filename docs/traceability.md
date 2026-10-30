@@ -10,10 +10,10 @@ Phases refer to the [development plan](development-plan.md). Requirements and de
 
 | Criterion | Planned component or design section | Essential scenario or evidence | Phase | Status |
 | --- | --- | --- | --- | --- |
-| A01 | Provider adapters and capability reports | Real Kimi shared pool and OpenRouter account balance; compare native units and timestamps, not demo data | 2 | Pending; G01/G02 |
-| A02 | Scope and product identity | Web/app/Code shared consumption counted once; independent limits cannot substitute | 2 | Pending |
-| A03 | Kimi adapter validation | Compare the same period and scope with the official member page, recording allowed display precision and delay | 2 | Pending; G01 |
-| A04 | Metric scope and permission state | Regular-key budget does not become an account balance; account/key overlap not summed | 2 | Pending |
+| A01 | Provider adapters and capability reports | Real Kimi shared pool and OpenRouter account balance; compare native units and timestamps, not demo data | 2 | Pending; G01/G02 — P2-01 documented both providers' surfaces from public sources and added sanitized shape fixtures; no live request was made, so no reconciliation exists |
+| A02 | Scope and product identity | Web/app/Code shared consumption counted once; independent limits cannot substitute | 2 | Pending; P2-01 documented the one-pool scope rule and the substitution ban from public sources; not observed against a real account |
+| A03 | Kimi adapter validation | Compare the same period and scope with the official member page, recording allowed display precision and delay | 2 | Pending; G01 — P2-01 recorded the documented subscription-cycle refresh, the 1000-record history bound and the official usage-detail delay warning; the member-page comparison and the retrieval path remain open |
+| A04 | Metric scope and permission state | Regular-key budget does not become an account balance; account/key overlap not summed | 2 | Pending; P2-01 documented the key-versus-account fields and their exact semantics; the shipped adapter still reports the key budget as Unsupported |
 | A05 | Metric transport and UI states | Real zero, null, unsupported, stale, and failed states remain distinct | 1 | Pending |
 | A06 | Scheduler, typed errors, and dataset commits | Offline, timeout, 429/cooldown, permission failure, and disk-write failure preserve valid data and isolate connections | 2, 4 | Pending |
 | A07 | Per-metric freshness and lifecycle | Elapsed-age staleness, cache on restart, source delay, wake, and manual-only mode | 1, 2, 4 | Pending |
@@ -145,6 +145,96 @@ Scope: the P1-13 task branch `jondong/p1-13-native-validation` on the recorded d
 - A25: catalog parity passes (217 keys, placeholders matching in both catalogs) and the jsdom locale suites pass, and the launched prototype's settings row reads `en`. A native language switch and the Simplified-Chinese notification banner (`--interactive` steps 3–4) were not observed on either target, so the runtime evidence A25 asks for is still missing, and the zh-CN failure-scenario matrix that P1-12 deferred to these native checks remains deferred.
 - A24: this task repaired the links that archiving P1-12 had broken — this document's two P1-12 record links, the predecessor links in P1-13's own `prd.md`/`design.md`/`implement.md`, and the P1-02…P1-12 planning links in `docs/phase-one-plan.md` — and refreshed the stale status sentences in `docs/phase-one-plan.md` and `docs/development-plan.md`. Every local link in the changed documents resolves. The release documentation audit is still pending.
 - A01–A04 and G01/G02: unchanged — unverified, by design. This task closes no release acceptance criterion, and no `Pending` status above was converted to `Passed`.
+
+## P2-01 capability and fixture evidence
+
+Scope: the P2-01 task branch on macOS arm64, Rust 1.99.1, Node 24. This task changes
+no Rust source file and adds no dependency: it publishes two capability documents, a
+sanitized fixture corpus under `docs/validation/fixtures/`, and
+`scripts/check-validation-fixtures.mjs`. **No provider endpoint was contacted, no
+credential was used, and no member's subscription page was opened.** Every figure in
+every fixture is invented, identifiers are synthetic, and no fixture contains a
+cookie, bearer token, API key, or account-identifying value. The commands run and the
+per-criterion detail are recorded in [the task validation record](../.trellis/tasks/10-29-p2-01-capability-fixtures/validation.md);
+the documents themselves are [provider-capability-openrouter.md](validation/provider-capability-openrouter.md)
+and [provider-capability-kimi.md](validation/provider-capability-kimi.md).
+
+- A01: capability surfaces are now written down and separable, which is the
+  precondition for reconciliation rather than reconciliation itself.
+  [provider-capability-openrouter.md](validation/provider-capability-openrouter.md)
+  distinguishes the four OpenRouter surfaces — account Credits
+  (`GET /api/v1/credits`, Management Key, `total_credits`/`total_usage` only),
+  current key budget (`GET /api/v1/key`, not management-only), Activity
+  (`GET /api/v1/activity`, the last 30 *completed* UTC days), and Analytics
+  (`POST /api/v1/analytics/query` with `GET /api/v1/analytics/meta`) — and names the
+  required metrics **no documented surface can satisfy**: a settled total for today,
+  top-up and fee history, a source-supplied as-of instant or currency on `/credits`,
+  and a stable account identity for `provider_scope_id`.
+  [provider-capability-kimi.md](validation/provider-capability-kimi.md) records that
+  the membership pool is documented only behind a login-gated subscription page with
+  no public JSON API, and that the single machine-readable candidate found
+  (`GET /api/v1/oauth/usage` on the Kimi Code CLI's local server) belongs to another
+  tool's runtime, is explicitly experimental, and is unvalidated. Native units and
+  timestamps were therefore not compared against any real account, and no `Pending`
+  status above is changed by this task.
+- A02: the scope and substitution rules are documented with their public sources.
+  Kimi Code "shares the same quota as Kimi membership" and requests from the CLI,
+  VS Code, the desktop app and third-party tools all count against it, so web, app
+  and Code are one pool counted once; the Kimi Open Platform is pay-as-you-go "with
+  no subscription plans", and its API wallet — together with the independent Kimi
+  Code rolling-5-hour and legacy weekly limits — is recorded as unable to substitute
+  for membership quota. The `oauth/usage` window set (`monthTotal` versus
+  `limit5h`/`limit7d`/`monthCode`) is exactly where that substitution could happen by
+  accident, and the report says so. Not observed against a real account.
+- A03: the three facts a member-page comparison needs are recorded from public docs —
+  the pool refreshes monthly by **subscription cycle, not calendar month** (the
+  documented worked example: subscribe at 3:00 PM on December 1 and the next refresh
+  is 3:00 PM on January 1, "check your subscription page for the exact time");
+  remaining quota is shown **as a percentage** alongside the next refresh time and the
+  most recent **1000** usage-detail records; and the officially documented delay
+  warning, "usage-detail data may be briefly delayed; treat the current quota display
+  as authoritative", is the delay this criterion asks to be recorded. The
+  percentage-point rule (80% → 70% inside a confirmed unchanged period is 10
+  percentage points of that period's allowance) is restated, and the report forbids
+  inventing tokens from a ratio. The comparison itself, the allowed display precision,
+  and the retrieval path all remain open.
+- A04: the account-versus-key fields are documented with their exact semantics —
+  `limit`/`limit_remaining` are `null` when the key is **unlimited** rather than
+  unknown, `remaining_usd = limit_usd - spend_usd` and may be zero or negative,
+  `budgets[]` arrives **in enforcement order** with `effective_budget` naming the one
+  that blocks first, so summing the array would double-count one allowance expressed
+  at three scopes; `usage_weekly` is the "current UTC week, starting Monday";
+  `is_free_tier` means "whether the user has paid for credits before" rather than
+  naming a plan; and `rate_limit` is deprecated. The 402 envelope's
+  `error.metadata.limit_source` (`openrouter_credits` versus `openrouter_key_limit`)
+  is recorded as the one signal that separates an exhausted balance from an exhausted
+  key cap. The shipped adapter still reports the key-budget dataset as `Unsupported`,
+  so nothing is summed in code today; no live permission state was observed.
+- A10/A24: `scripts/check-validation-fixtures.mjs` is a dependency-free gate that
+  fails on malformed JSON or non-UTF-8 fixture content, on any of nine secret-like
+  patterns (a bearer or basic credential carried in an `Authorization` header,
+  `sk-or-v1-`, `sk-ant-`,
+  `sk-proj-`, generic `sk-`-prefixed runs of 20 or more characters, cookie values,
+  private-key blocks, JWTs, and any `password`/`token`/`secret`/`api_key`-named
+  field), and on any fixture path cited by a capability report that does not exist on
+  disk. Fixture bodies stay byte-exact so a future adapter can parse them directly,
+  and provenance travels in a sibling `<name>.meta.json` that the script
+  cross-checks in both directions. The Kimi `oauth/userinfo` shape fixture carries
+  `email` and `phone` only as the literal sentinel `<redacted-at-capture>` and omits
+  `avatar`, `bio` and `username`, because that endpoint is the one documented source
+  of personally identifying data. All documentation added by this task is English; the
+  release documentation audit A24 asks for remains pending.
+
+Remaining gaps: no live OpenRouter Credits, Activity or Analytics response was
+retrieved; no Kimi membership quota was retrieved by any path; the Kimi retrieval
+path stays an unresolved integration question rather than a chosen design; the
+`usages` container shape (an object keyed by window versus an array of window
+objects) is ambiguous in the public documentation and is flagged as such in the
+fixtures; and `crates/providers/src/openrouter/fixtures/activity_shape_only.json`,
+landed by P2-02 and marked UNVALIDATED there, carries field names that do not match
+the documented Activity schema — this task documents the mismatch and publishes
+corrected shapes instead of editing a file another task's tests reference. A01–A04
+and G01/G02 are unchanged: unverified, by design.
 
 ## Release evidence rules
 

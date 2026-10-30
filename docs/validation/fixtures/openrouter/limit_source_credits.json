@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": 402,
+    "message": "Synthetic fixture: this request would exceed the available account credits.",
+    "metadata": {
+      "reason": "weight_exceeds_budget",
+      "limit_source": "openrouter_credits",
+      "remedy_hint": "Synthetic fixture: add credits, or reduce the size of the request."
+    }
+  }
+}

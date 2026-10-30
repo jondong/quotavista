@@ -1,0 +1,14 @@
+{
+  "surface": "GET /api/v1/credits (401 response)",
+  "authorization": "An expired Management Key was presented",
+  "origin": "message string copied verbatim from the management-key guide",
+  "source_url": "https://openrouter.ai/docs/guides/overview/auth/management-api-keys",
+  "notes": "Management-key expiry is fixed at creation and cannot be changed; once it passes, every request fails this way and the key still appears on the settings page until it is deleted. Distinct from the missing-header 401 ('Missing Authentication header'): here a credential was presented and was rejected as stale, which is a needs-credentials state the user can act on, not a transport failure and not a zero balance. Expired keys still appear in the console, so a connection can look configured while every query fails.",
+  "fixture": "credits_expired_key.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}

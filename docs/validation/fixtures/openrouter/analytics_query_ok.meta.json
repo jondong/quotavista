@@ -1,0 +1,14 @@
+{
+  "surface": "POST /api/v1/analytics/query (200 response)",
+  "authorization": "Management Key (bearer)",
+  "origin": "hand-written from the published schema; every value invented",
+  "source_url": "https://openrouter.ai/docs/api-reference/analytics/query-analytics-data",
+  "notes": "Success envelope. Rows live at data.data and the time bucket column is granularity-suffixed (date__day for granularity=day), so the column name is derived from the request rather than fixed. data.metadata.truncated is the ONLY completeness attestation the surface offers: truncated=false is what lets a history page be published as complete, and query_time_ms / row_count are diagnostics. There is no cursor, so a truncated result cannot be resumed.",
+  "fixture": "analytics_query_ok.json",
+  "provider": "openrouter",
+  "sanitized": true,
+  "validated": false,
+  "captured_from_live_account": false,
+  "read_on": "2026-10-29",
+  "report": "docs/validation/provider-capability-openrouter.md"
+}
