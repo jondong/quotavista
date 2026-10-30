@@ -19,9 +19,9 @@ Acceptance mapping: supports A04 scope honesty and connection credential lifecyc
 
 ## Acceptance criteria
 
-- [ ] Rotation keeps connection identity when scope matches; replacement requires explicit user action when identity changes.
-- [ ] Mid-flight failures leave no plaintext secrets on disk and no half-applied trusted state without a visible recovery path.
-- [ ] Tests do not call provider inference endpoints.
+- [x] Rotation keeps connection identity when scope matches; replacement requires explicit user action when identity changes.
+- [x] Mid-flight failures leave no plaintext secrets on disk and no half-applied trusted state without a visible recovery path.
+- [x] Tests do not call provider inference endpoints.
 
 ## Out of scope
 

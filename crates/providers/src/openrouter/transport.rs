@@ -26,7 +26,7 @@ const MAX_RESPONSE_BODY_BYTES: usize = 256 * 1024;
 /// Constructed through [`BearerToken::new`], which applies the shared secret
 /// validation rules (nonempty, at most 64 KiB, no CR/LF header injection).
 /// `Debug` and `Display` never expose the token text.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BearerToken(String);
 
 impl BearerToken {
