@@ -15,7 +15,7 @@ use quotavista_core::{
     storage::{Connection, Repository, Scope, WriteContext},
 };
 use quotavista_providers::{
-    openrouter::{TransportError, TransportResponse},
+    openrouter::{BearerToken, TransportError, TransportResponse},
     simulated::{SimulatedAdapter, SimulatedRouter},
     synthetic_providers,
 };
@@ -44,6 +44,7 @@ fn ok_response(body: &str) -> Result<TransportResponse, TransportError> {
 struct FakeTransport {
     calls: Arc<Mutex<Vec<String>>>,
     responses: Arc<Mutex<VecDeque<Result<TransportResponse, TransportError>>>>,
+    tokens: Arc<Mutex<Vec<BearerToken>>>,
 }
 
 impl FakeTransport {
@@ -55,8 +56,15 @@ impl FakeTransport {
         self.calls.lock().unwrap().len()
     }
 
-    fn answer(&self, path: &str) -> Result<TransportResponse, TransportError> {
+    /// The tokens each call presented, in order. `BearerToken`'s `Debug`
+    /// stays redacted, so an assertion failure never prints secret text.
+    fn presented(&self) -> Vec<BearerToken> {
+        self.tokens.lock().unwrap().clone()
+    }
+
+    fn answer(&self, token: &BearerToken, path: &str) -> Result<TransportResponse, TransportError> {
         self.calls.lock().unwrap().push(path.to_owned());
+        self.tokens.lock().unwrap().push(token.clone());
         self.responses
             .lock()
             .unwrap()
@@ -68,20 +76,20 @@ impl FakeTransport {
 impl OpenRouterTransport for FakeTransport {
     async fn get(
         &self,
-        _token: &BearerToken,
+        token: &BearerToken,
         path: &str,
     ) -> Result<TransportResponse, TransportError> {
-        self.answer(path)
+        self.answer(token, path)
     }
 }
 
 impl KimiTransport for FakeTransport {
     async fn get(
         &self,
-        _token: &BearerToken,
+        token: &BearerToken,
         path: &str,
     ) -> Result<TransportResponse, TransportError> {
-        self.answer(path)
+        self.answer(token, path)
     }
 }
 
@@ -626,4 +634,80 @@ async fn single_adapter_override_answers_live_connections_without_network() {
     ));
     assert_eq!(harness.kimi.call_count(), 0);
     assert_eq!(harness.openrouter.call_count(), 0);
+}
+
+#[tokio::test]
+async fn rotated_credential_reaches_the_next_refresh_without_extra_calls() {
+    let harness = Harness::new().await;
+    harness
+        .add_live("user-kimi", "kimi", "sk-test-kimi-a")
+        .await;
+    let mut coordinator = harness.coordinator(SimulatedRouter::new());
+
+    harness.kimi.script(ok_response(KIMI_OK));
+    let first = refresh(&harness, &mut coordinator, "user-kimi").await;
+    assert!(matches!(first, Outcome::Completed { .. }));
+    assert_eq!(harness.kimi.call_count(), 1);
+
+    // Same-scope rotation through the real lifecycle coordinator: stage the
+    // replacement, journal the intent, activate, clean the superseded
+    // reference. No provider call happens on this path.
+    let replacement = mint_reference(SecretBackend::SessionOnly, "ref-user-kimi-b");
+    harness
+        .secrets
+        .stage_candidate(&replacement, "sk-test-kimi-b")
+        .unwrap();
+    let mut lifecycle = crate::lifecycle::Coordinator::open(
+        harness.repo.clone(),
+        harness.durable.clone(),
+        harness.secrets.clone(),
+    )
+    .unwrap();
+    lifecycle.recover().await.unwrap();
+    let context = harness.context_for("user-kimi").await;
+    lifecycle
+        .activate_credentials(
+            "op-rotate-user-kimi",
+            &context,
+            OperationKind::ReplaceCredentials,
+            &replacement,
+        )
+        .await
+        .unwrap();
+    drop(lifecycle);
+
+    assert_eq!(
+        harness.kimi.call_count(),
+        1,
+        "rotation itself issues no provider calls"
+    );
+    assert_eq!(
+        harness
+            .repo
+            .credential_ref("user-kimi")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(replacement.as_str()),
+        "the database points at the rotated reference"
+    );
+
+    // The next refresh presents the rotated credential — and only the two
+    // scripted calls ever ran.
+    harness.kimi.script(ok_response(KIMI_OK));
+    let second = refresh(&harness, &mut coordinator, "user-kimi").await;
+    assert!(matches!(second, Outcome::Completed { .. }));
+    assert_eq!(harness.kimi.call_count(), 2);
+    assert_eq!(
+        harness.kimi.presented(),
+        vec![
+            BearerToken::new("sk-test-kimi-a").unwrap(),
+            BearerToken::new("sk-test-kimi-b").unwrap(),
+        ],
+        "the second call presents the rotated credential"
+    );
+
+    // The superseded reference is unreadable after cleanup.
+    let superseded = mint_reference(SecretBackend::SessionOnly, "ref-user-kimi");
+    assert!(harness.secrets.read(&superseded).is_err());
 }

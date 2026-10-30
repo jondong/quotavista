@@ -3,6 +3,8 @@
 //! the in-memory session store and every directory is a throwaway temp dir;
 //! no keychain, Secret Service, or application directory is touched.
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use quotavista_contracts::{
@@ -219,6 +221,80 @@ fn dto_generation(connection: &ConnectionDto) -> i64 {
         .as_str()
         .parse::<i64>()
         .expect("revision is numeric")
+}
+
+async fn refresh_all(state: &AppState) {
+    let refreshed = run_ok(
+        state,
+        canonical(serde_json::json!({
+            "command": "refresh_connections",
+            "args": { "target": { "kind": "all" } },
+        })),
+    )
+    .await;
+    match refreshed {
+        CommandResult::RefreshConnections(list) => {
+            assert!(
+                list.operations
+                    .iter()
+                    .all(|operation| operation.state == OperationState::Succeeded),
+                "refresh operations succeed"
+            );
+        }
+        other => panic!("expected RefreshConnections, got {other:?}"),
+    }
+}
+
+async fn refresh_selected(state: &AppState, id: &str) {
+    let refreshed = run_ok(
+        state,
+        canonical(serde_json::json!({
+            "command": "refresh_connections",
+            "args": { "target": { "kind": "selected", "connection_ids": [id] } },
+        })),
+    )
+    .await;
+    match refreshed {
+        CommandResult::RefreshConnections(list) => {
+            assert_eq!(list.operations.len(), 1);
+            assert_eq!(
+                list.operations[0].state,
+                OperationState::Succeeded,
+                "the selected refresh succeeds"
+            );
+        }
+        other => panic!("expected RefreshConnections, got {other:?}"),
+    }
+}
+
+/// P2-05: scan every file under the fixture directory and fail — naming only
+/// the offending path — if any secret bytes reached the disk.
+fn assert_no_secret_on_disk(dir: &TempDir, secrets: &[&str]) {
+    fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).expect("directory readable") {
+            let path = entry.expect("entry readable").path();
+            if path.is_dir() {
+                walk(&path, files);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(dir.path(), &mut files);
+    assert!(!files.is_empty(), "the fixture directory has files");
+    for path in files {
+        let contents = fs::read(&path).expect("file readable");
+        for secret in secrets {
+            assert!(
+                !contents
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_bytes()),
+                "secret material reached the disk at {}",
+                path.display()
+            );
+        }
+    }
 }
 
 /// PRD criterion 1: malformed aliases and secrets fail safely, changing
@@ -776,6 +852,323 @@ async fn different_identity_rotation_is_refused_without_merging() {
         .map(|scope| scope.key)
         .collect();
     assert_eq!(scope.len(), 1);
+}
+
+/// P2-05 PRD criterion 1: identity replacement is an explicit user action. A
+/// different identity never rebinds the existing scope; the user walks the
+/// replacement flow the refusal names — disable the old connection, create a
+/// new one — and the two accounts never share a scope, a reference, or
+/// history.
+#[tokio::test]
+async fn explicit_identity_replacement_never_rebinds_history() {
+    let (_dir, state, _sink) = fixture().await;
+    let operation = connect(&state, SECRET_A).await;
+    let old_id = operation.connection_id.expect("setup names the connection");
+
+    // Publish history for the first account so the separation is observable.
+    refresh_all(&state).await;
+    let old_scope = state
+        .repository
+        .scopes(old_id.as_str())
+        .await
+        .expect("scopes readable")
+        .into_iter()
+        .next()
+        .expect("connection has a scope");
+    assert!(
+        state
+            .repository
+            .snapshot(&old_scope.id, None, "tokens")
+            .await
+            .expect("snapshot readable")
+            .is_some(),
+        "the first account has published history"
+    );
+
+    // Rotation to the second identity is refused and names the replacement
+    // flow (the refusal itself is covered above); nothing is rebound.
+    let generation = generation_of(&state, old_id.as_str()).await;
+    let refused = operation_of(
+        run_ok(
+            &state,
+            rotate_request(old_id.as_str(), generation, SECRET_B),
+        )
+        .await,
+    );
+    assert_eq!(
+        refused.next_action,
+        quotavista_contracts::NextAction::ReplaceConnection
+    );
+
+    // While the old account is still active, a second connection for the
+    // same provider is a conflict: no silent replacement path exists.
+    assert_eq!(
+        run_err(
+            &state,
+            connect_request("kimi", "Replacement Kimi", SECRET_B)
+        )
+        .await,
+        ErrorCode::Conflict
+    );
+
+    // The explicit user action: disable the old account, then create the
+    // replacement connection.
+    let disabled = run_ok(&state, enabled_request(old_id.as_str(), generation, false)).await;
+    assert_eq!(connection_of(disabled).lifecycle, LifecycleDto::Disabled);
+    let replacement = run_ok(
+        &state,
+        connect_request("kimi", "Replacement Kimi", SECRET_B),
+    )
+    .await;
+    let new_id = match replacement {
+        CommandResult::ConnectProvider(operation) => operation
+            .connection_id
+            .expect("replacement names the connection"),
+        other => panic!("expected ConnectProvider, got {other:?}"),
+    };
+    assert_ne!(old_id, new_id);
+
+    // Two accounts, two scopes: each key is that account's own identity.
+    let new_scope = state
+        .repository
+        .scopes(new_id.as_str())
+        .await
+        .expect("scopes readable")
+        .into_iter()
+        .next()
+        .expect("replacement has a scope");
+    assert_eq!(old_scope.key, crate::identity::synthetic_identity(SECRET_A));
+    assert_eq!(new_scope.key, crate::identity::synthetic_identity(SECRET_B));
+    assert_ne!(old_scope.key, new_scope.key);
+
+    // The replacement refresh publishes under its own scope; the disabled
+    // account keeps its history and its own credential reference.
+    refresh_selected(&state, new_id.as_str()).await;
+    assert!(
+        state
+            .repository
+            .snapshot(&new_scope.id, None, "tokens")
+            .await
+            .expect("snapshot readable")
+            .is_some(),
+        "the replacement publishes its own history"
+    );
+    assert!(
+        state
+            .repository
+            .snapshot(&old_scope.id, None, "tokens")
+            .await
+            .expect("snapshot readable")
+            .is_some(),
+        "the old account keeps its history"
+    );
+    let old_ref = state
+        .repository
+        .credential_ref(old_id.as_str())
+        .await
+        .expect("credential ref readable")
+        .expect("the disabled account keeps its reference");
+    let new_ref = state
+        .repository
+        .credential_ref(new_id.as_str())
+        .await
+        .expect("credential ref readable")
+        .expect("the replacement has a reference");
+    assert_ne!(old_ref, new_ref);
+    let store = state.secrets.as_ref().expect("store present");
+    assert_eq!(store.read(&old_ref).expect("old readable"), SECRET_A);
+    assert_eq!(store.read(&new_ref).expect("new readable"), SECRET_B);
+
+    // Removing the old account deletes only its own artifacts; the
+    // replacement keeps its history.
+    let removed = run_ok(
+        &state,
+        remove_request(
+            old_id.as_str(),
+            generation_of(&state, old_id.as_str()).await,
+        ),
+    )
+    .await;
+    let removed = operation_of(removed);
+    assert_eq!(removed.state, OperationState::Succeeded);
+    // The removal also deleted the old account's secret: its reference no
+    // longer reads back, while the replacement's still does.
+    assert!(
+        matches!(
+            store.read(&old_ref),
+            Err(quotavista_core::secrets::SecretError::NeedsCredentials)
+        ),
+        "the removed account's reference is gone"
+    );
+    assert_eq!(store.read(&new_ref).expect("new still readable"), SECRET_B);
+
+    let connections = list_connections(&state).await;
+    assert_eq!(connections.len(), 1);
+    assert_eq!(connections[0].connection_id.as_str(), new_id.as_str());
+    assert!(
+        state
+            .repository
+            .snapshot(&new_scope.id, None, "tokens")
+            .await
+            .expect("snapshot readable")
+            .is_some(),
+        "the replacement keeps its history after the old account is removed"
+    );
+    assert!(
+        state
+            .repository
+            .snapshot(&old_scope.id, None, "tokens")
+            .await
+            .expect("snapshot readable")
+            .is_none(),
+        "the old account's snapshot went with the old connection"
+    );
+}
+
+/// P2-05 PRD criterion 2: an activation refusal between the successful
+/// secret-store candidate write and the database commit keeps the previous
+/// credential live and readable, leaves the interrupted rotation visible as a
+/// pending operation, writes no plaintext to the disk, and converges across a
+/// restart. The refusal is produced by planting an incomplete operation
+/// projection, which the activation transaction's mutation fence rejects; the
+/// compensating delete is failed too, so the owed cleanup survives to recovery.
+#[tokio::test]
+async fn rotation_activation_failure_after_the_store_write_recovers_across_restart() {
+    let (dir, state, _sink) = fixture().await;
+    let operation = connect(&state, SECRET_A).await;
+    let id = operation.connection_id.expect("setup names the connection");
+    let generation = generation_of(&state, id.as_str()).await;
+    let live = state
+        .repository
+        .credential_ref(id.as_str())
+        .await
+        .expect("credential ref readable")
+        .expect("the setup left a live reference");
+
+    // Plant an incomplete operation projection on the same connection, so the
+    // rotation's activation transaction is refused by its mutation fence after
+    // the candidate write has already reached the store. Fail reference
+    // deletions as well, so the inline compensation cannot run and the owed
+    // cleanup survives to recovery — the worst mid-flight window.
+    state
+        .repository
+        .begin_operation(&quotavista_core::journal::OperationRecord {
+            operation_id: "op-planted-activation-fence".into(),
+            connection_id: id.as_str().to_string(),
+            kind: quotavista_core::journal::OperationKind::ReplaceCredentials,
+            phase: quotavista_core::journal::OperationPhase::Pending,
+            candidate_ref: Some("qv1:session-only:planted-activation-fence".into()),
+            previous_ref: None,
+            generation,
+        })
+        .await
+        .expect("planted fence projection");
+    let store = state
+        .secrets
+        .as_ref()
+        .expect("session composition has a store");
+    store.set_fail_reference_deletes(true);
+    let failed = run(&state, rotate_request(id.as_str(), generation, SECRET_A)).await;
+    assert!(
+        matches!(
+            &failed,
+            Envelope::Error { ref error, .. } if error.code() == ErrorCode::StorageError
+        ),
+        "the interrupted rotation reports a storage failure, got {failed:?}"
+    );
+
+    // The candidate had already been committed to the store when the database
+    // refused: the interrupted rotation names it and it reads back, while the
+    // previous credential is still the live, readable reference.
+    let records = state
+        .repository
+        .operations(Some(id.as_str()))
+        .await
+        .expect("operations readable");
+    let interrupted = records
+        .iter()
+        .find(|record| {
+            record.kind == quotavista_core::journal::OperationKind::ReplaceCredentials
+                && record.previous_ref.as_deref() == Some(live.as_str())
+        })
+        .expect("the interrupted rotation stays visible");
+    let orphan = interrupted
+        .candidate_ref
+        .clone()
+        .expect("the rotation names its candidate");
+    assert_ne!(orphan, live, "the candidate is a new reference");
+    assert_eq!(
+        store
+            .read(&orphan)
+            .expect("the candidate reached the store"),
+        SECRET_A
+    );
+    assert_eq!(
+        state
+            .repository
+            .credential_ref(id.as_str())
+            .await
+            .expect("credential ref readable")
+            .as_deref(),
+        Some(live.as_str())
+    );
+    assert_eq!(
+        store
+            .read(&live)
+            .expect("the previous credential stays readable"),
+        SECRET_A
+    );
+    let connections = list_connections(&state).await;
+    assert_eq!(connections[0].lifecycle, LifecycleDto::Active);
+
+    // No plaintext secret reached the disk at any point.
+    assert_no_secret_on_disk(&dir, &[SECRET_A, SECRET_B]);
+
+    // A restart runs recovery: the orphan candidate — never the previous
+    // reference — is the owed cleanup, both interrupted operations finish, the
+    // fence is released, and — session-only, with an in-memory store — the
+    // connection reports needs_credentials. Persistent-store cleanup semantics
+    // are proven by the infrastructure lifecycle tests.
+    let (state, _sink) = restart(&dir).await;
+    let records = state
+        .repository
+        .operations(Some(id.as_str()))
+        .await
+        .expect("operations readable");
+    assert!(
+        records.iter().all(
+            |record| record.kind != quotavista_core::journal::OperationKind::ReplaceCredentials
+        ),
+        "recovery finished the interrupted rotation"
+    );
+    let connections = list_connections(&state).await;
+    assert_eq!(connections[0].lifecycle, LifecycleDto::NeedsCredentials);
+
+    // The explicit recovery path — rotate again, now with a healthy store —
+    // succeeds, activates a new reference, and still leaves nothing on disk.
+    let generation = generation_of(&state, id.as_str()).await;
+    let retry =
+        operation_of(run_ok(&state, rotate_request(id.as_str(), generation, SECRET_A)).await);
+    assert_eq!(retry.state, OperationState::Succeeded);
+    let connections = list_connections(&state).await;
+    assert_eq!(connections[0].lifecycle, LifecycleDto::Active);
+    let rotated = state
+        .repository
+        .credential_ref(id.as_str())
+        .await
+        .expect("credential ref readable")
+        .expect("the retry left a live reference");
+    assert_ne!(rotated, live, "the retry activated a new reference");
+    assert_eq!(
+        state
+            .secrets
+            .as_ref()
+            .expect("session composition has a store")
+            .read(&rotated)
+            .expect("the rotated credential is readable"),
+        SECRET_A
+    );
+    assert_no_secret_on_disk(&dir, &[SECRET_A, SECRET_B]);
 }
 
 /// PRD criterion 2: one active connection per provider, even for candidates

@@ -42,7 +42,6 @@ pub struct RoutingSecrets {
     native: Option<Arc<dyn SecretStore>>,
     session: Arc<SessionSecrets>,
     /// Test-only injection point so the deletion-recovery flows can exercise a
-    /// failing reference cleanup. Production never sets it.
     /// Test-only injection point so the deletion-recovery flows can exercise a
     /// failing reference cleanup. Production never sets it.
     fail_reference_ops: AtomicBool,
@@ -64,7 +63,6 @@ impl RoutingSecrets {
             fail_reference_deletes: AtomicBool::new(false),
         }
     }
-
     /// A composition with the native store available; session-tagged
     /// references still route to the in-memory store so the per-connection
     /// session-only mode works.
