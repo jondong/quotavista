@@ -277,3 +277,29 @@ current tip.
 ### Status
 
 [OK] **Completed**
+
+
+## Session 9: P2-05 credential rotation validation implemented locally
+<!-- trellis-session: v=2 fp=80757049a83f5015 -->
+
+**Date**: 2026-10-30
+**Task**: P2-05 credential rotation validation implemented locally
+**Branch**: `jondong/p2-05-credential-rotation`
+
+### Summary
+
+Added same-scope rotation and explicit identity replacement evidence: new set_fail_reference_writes injection, explicit_identity_replacement_never_rebinds_history, rotation_store_failure_before_commit_recovers_across_restart with disk-scan helper, and rotated_credential_reaches_the_next_refresh_without_extra_calls. Gates: fmt clean, clippy -D warnings clean, workspace 295 passed. Local-only; awaiting independent review before push.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d471e5a` | feat(connections): prove same-scope rotation and explicit identity replacement (P2-05) |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Independent reviewer approves HEAD d471e5a, then push/PR/merge per standing rules.

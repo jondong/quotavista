@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
+- **Total Sessions**: 9
 - **Last Active**: 2026-10-30
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~273 | Active |
+| `journal-1.md` | ~305 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-10-30 | P2-05 credential rotation validation implemented locally | `d471e5a` | `jondong/p2-05-credential-rotation` |
 | 8 | 2026-10-30 | P2-01 capability reports and sanitized fixture corpus | `68b54ec`, `4cdbc2c`, `1f689e1` | `jondong/p2-01-capability-fixtures` |
 | 7 | 2026-10-29 | P2-02 review round 1: Retry-After hardening and should-fixes | `c18c19a` | `jondong/p2-02-openrouter-adapter` |
 | 6 | 2026-10-29 | P2-02 OpenRouter adapter skeleton implemented and committed locally | `9b18a3f` | `jondong/p2-02-openrouter-adapter` |
