@@ -303,3 +303,46 @@ Added same-scope rotation and explicit identity replacement evidence: new set_fa
 ### Next Steps
 
 - Independent reviewer approves HEAD d471e5a, then push/PR/merge per standing rules.
+
+
+## Session 10: P2-06 live-smoke evidence and auth guidance corrections
+<!-- trellis-session: v=2 fp=75d963dcd5604481 -->
+
+**Date**: 2026-11-11
+**Task**: P2-06 live-smoke evidence and auth guidance corrections
+**Branch**: `jondong/p2-06-live-evidence-docs`
+
+### Summary
+
+Recorded the user-reported 2026-11-10 OpenRouter live-smoke pass with its limitations and corrected two drifted pieces of provider guidance: a Management Key is an administrative credential with no read-only or vendor-scoped read-only variant, and the Kimi blocker is an unresolved supported integration rather than a token the user still owes. A01-A04 stay Pending with distinct reasons; G02 moves to partially exercised but still open; both parents stay open. Local-only, awaiting independent review before push.
+
+### Main Changes
+
+- docs/validation/provider-capability-openrouter.md: new 'Live-smoke evidence (user-reported)' section (verbatim output, command/environment/result/evidence classes, what it does and does not establish), corrected Management Key danger paragraph with four handling bullets, G02 honest-status row re-worded, banner and provenance updated
+- docs/validation/provider-capability-kimi.md: G01 row now 'unresolved supported integration', Path B authorization blocker and open-question-10 feasibility gate re-worded, closing paragraph adds the non-substitute and no-cookie-extraction rules
+- docs/traceability.md: A01-A04 rows carry distinct Pending reasons; new 'P2-06 live-smoke and guidance-correction evidence' section before the release evidence rules
+- docs/phase-two-plan.md: P2-06 inventory row, execution step 7, evidence section, corrected status line, credential bullet, exit gate, and starting point
+- crates/providers/src/openrouter/mod.rs and crates/providers/src/kimi/mod.rs: live-test doc comments and #[ignore] reason strings corrected; no logic, signature, or contract change
+- Phase 2 parent task.json notes / prd.md scope / implement.md wording updated so the exit gate stays honest; all seven parent exit checkboxes left unchecked
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ce3b9b2d45b4ea8a2d0766138c8ac438e3079215` | docs(validation): record OpenRouter live-smoke evidence and correct credential guidance (P2-06) |
+
+### Testing
+
+- [OK] cargo fmt --all -- --check clean; cargo clippy --locked --workspace --all-targets -- -D warnings clean (zero ^error lines); generate-contracts --check clean; check-core-boundaries.sh and test-check-core-boundaries.sh clean; check-validation-fixtures.mjs clean (23 JSON bodies, 9 secret patterns, 2 reports cross-checked)
+- [OK] cargo test --locked --workspace: 297 passed, 0 failed, 3 ignored (the two env-gated provider live smokes plus the macOS Keychain native smoke were not run)
+- [OK] apps/desktop: npm run lint, i18n:check, vitest (8 files / 82 tests passed), typecheck, and build all clean
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Independent reviewer (different provider) reviews local HEAD ce3b9b2 before any push, PR, or merge
+- Human desktop numeric reconciliation of OpenRouter Credits against the console per the 10 steps in the P2-06 validation record; revoke the short-expiry Management Key afterwards
+- Kimi retrieval path needs a product-owner decision on Path B or a supported Kimi flow before any adapter validation is possible
