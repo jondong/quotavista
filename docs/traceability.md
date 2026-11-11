@@ -10,10 +10,10 @@ Phases refer to the [development plan](development-plan.md). Requirements and de
 
 | Criterion | Planned component or design section | Essential scenario or evidence | Phase | Status |
 | --- | --- | --- | --- | --- |
-| A01 | Provider adapters and capability reports | Real Kimi shared pool and OpenRouter account balance; compare native units and timestamps, not demo data | 2 | Pending; G01/G02 — P2-01 documented both providers' surfaces from public sources and added sanitized shape fixtures; no live request was made, so no reconciliation exists |
-| A02 | Scope and product identity | Web/app/Code shared consumption counted once; independent limits cannot substitute | 2 | Pending; P2-01 documented the one-pool scope rule and the substitution ban from public sources; not observed against a real account |
-| A03 | Kimi adapter validation | Compare the same period and scope with the official member page, recording allowed display precision and delay | 2 | Pending; G01 — P2-01 recorded the documented subscription-cycle refresh, the 1000-record history bound and the official usage-detail delay warning; the member-page comparison and the retrieval path remain open |
-| A04 | Metric scope and permission state | Regular-key budget does not become an account balance; account/key overlap not summed | 2 | Pending; P2-01 documented the key-versus-account fields and their exact semantics; the shipped adapter still reports the key budget as Unsupported |
+| A01 | Provider adapters and capability reports | Real Kimi shared pool and OpenRouter account balance; compare native units and timestamps, not demo data | 2 | Pending; G01/G02 — P2-01 documented both providers' surfaces from public sources and added sanitized shape fixtures. P2-06 records a **user-reported** 2026-11-10 pass of the env-gated OpenRouter live smoke against one real prepaid account: `GET /api/v1/credits` reached and decoded into validated metric rows, but dataset categories only were printed, so no native unit or timestamp was compared against the console. That is partial evidence for the adapter half of this criterion, not a reconciliation. Kimi has no demonstrated real retrieval path |
+| A02 | Scope and product identity | Web/app/Code shared consumption counted once; independent limits cannot substitute | 2 | Pending; P2-01 documented the one-pool scope rule and the substitution ban from public sources; not observed against a real account. P2-06 added no observation that web, app and Code consumption counts once, and no code path substitutes an API wallet or an independent Code limit |
+| A03 | Kimi adapter validation | Compare the same period and scope with the official member page, recording allowed display precision and delay | 2 | Pending; G01 — P2-01 recorded the documented subscription-cycle refresh, the 1000-record history bound and the official usage-detail delay warning; the member-page comparison remains open. P2-06 found no documented consumer membership session-token issuance path, so the retrieval path is an **unresolved supported integration** rather than a token the user has yet to supply; the adapter base URL and membership endpoint stay Unvalidated placeholders and Moonshot Open Platform or Kimi Code API keys are not substitutes |
+| A04 | Metric scope and permission state | Regular-key budget does not become an account balance; account/key overlap not summed | 2 | Pending; P2-01 documented the key-versus-account fields and their exact semantics; the shipped adapter still reports the key budget as Unsupported. P2-06's smoke line `live dataset key-budget returned metrics` is that Unsupported placeholder row carrying its metrics payload, not a measured key budget, so Credits versus key budget remains numerically unreconciled |
 | A05 | Metric transport and UI states | Real zero, null, unsupported, stale, and failed states remain distinct | 1 | Pending |
 | A06 | Scheduler, typed errors, and dataset commits | Offline, timeout, 429/cooldown, permission failure, and disk-write failure preserve valid data and isolate connections | 2, 4 | Pending |
 | A07 | Per-metric freshness and lifecycle | Elapsed-age staleness, cache on restart, source delay, wake, and manual-only mode | 1, 2, 4 | Pending |
@@ -234,7 +234,66 @@ fixtures; and `crates/providers/src/openrouter/fixtures/activity_shape_only.json
 landed by P2-02 and marked UNVALIDATED there, carries field names that do not match
 the documented Activity schema — this task documents the mismatch and publishes
 corrected shapes instead of editing a file another task's tests reference. A01–A04
-and G01/G02 are unchanged: unverified, by design.
+and G01/G02 are unchanged: unverified, by design. (P2-06 later recorded a
+user-reported live OpenRouter Credits smoke — see the P2-06 section below. It retires
+no gap listed here except that the Credits endpoint is no longer wholly unexercised.)
+
+## P2-06 live-smoke and guidance-correction evidence
+
+Scope: the P2-06 task branch on macOS arm64, Rust 1.99.1, Node 24. This task changes no
+adapter logic: it records one user-reported live run, corrects the Management Key and Kimi
+authorization guidance in the two capability reports, and re-inspects the desktop connection
+path. No credential was supplied to, searched for, read, printed, or committed by this task,
+and no `#[ignore]`d live test was executed here. The user-reported run is recorded verbatim in
+[provider-capability-openrouter.md](validation/provider-capability-openrouter.md#live-smoke-evidence-user-reported);
+the corrected Kimi guidance is in
+[provider-capability-kimi.md](validation/provider-capability-kimi.md).
+
+- A01: on 2026-11-10 (21:52 Asia/Shanghai) the user reported a successful run of the env-gated
+  live smoke `quotavista_test_openrouter_live_credits_management_key` against a real prepaid
+  OpenRouter account — `1 passed; 0 failed; 0 ignored; 0 measured; 73 filtered out`. The run is
+  **user-reported and not independently reproduced here.** It evidences that the shipped adapter
+  reached `GET /api/v1/credits` with a Management Key and decoded a real response into three
+  `prepaid-credits` rows that each satisfy `CurrentMetric::validate()`: the adapter half of A01.
+  It printed dataset categories and no figure, so no native unit or timestamp was compared
+  against the OpenRouter console, and no desktop UI was exercised. Kimi contributed nothing
+  because no Kimi retrieval path exists. A01 stays Pending.
+- A02: unchanged and Pending. The smoke observed nothing about shared Kimi consumption counting
+  once across web, app and Code, and no code path substitutes an API wallet or an independent
+  Code limit for membership quota.
+- A03: unchanged and Pending, with the blocker re-worded. No official member-page comparison has
+  occurred, and P2-06 found no documented consumer membership session-token issuance path in the
+  reviewed sources. The Kimi adapter's base URL (`https://www.kimi.com`) and membership endpoint
+  (`/api/membership/shared-pool`) remain Unvalidated placeholders, and Moonshot Open Platform or
+  Kimi Code API keys remain non-substitutes. The gap is an **unresolved supported integration**,
+  not a token the user has yet to supply. No universal impossibility is claimed.
+- A04: unchanged and Pending. The smoke's `live dataset key-budget returned metrics` line is the
+  adapter's unconditional `Unsupported` placeholder row carrying its metrics payload
+  (`OpenRouterAdapter::key_budget_unsupported`, asserted by
+  `key_budget_is_reported_unsupported_not_conflated`), not a measured key budget. Credits versus
+  key budget remains numerically unreconciled, and no regular-key versus management-key
+  comparison exists.
+- G01: still an open blocker, re-worded to "unresolved supported integration".
+- G02: now **partially exercised, still open**. A Management Key was used once, by the user, for
+  the Credits path, so that path is no longer wholly unexercised. Token semantics, current-day
+  reporting, Activity and Analytics behaviour, permission failures, and expiry handling all
+  remain unmeasured. The Management Key guidance is corrected everywhere this task touched: a
+  Management Key is an administrative credential that can create, edit and delete the account's
+  API keys, no read-only or vendor-scoped read-only variant exists, "query-only" is QuotaVista
+  client discipline rather than a vendor mode, and the handling rule is a short-expiry key kept
+  only on the user's machine and revoked once the run is recorded.
+- Desktop: the OpenRouter connection and refresh path was inspected in source — the connection
+  form's credential kinds including `management_key`, the P2-04 refresh wiring, and
+  `ProviderRouter`'s resolution of a stored credential reference through `SecretStore` — and is
+  covered by the non-secret automated suites listed in the task validation record. **No live UI
+  verification is claimed.** The running App does not read provider credentials from environment
+  variables, so the remaining numeric reconciliation is a human desktop procedure, written out
+  step by step in
+  [the task validation record](../.trellis/tasks/11-11-p2-06-live-evidence-docs/validation.md).
+
+Remaining gaps: the OpenRouter console reconciliation and the Kimi member-page reconciliation are
+both still owed; the Phase 2 parent exit gate stays open; and the Phase 1 parent stays incomplete
+with its Ubuntu row unverified and no invented OBSERVED evidence.
 
 ## Release evidence rules
 

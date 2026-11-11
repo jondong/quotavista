@@ -2,7 +2,7 @@
 
 Date: 2026-10-29
 
-Status: Planning boarded. Implementation starts with P2-02 (OpenRouter live adapter skeleton) once this plan and the Trellis tree exist on a branch; live reconciliation waits on locally supplied credentials. Phase 1 parent `10-18-phase-one-prototype` remains open and incomplete — Ubuntu/Linux Phase 1 validation is waived for now by product owner direction and must not be invented as OBSERVED, archived as complete, or rewritten to PASS.
+Status: Planning boarded. Implementation starts with P2-02 (OpenRouter live adapter skeleton) once this plan and the Trellis tree exist on a branch; live reconciliation depends on credentials the user supplies only on their machine, and on the Kimi side it depends on a supported integration that does not exist yet. Phase 1 parent `10-18-phase-one-prototype` remains open and incomplete — Ubuntu/Linux Phase 1 validation is waived for now by product owner direction and must not be invented as OBSERVED, archived as complete, or rewritten to PASS.
 
 Baseline: [Requirements 0.9](requirements.md), [Architecture 0.4](architecture.md), and [development plan](development-plan.md). [Trellis workflow instructions](task-management.md) describe setup and task operations. Acceptance mapping: [traceability](traceability.md).
 
@@ -35,6 +35,7 @@ The [parent milestone](../.trellis/tasks/10-29-phase-two-provider-validation/prd
 | [P2-03](../.trellis/tasks/10-29-p2-03-kimi-adapter/prd.md) | Kimi shared-membership adapter | P2-00; soft on P2-01 | Planning |
 | [P2-04](../.trellis/tasks/10-29-p2-04-refresh-wiring/prd.md) | Wire live adapters into refresh / connection selection | P2-02 or P2-03 (at least one live adapter) | Planning |
 | [P2-05](../.trellis/tasks/10-29-p2-05-credential-rotation/prd.md) | Same-scope credential rotation and identity replacement | P2-04 | Planning |
+| [P2-06](../.trellis/tasks/11-11-p2-06-live-evidence-docs/prd.md) | Record the user-reported live smoke with its limitations and correct the Management Key / Kimi authorization guidance in docs and Trellis | P2-01, P2-02 | Docs/evidence slice only — no adapter logic |
 
 The table records the initial plan, not live task status. Use `task.py list` and each `task.json` for current status. Completed tasks move to `.trellis/tasks/archive/YYYY-MM/`.
 
@@ -46,6 +47,7 @@ The table records the initial plan, not live task status. Use `task.py list` and
 4. **P2-03** follows the same pattern for Kimi shared membership (authorization against the official membership page; no cookies or identifying payloads in fixtures).
 5. **P2-04** wires whichever live adapters exist into the existing refresh coordinator (one job per connection, concurrency two, typed errors, last-successful-value preservation).
 6. **P2-05** proves same-scope rotation and explicit identity replacement, including failures between native secret-store and database steps, without inference calls.
+7. **P2-06** is a docs-and-evidence slice that can run any time after P2-01 and P2-02: it records a user-reported live smoke with its limitations and corrects the credential guidance. It closes no acceptance criterion by itself.
 
 Tasks in different lanes may run in parallel once prerequisites are complete. Prefer not starting P2-04 until at least one of P2-02/P2-03 has a reviewable adapter surface. Pre-resolve shared-file conflicts (especially `crates/providers`, `crates/infrastructure/src/refresh*`, connection IPC) before launching parallel implementers.
 
@@ -91,17 +93,47 @@ reasons "not implemented", "reported explicitly", and "open question"),
 `**Unsupported by the source**`, `**Unsupported for our purpose** — must not
 substitute`, and `**Partial at best**`. "Supported" there means the provider's own
 documentation publishes the field; it never means QuotaVista has observed it. No cell
-reads **Verified**, **Validated**, **Observed**, or **Measured**, because no live
-request was made, no member's subscription page was compared, and no OpenRouter
-console figure was reconciled. A01, A02, A03, and A04 therefore remain **Pending**, and
-the absence of live keys stays an open credential blocker rather than a documentation
-pass.
+reads **Verified**, **Validated**, **Observed**, or **Measured**, because P2-01 made no live
+request, compared no member's subscription page, and reconciled no OpenRouter console figure.
+A01, A02, A03, and A04 therefore remain **Pending**. Since then P2-06 has recorded a
+user-reported live OpenRouter Credits smoke (see
+[the capability report](validation/provider-capability-openrouter.md#live-smoke-evidence-user-reported)),
+so live-key absence is no longer the whole OpenRouter story — but a single smoke that printed
+dataset categories and no figure is still not a reconciliation, and the four criteria stay
+Pending rather than turning into a documentation pass.
+
+## P2-06 live-smoke evidence and guidance corrections
+
+P2-06 is a docs-and-evidence slice. It records one **user-reported** run of the env-gated
+OpenRouter live smoke `quotavista_test_openrouter_live_credits_management_key`, timestamped
+2026-11-10 21:52 Asia/Shanghai, against a real prepaid account: `1 passed; 0 failed; 0 ignored;
+0 measured; 73 filtered out`. The run printed dataset categories and no figure, so it evidences
+that the shipped adapter reached and decoded `/api/v1/credits` — and nothing more. It is not a
+console reconciliation, it is not a desktop UI validation, and it was not reproduced by this
+repository's automated checks. Its `live dataset key-budget returned metrics` line is the
+adapter's unconditional `Unsupported` placeholder row, which is why A04 gains nothing from it.
+
+The same task corrected two pieces of guidance that had drifted:
+
+- A Management Key is an administrative credential that can create, edit and delete the
+  account's API keys. No read-only or scope-limited variant exists, so "query-only" describes
+  QuotaVista's own client behaviour, not a vendor mode. The handling rule is a short-expiry key,
+  kept only on the user's machine, revoked once the run is recorded.
+- The Kimi blocker is an **unresolved supported integration**, not a session token the user
+  still owes. No documented consumer membership session-token issuance path was found in the
+  reviewed sources; the adapter's base URL and membership endpoint stay **Unvalidated**
+  placeholders, and Moonshot Open Platform or Kimi Code API keys are not substitutes. No
+  universal impossibility is claimed — Kimi may publish a supported flow later.
+
+A01–A04 remain Pending, G01 remains an open blocker, and G02 is now partially exercised but
+still open. Evidence detail:
+[traceability](traceability.md#p2-06-live-smoke-and-guidance-correction-evidence).
 
 ## Credential and safety rules
 
 - Users supply credentials only on their machine (native secret store or explicitly chosen session memory). Never commit keys, cookies, Management Keys, raw provider payloads with identifying account data, or authorization headers.
 - Prompts under `~/.quotavista-orchestration/` must not embed secrets. Reference env/secret-store names only.
-- OpenRouter Management Keys have administrative capabilities beyond inference keys: query only the required Credits / Activity / Analytics endpoints; do not create, modify, or delete keys or other account resources.
+- OpenRouter Management Keys are administrative credentials: they can create, edit and delete the account's API keys, and no read-only or vendor-scoped read-only variant exists, so none may be assumed. QuotaVista therefore issues only the required Credits / Activity / Analytics queries as its own client discipline, never creates, modifies or deletes keys or other account resources, and any key used for validation is short-expiry, kept only on the user's machine, and revoked once the run is recorded.
 - Fixtures in the repository must be synthetic or explicitly sanitized. Prefer redacted JSON shapes and invented identifiers over live captures.
 - Docs and Trellis artifacts stay English. No production credentials in CI.
 
@@ -119,8 +151,8 @@ Do not merge without the sha-guard standing rules. Do not archive the Phase 1 pa
 
 ## Exit gate
 
-Reconcile real OpenRouter balance (and Activity/Analytics coverage where available) and Kimi shared quota against official sources; publish capability reports and sanitized fixtures; record unresolved integration issues explicitly. Parent milestone stays open until every child criterion passes with evidence that identifies commit, command/procedure, environment, result, and limitation. Live-key absence is an open credential blocker for A01/A03/A04 reconciliation — not a documentation PASS.
+Reconcile real OpenRouter balance (and Activity/Analytics coverage where available) and Kimi shared quota against official sources; publish capability reports and sanitized fixtures; record unresolved integration issues explicitly. Parent milestone stays open until every child criterion passes with evidence that identifies commit, command/procedure, environment, result, and limitation. A user-reported live smoke is not a reconciliation and not a documentation PASS: A01/A03/A04 still require figures compared against official sources, and the Kimi side is blocked by an unresolved supported integration rather than by a token the user owes.
 
 ## Starting point
 
-Board P2-00 through P2-05 under parent `10-29-phase-two-provider-validation`. Start P2-02 OpenRouter implementer on a separate worktree once this plan text and Trellis children exist on disk. Live Management Key and Kimi auth material remain human-supplied blockers for reconciliation slices.
+Board P2-00 through P2-05 under parent `10-29-phase-two-provider-validation`. Start P2-02 OpenRouter implementer on a separate worktree once this plan text and Trellis children exist on disk. OpenRouter reconciliation still needs a Management Key the user supplies only on their machine; Kimi reconciliation is blocked by an unresolved supported integration, not by material the user owes.

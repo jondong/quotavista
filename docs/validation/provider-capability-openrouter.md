@@ -1,13 +1,21 @@
 # OpenRouter capability report
 
-**Status: DOCUMENTED, NOT VALIDATED.** Every verdict below comes from public
-OpenRouter documentation read on 2026-10-29 (UTC). No live request was made, no
-Management Key was used, and no account was contacted while writing this
-document. Nothing here is evidence for release criterion A01, A03, or A04; those
-require real-account reconciliation and remain **Pending** in
+**Status: DOCUMENTED, NOT VALIDATED — plus one user-reported live smoke.** Every
+verdict below comes from public OpenRouter documentation read on 2026-10-29
+(UTC). No live request was made, no Management Key was used, and no account was
+contacted while Trellis task P2-01 wrote this document. On 2026-11-10 the user
+reported one successful run of the env-gated live smoke against a real prepaid
+account; that run is recorded in
+[Live-smoke evidence (user-reported)](#live-smoke-evidence-user-reported) below.
+It changes no verdict here, because it printed dataset categories rather than
+figures and reconciled nothing against the OpenRouter console or the desktop UI.
+Nothing in this document is evidence that release criterion A01, A03, or A04 is
+met; those require real-account numeric reconciliation and remain **Pending** in
 [traceability.md](../traceability.md).
 
-Produced by Trellis task P2-01 on branch `jondong/p2-01-capability-fixtures`.
+Produced by Trellis task P2-01 on branch `jondong/p2-01-capability-fixtures`;
+the live-smoke record and the Management Key handling correction were added by
+Trellis task P2-06 on branch `jondong/p2-06-live-evidence-docs`.
 Companion documents: [provider-capability-kimi.md](provider-capability-kimi.md)
 and the sanitized shape corpus under [fixtures/](fixtures/).
 
@@ -322,7 +330,11 @@ matters because requirements.md allows a custom range of up to 366 calendar days
 ## Capability matrix
 
 Verdicts use the architecture.md vocabulary. **Unverified** means the contract
-is documented but no live call has confirmed it for any account.
+is documented but no live call has confirmed it for any account. Rows 1–3 keep
+that verdict after the 2026-11-10 user-reported smoke: the run shows one real
+account accepting the Management Key and the `/credits` body decoding into three
+metric rows that satisfy the domain invariants, but it printed no value, so
+neither the wire encoding, nor the currency, nor any figure is confirmed.
 
 | # | Capability | Surface | Authorization | Verdict in code today | Granularity | Historical range | Zone |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -427,14 +439,37 @@ monitoring client will not normally see them; they are recorded here because
 `openrouter_credits` versus `openrouter_key_limit` is exactly the
 account-versus-key distinction A04 cares about, and because a negative account
 balance can produce these errors "including for free models".
-**Management keys are dangerous by construction.** The same credential that
-unlocks `/credits`, `/activity`, and `/analytics/*` also unlocks
-`POST|DELETE|PATCH /api/v1/keys`, `/api/v1/byok`, guardrails, and organization
-settings. The documentation states a leaked management key "could create, edit
-and delete the API keys in your account". The read-only allow-list therefore has
-to be enforced in code, not left to operator discipline. Management keys also
-**cannot** call completion endpoints, which is a useful property: a monitoring
-credential cannot be spent on inference.
+
+**Management keys are dangerous by construction, and no read-only variant
+exists.** The same credential that unlocks `/credits`, `/activity`, and
+`/analytics/*` also unlocks `POST|DELETE|PATCH /api/v1/keys`, `/api/v1/byok`,
+guardrails, and organization settings. The documentation states a leaked
+management key "could create, edit and delete the API keys in your account".
+Nothing in the sources read for this report documents a read-only Management
+Key, a scope parameter, or a permission downgrade, and none may be assumed: a
+Management Key is an administrative credential, full stop. "Query-only" is
+therefore a description of **QuotaVista's own client behaviour** — the adapter
+issues only the queries a dataset needs and never calls a mutating management
+route — and not a property the credential carries or a vendor allow-list that
+could be requested. Because the blast radius cannot be narrowed at the vendor,
+it has to be narrowed by handling:
+
+- Create a **short-expiry** Management Key for the validation session. Expiry is
+  fixed at creation and cannot be extended (see the error table above), so a
+  short lifetime is the only expiry control available.
+- Keep it **only on the user's machine** — Keychain or session-only storage. Not
+  in a shell profile, config file, fixture, log, screenshot, commit, or prompt.
+- **Revoke it as soon as the reconciliation is recorded.**
+- Enforce the query-only allow-list **in code**, because that is the only
+  allow-list that exists. The monitoring path needs `GET /api/v1/credits` today;
+  `GET /api/v1/key`, `GET /api/v1/activity`, `POST /api/v1/analytics/query`, and
+  `GET /api/v1/analytics/meta` are the documented candidates for later slices.
+  No mutating management route belongs in that set, and the adapter must never
+  grow one.
+
+Management keys also **cannot** call completion endpoints, which is a useful
+property: a monitoring credential cannot be spent on inference. That is the one
+restriction the vendor does apply, and it is not a read-only guarantee.
 
 ## Reporting zone
 
@@ -520,7 +555,11 @@ smoke check.
 ## Open questions for live reconciliation
 
 Recorded here so the credential-holder can answer them in one session. None may
-be assumed.
+be assumed, and the 2026-11-10 user-reported smoke answered **none** of them: it
+printed one category line per dataset and no response body, so it says nothing
+about wire encoding, currency, Activity or Analytics behaviour, account
+identity, truncation, overdrawn balances, or zero-usage days. See
+[Live-smoke evidence (user-reported)](#live-smoke-evidence-user-reported).
 
 1. Does `/credits` return bare numbers or strings in practice? The published
    example uses bare numbers; the P2-02 fixtures use strings; the parser accepts
@@ -546,14 +585,99 @@ be assumed.
    day and a zero day are different facts, and requirements.md forbids treating a
    gap as zero without confirmation.
 
+## Live-smoke evidence (user-reported)
+
+Added by Trellis task P2-06. This evidence is **user-reported**: the user ran the
+command on their own machine and supplied the console output below for a run
+timestamped **2026-11-10 21:52 Asia/Shanghai (Beijing)**. QuotaVista did not
+execute it, never saw the credential, and cannot reproduce it from this worktree.
+
+| Field | Value |
+| --- | --- |
+| Criteria touched | A01 (partial evidence only); A04 (no evidence) |
+| Command class | Single-test `cargo test` invocation of the `#[ignore]`d env-gated live smoke `quotavista_test_openrouter_live_credits_management_key` (`crates/providers/src/openrouter/mod.rs`), selected by name — hence `73 filtered out` |
+| Environment category | The user's own machine; a real prepaid OpenRouter account; a Management Key supplied locally through `QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY`. No key material, account name, organization id, or figure was shared with this task, and none is committed anywhere |
+| Result category | **PASS as reported** — the test returned `ok`, printing neither a typed whole-call error nor a per-dataset failure |
+| Evidence class | User-reported. **Not** independently reproduced, **not** numeric console reconciliation, **not** desktop UI validation |
+
+The supplied output, verbatim:
+
+```text
+running 1 test
+live dataset prepaid-credits returned metrics
+live dataset key-budget returned metrics
+test openrouter::tests::quotavista_test_openrouter_live_credits_management_key ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 73 filtered out; finished in 0.67s
+```
+
+### What the run does establish
+
+Reading the output against the test source and `OpenRouterAdapter::current`
+(`crates/providers/src/openrouter/mod.rs`), the reported run took the success
+path: a whole-call error would have printed `live call ended in typed whole-call
+error`, and a dataset failure would have printed `live dataset prepaid-credits
+failed`. Neither appeared, so as reported:
+
+- `GET /api/v1/credits` was called exactly once with the Management Key and
+  returned a 2xx status — the key was accepted for the Credits endpoint, which
+  is the documented management-only route.
+- The body was valid UTF-8 and `credits::credits_metrics` decoded it, which
+  requires both `data.total_credits` and `data.total_usage` to be present and
+  parseable as decimal amounts. Three `prepaid-credits` rows were produced:
+  `total_credits`, `total_usage`, and the derived `remaining`.
+- Every returned row satisfied `CurrentMetric::validate()`
+  (`crates/core/src/provider.rs`), so the availability/value consistency and
+  unit invariants held for a live payload. The test panics on any failure here.
+
+That is real, if narrow, evidence for the adapter half of A01: the env-gated
+live path runs against a real account and produces well-formed metric rows.
+
+### What the run does not establish
+
+- **`key-budget returned metrics` is not a numeric key budget.** Both dataset
+  lines come from the same `eprintln!("live dataset {} returned metrics", …)` in
+  the test's `DatasetResult::Metrics(metrics)` arm, but only `prepaid-credits`
+  is fetched. The `key-budget` row is built unconditionally by
+  `Self::key_budget_unsupported(request)` with `value: None`,
+  `availability: Availability::Unsupported`, `reason: Some(Reason::Unsupported)`,
+  `query_kind: QueryKind::Unvalidated`, and `provenance: Provenance::Observation`,
+  and it is returned as `DatasetResult::Metrics(vec![…])` on every path. The
+  offline unit test `key_budget_is_reported_unsupported_not_conflated`
+  (`crates/providers/src/openrouter/mod.rs`) asserts precisely that an
+  `Unsupported` key-budget row still carries metrics. The smoke line therefore
+  reports the honest `Unsupported` placeholder — **A04 gains nothing from it**,
+  and the key budget remains unqueried, unmeasured, and deliberately distinct
+  from account Credits.
+- **No figure was printed, so nothing was reconciled.** The test never echoes
+  account data, so no native unit, timestamp, currency, or balance was compared
+  against the OpenRouter console or the Activity dashboard, and no desktop
+  screen was involved. A01's reconciliation half is untouched.
+- **Open questions 1–9 all remain open**, including whether the amounts arrived
+  as JSON numbers or strings (the parser accepts both, so a successful decode
+  cannot distinguish them) and whether the hard-coded credits currency matches
+  the account.
+- **Activity and Analytics were not exercised.** Those datasets are
+  `Unsupported` in code today, so exactly one live endpoint was contacted.
+- **One account, one key, one moment.** No repeated observation, rotation,
+  rate-limit, expiry, permission-failure, or overdrawn-balance behaviour was
+  observed, and the run is not reproducible from this repository.
+- **Nothing here concerns Kimi.** See
+  [provider-capability-kimi.md](provider-capability-kimi.md), whose membership
+  retrieval path is still unresolved.
+
 ## Honest status
 
 | Criterion | Status | Why |
 | --- | --- | --- |
-| A01 provider adapters and capability reports | **Pending** | This report is documentation. A01 requires a real OpenRouter prepaid account reconciled against the console. |
-| A04 metric scope and permission state | **Pending** | The key-budget dataset is reported `Unsupported` in code, which is honest but not a substitute for a measured regular-key-vs-management-key comparison. |
+| A01 provider adapters and capability reports | **Pending** | One user-reported live smoke (2026-11-10) shows the env-gated adapter path returning well-formed `prepaid-credits` rows from a real account, which is partial evidence for the adapter half only. No figure was printed, so native units, timestamps, and the balance were never compared against the console; the reconciliation A01 requires does not exist. |
+| A04 metric scope and permission state | **Pending** | The key-budget dataset is still reported `Unsupported` in code, and the smoke's `key-budget returned metrics` line is that `Unsupported` row carrying its metrics payload — not a numeric key budget and not a newly supported dataset. No regular-key-versus-management-key comparison and no console reconciliation exists, so account Credits and key budget remain unmeasured against each other. |
 | A05 metric transport and UI states | **Pending** | Zero, null, unsupported, stale, and failed states are modelled and unit-tested against fixtures, not against live responses. |
-| G02 live credentials | **Open blocker** | No Management Key is available in this worktree, and none may be committed. |
+| G02 live credentials | **Partially exercised, still open** | A Management Key was used once, by the user, for the 2026-11-10 smoke, so the Credits path is no longer wholly unexercised. Token semantics, current-day reporting, Activity and Analytics behaviour, permission failures, and expiry handling all remain unmeasured, and no key may ever be committed to this worktree. |
 
-Per the phase-two-plan exit gate: live-key absence is an open credential blocker,
-not a documentation pass.
+Per the phase-two-plan exit gate: a single user-reported smoke is partial
+evidence that the env-gated path runs — it is not a documentation pass and not a
+reconciliation. A01, A03, and A04 stay **Pending** until a real account's
+figures are compared against the console, and the Management Key handling rules
+above (short expiry, local-only storage, revoke after use, query-only enforced
+in code) apply to every future attempt.
