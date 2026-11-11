@@ -546,14 +546,21 @@ mod tests {
     }
 
     /// Optional live smoke test. Never runs in CI or default `cargo test`.
-    /// To run locally:
+    ///
+    /// NOT RUNNABLE YET: no supported Kimi integration issues a membership
+    /// session token, so there is no authorized way to obtain the value this
+    /// test needs. The blocker is an unresolved supported integration, not a
+    /// token the user has not handed over yet — see
+    /// `docs/validation/provider-capability-kimi.md` (G01 and open question 10).
+    /// Do not read browser cookies or another tool's credentials to fill it in.
+    ///
+    /// If a supported path ever exists, run it locally as:
     /// `QUOTAVISTA_KIMI_SESSION_TOKEN=<session-token> cargo test -p quotavista-providers -- --ignored`
-    /// The token must be supplied locally by the user after an explicit,
-    /// user-authorized connection flow; it is never committed, logged, or
-    /// printed, and nothing about the account is recorded. The test asserts
-    /// only the provenance contract, never specific quota values.
+    /// The token would be supplied locally by the user, never committed,
+    /// logged, or printed, and nothing about the account is recorded. The test
+    /// asserts only the provenance contract, never specific quota values.
     #[tokio::test]
-    #[ignore = "requires QUOTAVISTA_KIMI_SESSION_TOKEN (user-authorized session token)"]
+    #[ignore = "unresolved supported Kimi integration: no authorized session-token source (see docs/validation/provider-capability-kimi.md G01)"]
     async fn quotavista_test_kimi_live_membership_session_token() {
         let Ok(secret) = std::env::var(LIVE_SESSION_TOKEN_ENV) else {
             eprintln!(

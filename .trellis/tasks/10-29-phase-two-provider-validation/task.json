@@ -24,11 +24,12 @@
     "10-29-p2-02-openrouter-adapter",
     "10-29-p2-03-kimi-adapter",
     "10-29-p2-04-refresh-wiring",
-    "10-29-p2-05-credential-rotation"
+    "10-29-p2-05-credential-rotation",
+    "11-11-p2-06-live-evidence-docs"
   ],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Phase 1 parent 10-18-phase-one-prototype stays open incomplete. Ubuntu Phase 1 validation waived for now \u2014 do not invent OBSERVED rows or archive Phase 1 as PASS.",
+  "notes": "Phase 1 parent 10-18-phase-one-prototype stays open incomplete. Ubuntu Phase 1 validation waived for now — do not invent OBSERVED rows or archive Phase 1 as PASS. P2-06 recorded a user-reported 2026-11-10 OpenRouter live-smoke pass (adapter reached /api/v1/credits, no figure printed, not reproduced here) and corrected the Management Key and Kimi authorization guidance; A01-A04 stay Pending and this parent stays open. Still owed: OpenRouter console numeric reconciliation, and a Kimi retrieval path — an unresolved supported integration, not a token the user owes.",
   "meta": {
     "phase": "2",
     "kind": "milestone",

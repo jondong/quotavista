@@ -3,11 +3,17 @@
 **Status: DOCUMENTED, NOT VALIDATED — retrieval path unresolved.** Every verdict
 below comes from public Kimi documentation read on 2026-10-29 (UTC). No account
 was contacted, no session was used, and no credential was read while writing this
-document. Nothing here is evidence for release criterion A01, A02, or A03; those
-require comparison against a real member's official subscription page and remain
-**Pending** in [traceability.md](../traceability.md).
+document. Nothing here is evidence for release criterion A01, A02, or A03;
+those require
+comparison against a real member's official subscription page and remain
+**Pending** in [traceability.md](../traceability.md). The 2026-11-10
+user-reported OpenRouter live smoke recorded in
+[provider-capability-openrouter.md](provider-capability-openrouter.md) does not
+touch Kimi and changes no verdict here.
 
-Produced by Trellis task P2-01 on branch `jondong/p2-01-capability-fixtures`.
+Produced by Trellis task P2-01 on branch `jondong/p2-01-capability-fixtures`; the
+retrieval-blocker wording was corrected by Trellis task P2-06 on branch
+`jondong/p2-06-live-evidence-docs`.
 Companion documents:
 [provider-capability-openrouter.md](provider-capability-openrouter.md) and the
 sanitized shape corpus under [fixtures/](fixtures/).
@@ -210,7 +216,11 @@ severity:
    browser cookies or read other tools' credentials by default. Reaching this
    endpoint therefore requires an explicit, user-initiated authorization step in
    which the user supplies the address and token — and even then it depends on a
-   third-party process being installed and running.
+   third-party process being installed and running. This is **not** a token
+   QuotaVista asks the user to go and find: no documented official consumer
+   membership session-token issuance path was located in the sources reviewed, so
+   Path B remains an open third-party-owned question rather than a pending user
+   input.
 2. **Stability.** The API is documented as experimental and version-volatile. Any
    integration must re-validate against the served `/openapi.json` at runtime
    rather than trusting a checked-in shape.
@@ -415,20 +425,27 @@ assumed, and none may be answered from this document.
     **not** require reading another tool's credentials — and if not, is the
     integration resolvable at all, or must scope be revised?
 
-Question 10 is the feasibility gate. If the answer is "only via another tool's
-local server token", the product owner must decide whether an explicit
-user-authorized connection to that local server is acceptable, or whether Kimi
-scope is revised. A manually entered quota **must not** stand in for a working
-automatic integration.
+Question 10 is the feasibility gate, and it is still open. Trellis task P2-06
+re-examined it against the sources listed above and found **no documented
+official consumer membership session-token issuance path** — no OAuth scope, no
+API-key product, and no account setting that yields a token usable against the
+membership page. The officially documented way to view membership quota remains
+what it always was: sign in and read the membership/subscription page. If the
+only reachable answer is "via another tool's local server token", the product
+owner must decide whether an explicit user-authorized connection to that local
+server is acceptable, or whether Kimi scope is revised. A manually entered quota
+**must not** stand in for a working automatic integration. No universal
+impossibility is asserted here either — Kimi may publish a supported flow later,
+and this section must be revised when it does.
 
 ## Honest status
 
 | Criterion | Status | Why |
 | --- | --- | --- |
-| A01 provider adapters and capability reports | **Pending** | Documentation only. A01 requires a real Kimi shared membership pool. |
+| A01 provider adapters and capability reports | **Pending** | Documentation only. A01 requires a real Kimi shared membership pool, and no Kimi retrieval path exists yet, so nothing can be retrieved to reconcile. |
 | A02 scope and product identity | **Pending** | The shared-pool evidence above is documentary; counting web/app/Code once has not been demonstrated against a real account. |
 | A03 Kimi adapter validation | **Pending** | No comparison against an official member page has occurred. The retrieval path itself is unresolved. |
-| G01 live Kimi access | **Open blocker** | No authorized retrieval path exists in this worktree, and none may be created by reading another tool's credentials. |
+| G01 live Kimi access | **Open blocker — unresolved supported integration** | No documented consumer membership authorization path was found in the sources reviewed, so this is not a token the user still owes QuotaVista. The adapter base URL and membership endpoint stay **Unvalidated** placeholders. Moonshot Open Platform API keys and Kimi Code API keys are not substitutes for membership quota, and none may be used as one. No universal impossibility is claimed — Kimi may publish a supported flow later, and this row must be revised if it does. |
 
 The simulated Kimi adapter in
 [crates/providers/src/simulated.rs](../../crates/providers/src/simulated.rs)
@@ -436,3 +453,13 @@ remains the only working Kimi data source, and it is labelled
 `Provenance::Synthetic`. Until Path A or Path B is authorized and reconciled, the
 product must show **Not connected** rather than substituting an API wallet or an
 independent Code limit.
+
+The G01 blocker is therefore an **unresolved supported integration**, not a
+credential the user still owes QuotaVista. Moonshot Open Platform API keys and
+Kimi Code API keys authenticate different products and are **not** substitutes
+for the membership page's shared-pool figure; the adapter's base URL
+(`https://www.kimi.com`) and membership endpoint
+(`/api/membership/shared-pool`) stay **Unvalidated** placeholders until a
+supported path exists. Nothing in this report claims the integration is
+universally impossible, and nothing authorizes reading browser cookies or
+another tool's stored credentials to close the gap.

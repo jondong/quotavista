@@ -630,11 +630,15 @@ mod tests {
     /// Optional live smoke test. Never runs in CI or default `cargo test`.
     /// To run locally:
     /// `QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY=<management-key> cargo test -p quotavista-providers -- --ignored`
-    /// The key is a query-only Management Key; the adapter never creates,
-    /// modifies, or deletes keys, and nothing about the key or account is
-    /// printed.
+    /// A Management Key is an administrative credential: it can create, edit,
+    /// and delete the account's API keys, and no read-only or scope-limited
+    /// variant exists. Use a short-expiry key, keep it only on this machine,
+    /// and revoke it once the run is recorded. "Query-only" is QuotaVista
+    /// client discipline, not a vendor mode: this adapter calls only
+    /// `GET /api/v1/credits` and never creates, modifies, or deletes keys.
+    /// Nothing about the key or the account is printed.
     #[tokio::test]
-    #[ignore = "requires QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY (query-only Management Key)"]
+    #[ignore = "requires QUOTAVISTA_OPENROUTER_MANAGEMENT_KEY (administrative credential: use a short-expiry key and revoke it after the run)"]
     async fn quotavista_test_openrouter_live_credits_management_key() {
         let Ok(secret) = std::env::var(LIVE_MANAGEMENT_KEY_ENV) else {
             eprintln!(

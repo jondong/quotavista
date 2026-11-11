@@ -10,7 +10,7 @@ Validate QuotaVista's first real provider integrations — OpenRouter prepaid Cr
 
 ## Scope
 
-Capability reports and sanitized fixtures; OpenRouter live adapter; Kimi shared-membership adapter; refresh wiring for live adapters; same-scope credential rotation. Docs English. No secrets in repository or prompts.
+Capability reports and sanitized fixtures; OpenRouter live adapter; Kimi shared-membership adapter; refresh wiring for live adapters; same-scope credential rotation; live-smoke evidence recording and Management Key / Kimi authorization guidance corrections (P2-06). Docs English. No secrets in repository or prompts.
 
 ## Phase exit acceptance
 

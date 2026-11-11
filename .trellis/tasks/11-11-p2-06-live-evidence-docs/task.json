@@ -1,0 +1,29 @@
+{
+  "id": "p2-06-live-evidence-docs",
+  "name": "p2-06-live-evidence-docs",
+  "title": "P2-06: Live-smoke evidence and auth guidance corrections",
+  "description": "Record the user-reported OpenRouter live-smoke evidence, correct misleading Management Key and Kimi auth guidance in English docs and Trellis, and assess desktop OpenRouter validation with non-secret tests only. Do not mark A01-A04 PASS, archive Phase 1, or close the Phase 2 parent.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P0",
+  "creator": "jondong",
+  "assignee": "jondong",
+  "createdAt": "2026-11-11",
+  "completedAt": null,
+  "branch": "jondong/p2-06-live-evidence-docs",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-29-phase-two-provider-validation",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "phase": "2",
+    "plan_id": "P2-06"
+  }
+}

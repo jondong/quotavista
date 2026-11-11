@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
-- **Last Active**: 2026-10-30
+- **Total Sessions**: 10
+- **Last Active**: 2026-11-11
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~305 | Active |
+| `journal-1.md` | ~348 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-11-11 | P2-06 live-smoke evidence and auth guidance corrections | `ce3b9b2d45b4ea8a2d0766138c8ac438e3079215` | `jondong/p2-06-live-evidence-docs` |
 | 9 | 2026-10-30 | P2-05 credential rotation validation implemented locally | `d471e5a` | `jondong/p2-05-credential-rotation` |
 | 8 | 2026-10-30 | P2-01 capability reports and sanitized fixture corpus | `68b54ec`, `4cdbc2c`, `1f689e1` | `jondong/p2-01-capability-fixtures` |
 | 7 | 2026-10-29 | P2-02 review round 1: Retry-After hardening and should-fixes | `c18c19a` | `jondong/p2-02-openrouter-adapter` |
